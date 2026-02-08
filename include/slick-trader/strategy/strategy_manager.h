@@ -3,12 +3,14 @@
 #include <slick-trader/strategy/istrategy.h>
 #include <slick-trader/events/event.h>
 #include <slick-trader/events/order_event.h>
+#include <slick-trader/market_data/order_book.h>
 #include <slick/queue.h>
 #include <slick/logger.hpp>
 #include <memory>
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <unordered_map>
 
 namespace slick::trader {
 
@@ -197,9 +199,46 @@ private:
     }
 
     void dispatch_order_book(const OrderBookEvent& event) {
-        for (auto& strategy : strategies_) {
-            strategy->on_order_book(event);
+        const std::string instrument(event.instrument);
+        slick::orderbook::SymbolId sid = get_or_create_symbol_id(instrument);
+        slick::orderbook::OrderBookL2* book = book_manager_.getOrCreateOrderBook(sid);
+
+        if (event.is_snapshot) {
+            book->clear();
         }
+
+        const bool is_last_bid = (event.num_asks == 0);
+        for (uint16_t i = 0; i < event.num_bids; ++i) {
+            book->updateLevel(slick::orderbook::Side::Buy,
+                              static_cast<slick::orderbook::Price>(event.bids[i].price),
+                              static_cast<slick::orderbook::Quantity>(event.bids[i].quantity),
+                              event.event_time_ns,
+                              event.sequence_num,
+                              is_last_bid && (i == event.num_bids - 1));
+        }
+        for (uint16_t i = 0; i < event.num_asks; ++i) {
+            book->updateLevel(slick::orderbook::Side::Sell,
+                              static_cast<slick::orderbook::Price>(event.asks[i].price),
+                              static_cast<slick::orderbook::Quantity>(event.asks[i].quantity),
+                              event.event_time_ns,
+                              event.sequence_num,
+                              i == event.num_asks - 1);
+        }
+
+        for (auto& strategy : strategies_) {
+            strategy->on_order_book(event, *book);
+        }
+    }
+
+    slick::orderbook::SymbolId get_or_create_symbol_id(const std::string& instrument) {
+        auto it = symbol_ids_.find(instrument);
+        if (it == symbol_ids_.end()) {
+            slick::orderbook::SymbolId sid = next_symbol_id_++;
+            symbol_ids_.emplace(instrument, sid);
+            LOG_INFO("StrategyManager: Assigned symbol_id={} for {}", sid, instrument);
+            return sid;
+        }
+        return it->second;
     }
 
     void dispatch_order_ack(const OrderAckEvent& event) {
@@ -227,6 +266,9 @@ private:
     }
 
     std::vector<std::shared_ptr<IStrategy>> strategies_;
+    slick::orderbook::OrderBookManager<slick::orderbook::OrderBookL2> book_manager_;
+    std::unordered_map<std::string, slick::orderbook::SymbolId> symbol_ids_;
+    slick::orderbook::SymbolId next_symbol_id_{0};
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_submission_queue_;

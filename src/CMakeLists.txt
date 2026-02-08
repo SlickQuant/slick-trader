@@ -3,7 +3,6 @@
 # Core library
 add_library(slick-trader-core STATIC
     core/trading_engine.cpp
-    market_data/order_book.cpp
 )
 
 target_include_directories(slick-trader-core PUBLIC
@@ -13,6 +12,7 @@ target_include_directories(slick-trader-core PUBLIC
 target_link_libraries(slick-trader-core PUBLIC
     slick::logger
     nlohmann_json::nlohmann_json
+    slick::orderbook
 )
 
 # Broker implementations library

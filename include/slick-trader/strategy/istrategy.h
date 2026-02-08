@@ -5,6 +5,7 @@
 #include <slick-trader/events/trade_event.h>
 #include <slick-trader/events/quote_event.h>
 #include <slick-trader/events/order_book_event.h>
+#include <slick-trader/market_data/order_book.h>
 #include <slick/queue.h>
 #include <memory>
 #include <string>
@@ -31,7 +32,7 @@ public:
     // Market data event handlers
     virtual void on_trade(const TradeEvent& event) = 0;
     virtual void on_quote(const QuoteEvent& event) = 0;
-    virtual void on_order_book(const OrderBookEvent& event) = 0;
+    virtual void on_order_book(const OrderBookEvent& event, const slick::orderbook::OrderBookL2& book) = 0;
 
     // Order event handlers
     virtual void on_order_ack(const OrderAckEvent& event) = 0;

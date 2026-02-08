@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.28)
 
 set(BUILD_VERSION 0.1.0)
 project(SlickTrader VERSION ${BUILD_VERSION} LANGUAGES CXX)
@@ -35,6 +35,8 @@ if (NOT slick-logger_FOUND)
         GIT_TAG v1.0.4
     )
     FetchContent_MakeAvailable(slick-logger)
+else()
+    message(STATUS "Found slick-logger: ${slick-logger_VERSION}")
 endif()
 
 find_package(slick-net 1.2.2 CONFIG QUIET)
@@ -45,9 +47,28 @@ if (NOT slick-net_FOUND)
     FetchContent_Declare(
         slick-net
         GIT_REPOSITORY https://github.com/SlickQuant/slick-net.git
-        GIT_TAG v1.2.2
+        GIT_TAG v1.2.3
     )
     FetchContent_MakeAvailable(slick-net)
+else()
+    message(STATUS "Found slick-net: ${slick-net_VERSION}")
+endif()
+
+# Add slick-orderbook dependency
+find_package(slick-orderbook 1.0.1 CONFIG QUIET)
+if (NOT slick-orderbook_FOUND)
+    message(STATUS "Fetching slick-orderbook...")
+    set(BUILD_SLICK_ORDERBOOK_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_SLICK_ORDERBOOK_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    set(BUILD_SLICK_ORDERBOOK_EXAMPLES OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        slick-orderbook
+        GIT_REPOSITORY https://github.com/SlickQuant/slick-orderbook.git
+        GIT_TAG main
+    )
+    FetchContent_MakeAvailable(slick-orderbook)
+else()
+    message(STATUS "Found slick-orderbook: ${slick-orderbook_VERSION}")
 endif()
 
 # Add coinbase-advanced-cpp dependency
@@ -61,6 +82,8 @@ if (NOT coinbase-advanced-cpp_FOUND)
         GIT_TAG main
     )
     FetchContent_MakeAvailable(coinbase-advanced-cpp)
+else()
+    message(STATUS "Found coinbase-advanced-cpp: ${coinbase-advanced-cpp_VERSION}")
 endif()
 
 # Add Alpaca SDK (assuming GitHub repo exists)

@@ -52,7 +52,7 @@ public:
     // Default implementations - strategies can override if needed
     void on_trade(const TradeEvent& event) override {}
     void on_quote(const QuoteEvent& event) override {}
-    void on_order_book(const OrderBookEvent& event) override {}
+    void on_order_book(const OrderBookEvent& event, const slick::orderbook::OrderBookL2& book) override {}
     void on_order_ack(const OrderAckEvent& event) override {}
     void on_order_fill(const OrderFillEvent& event) override {}
     void on_order_reject(const OrderRejectEvent& event) override {}
