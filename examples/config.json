@@ -1,0 +1,5 @@
+{
+  "md_queue_size": 16777216,
+  "order_request_queue_size": 1048576,
+  "order_reply_queue_size": 1048576
+}

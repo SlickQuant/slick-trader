@@ -1,0 +1,120 @@
+cmake_minimum_required(VERSION 3.25)
+
+set(BUILD_VERSION 0.1.0)
+project(SlickTrader VERSION ${BUILD_VERSION} LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Windows version definition
+if(MSVC)
+    add_definitions(-D_WIN32_WINNT=0x0601)
+endif()
+
+if (CMAKE_BUILD_TYPE MATCHES Debug)
+    add_definitions(-DDEBUG)
+endif()
+
+if (CMAKE_BUILD_TYPE MATCHES Release)
+    add_definitions(-DNDEBUG)
+endif()
+
+include(FetchContent)
+
+find_package(slick-logger 1.0.4 CONFIG QUIET)
+if (NOT slick-logger_FOUND)
+    message(STATUS "Fetching slick-logger...")
+    # Disable examples, tests, and benchmarks for slick_logger
+    set(BUILD_SLICK_LOGGER_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(BUILD_SLICK_LOGGER_TESTING OFF CACHE BOOL "" FORCE)
+    set(BUILD_SLICK_LOGGER_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        slick-logger
+        GIT_REPOSITORY https://github.com/SlickQuant/slick-logger.git
+        GIT_TAG v1.0.4
+    )
+    FetchContent_MakeAvailable(slick-logger)
+endif()
+
+find_package(slick-net 1.2.2 CONFIG QUIET)
+if (NOT slick-net_FOUND)
+    message(STATUS "Fetching slick-net...")
+    set(BUILD_SLICK_NET_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(BUILD_SLICK_NET_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        slick-net
+        GIT_REPOSITORY https://github.com/SlickQuant/slick-net.git
+        GIT_TAG v1.2.2
+    )
+    FetchContent_MakeAvailable(slick-net)
+endif()
+
+# Add coinbase-advanced-cpp dependency
+find_package(coinbase-advanced-cpp 0.1.0 CONFIG QUIET)
+if (NOT coinbase-advanced-cpp_FOUND)
+    message(STATUS "Fetching coinbase-advanced-cpp...")
+    set(BUILD_COINBASE_ADVANCED_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        coinbase-advanced-cpp
+        GIT_REPOSITORY https://github.com/SlickQuant/coinbase-advanced-cpp.git
+        GIT_TAG main
+    )
+    FetchContent_MakeAvailable(coinbase-advanced-cpp)
+endif()
+
+# Add Alpaca SDK (assuming GitHub repo exists)
+# Note: If alpaca SDK is not available via FetchContent, it can be integrated manually
+# find_package(alpaca-cpp CONFIG QUIET)
+# if (NOT alpaca-cpp_FOUND)
+#     message(STATUS "Fetching alpaca-cpp...")
+#     FetchContent_Declare(
+#         alpaca-cpp
+#         GIT_REPOSITORY https://github.com/alpacahq/alpaca-trade-api-cpp.git
+#         GIT_TAG master
+#     )
+#     FetchContent_MakeAvailable(alpaca-cpp)
+# endif()
+
+# Required dependencies (prefer vcpkg installation)
+find_package(unofficial-uwebsockets CONFIG REQUIRED)
+find_package(nlohmann_json REQUIRED)
+
+# Optional Lua support for script-based strategies
+find_package(Lua 5.4 QUIET)
+if(Lua_FOUND)
+    message(STATUS "Lua found - enabling Lua strategy support")
+    add_definitions(-DSLICK_TRADER_LUA_SUPPORT)
+else()
+    message(STATUS "Lua not found - Lua strategy support disabled")
+endif()
+
+# Optional Python support for script-based strategies
+find_package(Python3 COMPONENTS Development QUIET)
+if(Python3_FOUND)
+    message(STATUS "Python3 found - enabling Python strategy support")
+    add_definitions(-DSLICK_TRADER_PYTHON_SUPPORT)
+else()
+    message(STATUS "Python3 not found - Python strategy support disabled")
+endif()
+
+# Dynamic loading support
+if(UNIX AND NOT APPLE)
+    set(CMAKE_DL_LIBS ${CMAKE_DL_LIBS} dl)
+elseif(UNIX AND APPLE)
+    # macOS handles dlopen without explicit linking
+    set(CMAKE_DL_LIBS "")
+endif()
+
+add_subdirectory(src)
+add_subdirectory(strategies)
+add_subdirectory(web)
+add_subdirectory(examples)
+
+# Tests
+# option(BUILD_EXCH_SIMULATOR_TESTING "Build tests" ON)
+# if(BUILD_EXCH_SIMULATOR_TESTING)
+#   find_package(GTest CONFIG REQUIRED)
+#   enable_testing()
+#   add_subdirectory(tests)
+# endif()
