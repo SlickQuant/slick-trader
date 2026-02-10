@@ -3,6 +3,10 @@ add_executable(example_trading_system
     example_trading_system.cpp
 )
 
+if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
+    set_target_properties(example_trading_system PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+endif()
+
 target_include_directories(example_trading_system PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}

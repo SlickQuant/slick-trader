@@ -1,8 +1,6 @@
 #pragma once
 
 #include <slick-trader/brokers/ibroker.h>
-#include <slick-trader/brokers/coinbase/coinbase_md_connector.h>
-#include <slick-trader/brokers/coinbase/coinbase_order_connector.h>
 #include <memory>
 #include <string>
 
@@ -28,8 +26,8 @@ public:
     }
 
 private:
-    std::shared_ptr<CoinbaseMDConnector> md_connector_;
-    std::shared_ptr<CoinbaseOrderConnector> order_connector_;
+    std::shared_ptr<IMarketDataConnector> md_connector_;
+    std::shared_ptr<IOrderConnector> order_connector_;
 };
 
 } // namespace slick::trader

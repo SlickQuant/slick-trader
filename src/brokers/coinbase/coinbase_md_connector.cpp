@@ -1,11 +1,15 @@
 #include <slick-trader/brokers/coinbase/coinbase_md_connector.h>
+#include <slick-trader/brokers/coinbase/coinbase_md_callbacks.h>
 #include <slick/logger.hpp>
 #include <coinbase/websocket.hpp>
+#include <algorithm>
+#include <utility>
 
 namespace slick::trader {
 
 CoinbaseMDConnector::CoinbaseMDConnector()
-    : orderbook_depth_(10) {
+    : callbacks_(std::make_unique<CoinbaseMDCallbacks>())
+    , orderbook_depth_(10) {
 }
 
 CoinbaseMDConnector::~CoinbaseMDConnector() {
@@ -21,7 +25,7 @@ bool CoinbaseMDConnector::connect() {
     }
 
     // Create callbacks and WebSocket client
-    ws_client_ = std::make_unique<coinbase::WebSocketClient>(&callbacks_, ws_url_);
+    ws_client_ = std::make_unique<coinbase::WebSocketClient>(callbacks_.get(), ws_url_);
 
     // Subscribe to heartbeat channel to open connection
     ws_client_->subscribe({}, {coinbase::WebSocketChannel::HEARTBEAT});
@@ -40,6 +44,11 @@ void CoinbaseMDConnector::disconnect() {
 
 bool CoinbaseMDConnector::is_connected() const { 
     return ws_client_ ? ws_client_->isMarketDataConnected() : false;
+}
+
+void CoinbaseMDConnector::set_md_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
+    md_queue_ = std::move(queue);
+    callbacks_->set_md_queue(md_queue_);
 }
 
 bool CoinbaseMDConnector::subscribe(SubscriptionType type, const std::vector<std::string>& instruments, int depth) {

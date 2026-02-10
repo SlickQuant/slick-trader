@@ -1,5 +1,7 @@
 #include <slick/logger.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_broker.h>
+#include <slick-trader/brokers/coinbase/coinbase_md_connector.h>
+#include <slick-trader/brokers/coinbase/coinbase_order_connector.h>
 #include <nlohmann/json.hpp>
 
 namespace slick::trader {
@@ -17,6 +19,13 @@ bool CoinbaseBroker::initialize(const std::string& config_json) {
     LOG_INFO("Initializing Coinbase broker");
 
     try {
+        auto md_connector = std::dynamic_pointer_cast<CoinbaseMDConnector>(md_connector_);
+        auto order_connector = std::dynamic_pointer_cast<CoinbaseOrderConnector>(order_connector_);
+        if (!md_connector || !order_connector) {
+            LOG_ERROR("Failed to initialize Coinbase broker: connector type mismatch");
+            return false;
+        }
+
         auto config = nlohmann::json::parse(config_json);
 
         std::string md_ws_url = config.value("md_websocket_url", "wss://advanced-trade-ws.coinbase.com");
@@ -26,13 +35,13 @@ bool CoinbaseBroker::initialize(const std::string& config_json) {
         std::string api_secret = config.value("api_secret", "");
 
         // Configure MD connector
-        md_connector_->set_websocket_url(md_ws_url);
+        md_connector->set_websocket_url(md_ws_url);
 
         // Configure order connector
-        order_connector_->set_websocket_url(order_ws_url);
-        order_connector_->set_rest_url(rest_url);
-        order_connector_->set_api_key(api_key);
-        order_connector_->set_api_secret(api_secret);
+        order_connector->set_websocket_url(order_ws_url);
+        order_connector->set_rest_url(rest_url);
+        order_connector->set_api_key(api_key);
+        order_connector->set_api_secret(api_secret);
 
         LOG_INFO("Coinbase broker initialized - MD WS: {}, Order WS: {}, REST: {}",
                  md_ws_url, order_ws_url, rest_url);

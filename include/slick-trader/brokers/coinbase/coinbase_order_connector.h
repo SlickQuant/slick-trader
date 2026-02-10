@@ -1,9 +1,7 @@
 #pragma once
 
 #include <slick-trader/brokers/iorder_connector.h>
-#include <slick-trader/events/order_event.h>
-#include <slick-trader/brokers/coinbase/coinbase_order_callbacks.h>
-#include <slick/queue.h>
+#include <cstdint>
 #include <memory>
 #include <thread>
 #include <atomic>
@@ -16,6 +14,11 @@ namespace coinbase {
 }
 
 namespace slick::trader {
+
+struct NewOrderEvent;
+struct ModifyOrderEvent;
+struct CancelOrderEvent;
+class CoinbaseOrderCallbacks;
 
 class CoinbaseOrderConnector : public IOrderConnector {
 public:
@@ -35,10 +38,7 @@ public:
         order_submission_queue_ = queue;
     }
 
-    void set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) override {
-        order_event_queue_ = queue;
-        callbacks_.set_order_event_queue(order_event_queue_);
-    }
+    void set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) override;
 
     // Configuration
     void set_rest_url(const std::string& url) { rest_url_ = url; }
@@ -58,7 +58,7 @@ private:
     std::atomic_bool connected_;
     std::thread worker_thread_;
 
-    CoinbaseOrderCallbacks callbacks_;
+    std::unique_ptr<CoinbaseOrderCallbacks> callbacks_;
     std::unique_ptr<coinbase::WebSocketClient> ws_client_;
     std::unique_ptr<coinbase::CoinbaseRestClient> rest_client_;
 

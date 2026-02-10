@@ -1,4 +1,5 @@
 #include <slick-trader/brokers/coinbase/coinbase_order_connector.h>
+#include <slick-trader/brokers/coinbase/coinbase_order_callbacks.h>
 #include <slick-trader/events/event_serializer.h>
 #include <slick-trader/events/order_event.h>
 #include <slick/logger.hpp>
@@ -6,7 +7,10 @@
 #include <coinbase/rest.hpp>
 #include <coinbase/common.hpp>
 #include <cassert>
+#include <optional>
+#include <stdexcept>
 #include <thread>
+#include <utility>
 
 namespace slick::trader {
 
@@ -44,6 +48,8 @@ inline coinbase::TimeInForce to_coinbase_time_in_force(TimeInForce tif) {
 
 CoinbaseOrderConnector::CoinbaseOrderConnector()
     : running_(false)
+    , connected_(false)
+    , callbacks_(std::make_unique<CoinbaseOrderCallbacks>())
     , order_cursor_(0)
     , rest_url_("https://api.coinbase.com")
     , ws_url_("wss://advanced-trade-ws-user.coinbase.com") {
@@ -65,7 +71,7 @@ bool CoinbaseOrderConnector::connect() {
     rest_client_ = std::make_unique<coinbase::CoinbaseRestClient>(rest_url_);
 
     // Only user_data_url is needed for order updates
-    ws_client_ = std::make_unique<coinbase::WebSocketClient>(&callbacks_, "", ws_url_);
+    ws_client_ = std::make_unique<coinbase::WebSocketClient>(callbacks_.get(), "", ws_url_);
 
     // Subscribe to USER channel for order updates
     ws_client_->subscribe({}, {coinbase::WebSocketChannel::USER});
@@ -89,6 +95,11 @@ void CoinbaseOrderConnector::disconnect() {
 
 bool CoinbaseOrderConnector::is_connected() const { 
     return ws_client_ ? ws_client_->isUserDataConnected() : false;
+}
+
+void CoinbaseOrderConnector::set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
+    order_event_queue_ = std::move(queue);
+    callbacks_->set_order_event_queue(order_event_queue_);
 }
 
 void CoinbaseOrderConnector::start() {

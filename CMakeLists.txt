@@ -7,9 +7,25 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN "Disable C++ module dependency scanning for faster MSVC builds" ON)
+option(SLICK_TRADER_FAST_FETCHCONTENT "Avoid FetchContent update checks on every configure" ON)
+option(SLICK_TRADER_SUPPRESS_VS_REGEN "Disable ZERO_CHECK auto-regeneration for Visual Studio generators" ON)
+option(SLICK_TRADER_ENABLE_LUA_STRATEGY "Enable Lua strategy support auto-detection" OFF)
+option(SLICK_TRADER_ENABLE_PYTHON_STRATEGY "Enable Python strategy support auto-detection" ON)
+option(SLICK_TRADER_STRIP_COINBASE_INTERFACE_PCH "Remove transitive coinbase INTERFACE precompiled headers from downstream targets" ON)
+
+if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
+    set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+endif()
+
 # Windows version definition
 if(MSVC)
     add_definitions(-D_WIN32_WINNT=0x0601)
+
+    if(SLICK_TRADER_SUPPRESS_VS_REGEN AND CMAKE_GENERATOR MATCHES "Visual Studio")
+        # Avoid expensive CMake re-check on each build invocation.
+        set(CMAKE_SUPPRESS_REGENERATION ON)
+    endif()
 endif()
 
 if (CMAKE_BUILD_TYPE MATCHES Debug)
@@ -21,6 +37,15 @@ if (CMAKE_BUILD_TYPE MATCHES Release)
 endif()
 
 include(FetchContent)
+
+if(SLICK_TRADER_FAST_FETCHCONTENT)
+    # Keep already-fetched dependency sources but skip remote update checks on each configure.
+    set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "" FORCE)
+    set(FETCHCONTENT_UPDATES_DISCONNECTED_SLICK-LOGGER ON CACHE BOOL "" FORCE)
+    set(FETCHCONTENT_UPDATES_DISCONNECTED_SLICK-NET ON CACHE BOOL "" FORCE)
+    set(FETCHCONTENT_UPDATES_DISCONNECTED_SLICK-ORDERBOOK ON CACHE BOOL "" FORCE)
+    set(FETCHCONTENT_UPDATES_DISCONNECTED_COINBASE-ADVANCED-CPP ON CACHE BOOL "" FORCE)
+endif()
 
 find_package(slick-logger 1.0.4 CONFIG QUIET)
 if (NOT slick-logger_FOUND)
@@ -64,7 +89,7 @@ if (NOT slick-orderbook_FOUND)
     FetchContent_Declare(
         slick-orderbook
         GIT_REPOSITORY https://github.com/SlickQuant/slick-orderbook.git
-        GIT_TAG main
+        GIT_TAG v1.0.1
     )
     FetchContent_MakeAvailable(slick-orderbook)
 else()
@@ -79,11 +104,35 @@ if (NOT coinbase-advanced-cpp_FOUND)
     FetchContent_Declare(
         coinbase-advanced-cpp
         GIT_REPOSITORY https://github.com/SlickQuant/coinbase-advanced-cpp.git
-        GIT_TAG main
+        GIT_TAG v0.1.2
     )
     FetchContent_MakeAvailable(coinbase-advanced-cpp)
 else()
     message(STATUS "Found coinbase-advanced-cpp: ${coinbase-advanced-cpp_VERSION}")
+endif()
+
+if(SLICK_TRADER_STRIP_COINBASE_INTERFACE_PCH)
+    function(_strip_interface_pch_if_present target_name)
+        if(NOT TARGET ${target_name})
+            return()
+        endif()
+
+        set(_effective_target ${target_name})
+        get_target_property(_alias_target ${target_name} ALIASED_TARGET)
+        if(_alias_target)
+            set(_effective_target ${_alias_target})
+        endif()
+
+        get_target_property(_iface_pch ${_effective_target} INTERFACE_PRECOMPILE_HEADERS)
+        if(_iface_pch)
+            set_property(TARGET ${_effective_target} PROPERTY INTERFACE_PRECOMPILE_HEADERS "")
+            message(STATUS "Removed INTERFACE precompiled headers from target: ${_effective_target}")
+        endif()
+    endfunction()
+
+    _strip_interface_pch_if_present(coinbase-advanced-cpp)
+    _strip_interface_pch_if_present(slick::coinbase-advanced-cpp)
+    _strip_interface_pch_if_present(slick::net)
 endif()
 
 # Add Alpaca SDK (assuming GitHub repo exists)
@@ -104,21 +153,29 @@ find_package(unofficial-uwebsockets CONFIG REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 # Optional Lua support for script-based strategies
-find_package(Lua 5.4 QUIET)
-if(Lua_FOUND)
-    message(STATUS "Lua found - enabling Lua strategy support")
-    add_definitions(-DSLICK_TRADER_LUA_SUPPORT)
+if(SLICK_TRADER_ENABLE_LUA_STRATEGY)
+    find_package(Lua 5.4 QUIET)
+    if(Lua_FOUND)
+        message(STATUS "Lua found - enabling Lua strategy support")
+        add_definitions(-DSLICK_TRADER_LUA_SUPPORT)
+    else()
+        message(STATUS "Lua strategy detection enabled, but Lua not found - Lua strategy support disabled")
+    endif()
 else()
-    message(STATUS "Lua not found - Lua strategy support disabled")
+    message(STATUS "Lua strategy detection disabled")
 endif()
 
 # Optional Python support for script-based strategies
-find_package(Python3 COMPONENTS Development QUIET)
-if(Python3_FOUND)
-    message(STATUS "Python3 found - enabling Python strategy support")
-    add_definitions(-DSLICK_TRADER_PYTHON_SUPPORT)
+if(SLICK_TRADER_ENABLE_PYTHON_STRATEGY)
+    find_package(Python3 COMPONENTS Development QUIET)
+    if(Python3_FOUND)
+        message(STATUS "Python3 found - enabling Python strategy support")
+        add_definitions(-DSLICK_TRADER_PYTHON_SUPPORT)
+    else()
+        message(STATUS "Python3 strategy detection enabled, but Python3 not found - Python strategy support disabled")
+    endif()
 else()
-    message(STATUS "Python3 not found - Python strategy support disabled")
+    message(STATUS "Python strategy detection disabled")
 endif()
 
 # Dynamic loading support

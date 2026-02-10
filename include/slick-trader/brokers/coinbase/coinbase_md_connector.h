@@ -1,11 +1,7 @@
 #pragma once
 
 #include <slick-trader/brokers/imarket_data_connector.h>
-#include <slick-trader/brokers/coinbase/coinbase_md_callbacks.h>
-#include <slick/queue.h>
 #include <memory>
-#include <thread>
-#include <atomic>
 #include <string>
 #include <vector>
 
@@ -15,6 +11,8 @@ namespace coinbase {
 }
 
 namespace slick::trader {
+
+class CoinbaseMDCallbacks;
 
 class CoinbaseMDConnector : public IMarketDataConnector {
 public:
@@ -33,16 +31,13 @@ public:
     void stop() override;
     bool is_running() const override { return is_connected(); }
 
-    void set_md_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) override {
-        md_queue_ = queue;
-        callbacks_.set_md_queue(queue);
-    }
+    void set_md_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) override;
 
     // Configuration
     void set_websocket_url(const std::string& url) { ws_url_ = url; }
 
 private:
-    CoinbaseMDCallbacks callbacks_;
+    std::unique_ptr<CoinbaseMDCallbacks> callbacks_;
     std::unique_ptr<coinbase::WebSocketClient> ws_client_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
 
