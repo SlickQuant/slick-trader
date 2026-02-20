@@ -1,0 +1,35 @@
+#pragma once
+
+#include <slick-trader/utils/types.hpp>
+#include <string>
+#include <cstdint>
+
+namespace slick::trader {
+
+// Position for a single instrument
+struct Position {
+    std::string instrument;
+    qty_t quantity{0};           // Current position size (positive = long, negative = short)
+    price_t avg_price{0};        // Average entry price
+    price_t realized_pnl{0};     // Realized PnL (from closed trades)
+    uint64_t last_update_time{0}; // Last update timestamp
+
+    Position() = default;
+    Position(const std::string& inst) : instrument(inst) {}
+
+    bool is_flat() const { return quantity == 0; }
+    bool is_long() const { return quantity > 0; }
+    bool is_short() const { return quantity < 0; }
+
+    // Calculate unrealized PnL given current market price
+    double get_unrealized_pnl(price_t mark_price) const {
+        if (is_flat()) return 0.0;
+        return from_qty_t(quantity) * (from_price_t(mark_price) - from_price_t(avg_price));
+    }
+
+    double get_total_pnl(price_t mark_price) const {
+        return from_price_t(realized_pnl) + get_unrealized_pnl(mark_price);
+    }
+};
+
+} // namespace slick::trader

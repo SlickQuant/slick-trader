@@ -14,6 +14,11 @@
 
 namespace slick::trader {
 
+// Forward declarations
+class PositionTracker;
+class PnLCalculator;
+class RiskManager;
+
 // Strategy Manager
 // Manages multiple strategies, dispatches events to them
 // Runs on its own thread, consuming from MD and order event queues
@@ -22,7 +27,10 @@ public:
     StrategyManager()
         : running_(false)
         , md_cursor_(0)
-        , order_cursor_(0) {}
+        , order_cursor_(0)
+        , position_tracker_(nullptr)
+        , pnl_calculator_(nullptr)
+        , risk_manager_(nullptr) {}
 
     ~StrategyManager() {
         stop();
@@ -51,6 +59,11 @@ public:
             strategy->set_order_submission_queue(queue);
         }
     }
+
+    // Position & PnL tracking
+    void set_position_tracker(PositionTracker* tracker) { position_tracker_ = tracker; }
+    void set_pnl_calculator(PnLCalculator* calculator) { pnl_calculator_ = calculator; }
+    void set_risk_manager(RiskManager* manager) { risk_manager_ = manager; }
 
     // Lifecycle
     bool initialize() {
@@ -248,6 +261,14 @@ private:
     }
 
     void dispatch_order_fill(const OrderFillEvent& event) {
+        // Update mark price for PnL calculation
+        if (pnl_calculator_) {
+            pnl_calculator_->update_mark_price(std::string(event.instrument),
+                                                event.fill_price,
+                                                event.timestamp_ns);
+        }
+
+        // Dispatch to strategies (they track their own fills)
         for (auto& strategy : strategies_) {
             strategy->on_order_fill(event);
         }
@@ -272,6 +293,11 @@ private:
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_submission_queue_;
+
+    // Position & PnL tracking (non-owning pointers)
+    PositionTracker* position_tracker_;
+    PnLCalculator* pnl_calculator_;
+    RiskManager* risk_manager_;
 
     std::atomic_bool running_;
     std::thread worker_thread_;

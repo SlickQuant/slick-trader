@@ -10,8 +10,11 @@
 
 namespace slick::trader {
 
-// Forward declaration
+// Forward declarations
 class StrategyManager;
+class PositionTracker;
+class PnLCalculator;
+class RiskManager;
 
 class TradingEngine {
 public:
@@ -32,6 +35,11 @@ public:
 
     // Strategy management
     void add_strategy(std::shared_ptr<IStrategy> strategy);
+
+    // Position & PnL access
+    PositionTracker& get_position_tracker();
+    PnLCalculator& get_pnl_calculator();
+    RiskManager& get_risk_manager();
 
     // Queue access
     std::shared_ptr<slick::SlickQueue<uint8_t>> get_md_queue() { return md_queue_; }
@@ -56,6 +64,11 @@ private:
 
     // Strategy manager
     std::unique_ptr<StrategyManager> strategy_manager_;
+
+    // Position & PnL tracking
+    std::unique_ptr<PositionTracker> position_tracker_;
+    std::unique_ptr<PnLCalculator> pnl_calculator_;
+    std::unique_ptr<RiskManager> risk_manager_;
 
     // Message queues
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;

@@ -95,14 +95,14 @@ else()
 endif()
 
 # Add coinbase-advanced-cpp dependency
-find_package(coinbase-advanced-cpp 0.2.0 CONFIG QUIET)
+find_package(coinbase-advanced-cpp 0.2.1 CONFIG QUIET)
 if (NOT coinbase-advanced-cpp_FOUND)
     message(STATUS "Fetching coinbase-advanced-cpp...")
     set(BUILD_COINBASE_ADVANCED_TESTS OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
         coinbase-advanced-cpp
         GIT_REPOSITORY https://github.com/SlickQuant/coinbase-advanced-cpp.git
-        GIT_TAG v0.2.0
+        GIT_TAG v0.2.1
     )
     FetchContent_MakeAvailable(coinbase-advanced-cpp)
 else()

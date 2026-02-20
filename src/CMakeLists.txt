@@ -3,6 +3,9 @@
 # Core library
 add_library(slick-trader-core STATIC
     core/trading_engine.cpp
+    core/position_tracker.cpp
+    core/pnl_calculator.cpp
+    core/risk_manager.cpp
 )
 
 target_include_directories(slick-trader-core PUBLIC

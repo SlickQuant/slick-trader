@@ -1,6 +1,10 @@
 #include <slick/logger.hpp>
 #include <slick-trader/core/trading_engine.hpp>
+#include <slick-trader/core/position_tracker.hpp>
+#include <slick-trader/core/pnl_calculator.hpp>
+#include <slick-trader/core/risk_manager.hpp>
 #include <slick-trader/strategy/strategy_manager.hpp>
+#include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/brokers/imarket_data_connector.hpp>
 #include <slick-trader/brokers/iorder_connector.hpp>
 #include <nlohmann/json.hpp>
@@ -11,9 +15,13 @@ namespace slick::trader {
 TradingEngine::TradingEngine()
     : running_(false)
     , strategy_manager_(std::make_unique<StrategyManager>())
+    , position_tracker_(std::make_unique<PositionTracker>())
     , md_queue_(nullptr)
     , order_request_queue_(nullptr)
     , order_event_queue_(nullptr) {
+    // Create PnLCalculator and RiskManager with position_tracker reference
+    pnl_calculator_ = std::make_unique<PnLCalculator>(*position_tracker_);
+    risk_manager_ = std::make_unique<RiskManager>(*position_tracker_);
 }
 
 TradingEngine::~TradingEngine() {
@@ -55,6 +63,11 @@ bool TradingEngine::initialize(const std::string& config_path) {
     strategy_manager_->set_market_data_queue(md_queue_);
     strategy_manager_->set_order_event_queue(order_event_queue_);
     strategy_manager_->set_order_submission_queue(order_request_queue_);
+
+    // Set position & PnL tracking
+    strategy_manager_->set_position_tracker(position_tracker_.get());
+    strategy_manager_->set_pnl_calculator(pnl_calculator_.get());
+    strategy_manager_->set_risk_manager(risk_manager_.get());
 
     if (!strategy_manager_->initialize()) {
         LOG_ERROR("Failed to initialize strategy manager");
@@ -185,8 +198,29 @@ void TradingEngine::add_strategy(std::shared_ptr<IStrategy> strategy) {
         return;
     }
 
+    // Set position & PnL tracking (if strategy is derived from StrategyBase)
+    // This uses dynamic_cast to safely check if the strategy supports these setters
+    auto strategy_base = std::dynamic_pointer_cast<StrategyBase>(strategy);
+    if (strategy_base) {
+        strategy_base->set_position_tracker(position_tracker_.get());
+        strategy_base->set_pnl_calculator(pnl_calculator_.get());
+        strategy_base->set_risk_manager(risk_manager_.get());
+    }
+
     strategy_manager_->add_strategy(strategy);
     LOG_INFO("Added strategy: {}", strategy->name());
+}
+
+PositionTracker& TradingEngine::get_position_tracker() {
+    return *position_tracker_;
+}
+
+PnLCalculator& TradingEngine::get_pnl_calculator() {
+    return *pnl_calculator_;
+}
+
+RiskManager& TradingEngine::get_risk_manager() {
+    return *risk_manager_;
 }
 
 } // namespace slick::trader
