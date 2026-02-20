@@ -1,7 +1,7 @@
-#include <slick-trader/brokers/coinbase/coinbase_order_callbacks.h>
-#include <slick-trader/events/event_serializer.h>
-#include <slick-trader/events/order_event.h>
-#include <slick-trader/utils/types.h>
+#include <slick-trader/brokers/coinbase/coinbase_order_callbacks.hpp>
+#include <slick-trader/events/event_serializer.hpp>
+#include <slick-trader/events/order_event.hpp>
+#include <slick-trader/utils/types.hpp>
 #include <slick/logger.hpp>
 #include <cassert>
 #include <chrono>
@@ -124,7 +124,7 @@ void CoinbaseOrderCallbacks::process_order_update(const coinbase::Order& order) 
             publish_order_reject(order);
             break;
         default:
-            LOG_WARN("Unknown order status: {}", coinbase::to_string(order.status));
+            LOG_WARN("Unknown order status: {}({})", order.status, coinbase::to_string(order.status));
             break;
     }
 }

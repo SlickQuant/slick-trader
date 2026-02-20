@@ -1,11 +1,11 @@
 #pragma once
 
-#include <slick-trader/events/event.h>
-#include <slick-trader/events/order_event.h>
-#include <slick-trader/events/trade_event.h>
-#include <slick-trader/events/quote_event.h>
-#include <slick-trader/events/order_book_event.h>
-#include <slick-trader/market_data/order_book.h>
+#include <slick-trader/events/event.hpp>
+#include <slick-trader/events/order_event.hpp>
+#include <slick-trader/events/trade_event.hpp>
+#include <slick-trader/events/quote_event.hpp>
+#include <slick-trader/events/order_book_event.hpp>
+#include <slick-trader/market_data/order_book.hpp>
 #include <slick/queue.h>
 #include <memory>
 #include <string>

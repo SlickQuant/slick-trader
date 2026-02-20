@@ -1,7 +1,7 @@
 #pragma once
 
-#include <slick-trader/events/event.h>
-#include <slick-trader/utils/types.h>
+#include <slick-trader/events/event.hpp>
+#include <slick-trader/utils/types.hpp>
 #include <type_traits>
 
 namespace slick::trader {

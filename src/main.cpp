@@ -1,10 +1,11 @@
 #include <slick/logger.hpp>
-#include <slick-trader/events/event.h>
-#include <slick-trader/events/trade_event.h>
-#include <slick-trader/events/quote_event.h>
-#include <slick-trader/events/order_book_event.h>
-#include <slick-trader/events/order_event.h>
-#include <slick-trader/utils/types.h>
+#include <slick-trader/events/event.hpp>
+#include <slick-trader/events/trade_event.hpp>
+#include <slick-trader/events/quote_event.hpp>
+#include <slick-trader/events/order_book_event.hpp>
+#include <slick-trader/events/order_event.hpp>
+#include <slick-trader/utils/types.hpp>
+#include <coinbase/logging.hpp>
 
 #include <iostream>
 #include <csignal>
@@ -27,7 +28,14 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signal_handler);
 
     // Initialize logger
-    Logger::instance().init("slick-trader.log");
+    auto &logger = Logger::instance();
+    logger.clear_sinks();
+    logger.add_console_sink(true, true);
+    logger.add_file_sink("slick-trader.log");
+    logger.init();
+    coinbase::logging::set_log_handler([&logger](coinbase::logging::LogLevel level, const char* format_text, std::format_args args) {
+        logger.log(static_cast<slick::logger::LogLevel>(level), format_text, std::move(args));
+    });
     LOG_INFO("SlickTrader v0.1.0 starting...");
 
     // Print event sizes for verification

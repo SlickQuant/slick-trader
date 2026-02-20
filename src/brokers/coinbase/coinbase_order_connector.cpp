@@ -1,7 +1,7 @@
-#include <slick-trader/brokers/coinbase/coinbase_order_connector.h>
-#include <slick-trader/brokers/coinbase/coinbase_order_callbacks.h>
-#include <slick-trader/events/event_serializer.h>
-#include <slick-trader/events/order_event.h>
+#include <slick-trader/brokers/coinbase/coinbase_order_connector.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_order_callbacks.hpp>
+#include <slick-trader/events/event_serializer.hpp>
+#include <slick-trader/events/order_event.hpp>
 #include <slick/logger.hpp>
 #include <coinbase/websocket.hpp>
 #include <coinbase/rest.hpp>
@@ -75,7 +75,7 @@ bool CoinbaseOrderConnector::connect() {
 
     // Subscribe to USER channel for order updates
     ws_client_->subscribe({}, {coinbase::WebSocketChannel::USER});
-    ws_client_->subscribe({}, {coinbase::WebSocketChannel::HEARTBEAT});
+    ws_client_->subscribe({}, {coinbase::WebSocketChannel::HEARTBEATS});
     return true;
 }
 

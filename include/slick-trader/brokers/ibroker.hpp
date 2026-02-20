@@ -2,7 +2,7 @@
 
 #include <string>
 #include <memory>
-#include <slick-trader/events/event.h>
+#include <slick-trader/events/event.hpp>
 
 namespace slick::trader {
 

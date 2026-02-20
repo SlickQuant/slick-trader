@@ -1,7 +1,7 @@
 #pragma once
 
 #include <coinbase/websocket.hpp>
-#include <slick-trader/utils/order_types.h>
+#include <slick-trader/utils/order_types.hpp>
 #include <cstdint>
 #include <memory>
 #include <string>

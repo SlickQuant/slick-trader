@@ -1,7 +1,7 @@
 #include <slick/logger.hpp>
-#include <slick-trader/brokers/coinbase/coinbase_broker.h>
-#include <slick-trader/brokers/coinbase/coinbase_md_connector.h>
-#include <slick-trader/brokers/coinbase/coinbase_order_connector.h>
+#include <slick-trader/brokers/coinbase/coinbase_broker.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_order_connector.hpp>
 #include <nlohmann/json.hpp>
 
 namespace slick::trader {

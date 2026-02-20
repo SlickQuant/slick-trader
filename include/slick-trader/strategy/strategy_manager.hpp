@@ -1,9 +1,9 @@
 #pragma once
 
-#include <slick-trader/strategy/istrategy.h>
-#include <slick-trader/events/event.h>
-#include <slick-trader/events/order_event.h>
-#include <slick-trader/market_data/order_book.h>
+#include <slick-trader/strategy/istrategy.hpp>
+#include <slick-trader/events/event.hpp>
+#include <slick-trader/events/order_event.hpp>
+#include <slick-trader/market_data/order_book.hpp>
 #include <slick/queue.h>
 #include <slick/logger.hpp>
 #include <memory>

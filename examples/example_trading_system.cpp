@@ -12,14 +12,15 @@
 // 3. Run: ./example_trading_system config.json
 
 #include <slick/logger.hpp>
-#include <slick-trader/core/trading_engine.h>
-#include <slick-trader/brokers/coinbase/coinbase_broker.h>
-#include <slick-trader/brokers/coinbase/coinbase_md_connector.h>
-#include <slick-trader/brokers/coinbase/coinbase_order_connector.h>
+#include <slick-trader/core/trading_engine.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_broker.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_order_connector.hpp>
 
 // Include example strategies
-#include "../strategies/simple_logger_strategy.h"
-#include "../strategies/simple_market_maker.h"
+#include "../strategies/simple_logger_strategy.hpp"
+#include "../strategies/simple_market_maker.hpp"
+#include <coinbase/logging.hpp>
 
 #include <iostream>
 #include <csignal>
@@ -44,7 +45,17 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signal_handler);
 
     // Initialize logger
-    Logger::instance().init("slick-trader.log");
+    auto &logger = Logger::instance();
+    logger.clear_sinks();
+    logger.add_console_sink(true, true);
+    logger.add_file_sink("slick-trader.log");
+    logger.set_level(slick::logger::LogLevel::L_DEBUG);
+    logger.init();
+
+    coinbase::logging::set_log_handler([&logger](coinbase::logging::LogLevel level, const char* format_text, std::format_args args) {
+        logger.log(static_cast<slick::logger::LogLevel>(level), format_text, std::move(args));
+    });
+
     LOG_INFO("=== SlickTrader Example System v0.1.0 ===");
 
     // Check command line arguments

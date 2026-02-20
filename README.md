@@ -1,1 +1,1 @@
-# slick_trader
+# slick-trader

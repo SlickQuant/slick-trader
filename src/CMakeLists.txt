@@ -42,7 +42,7 @@ target_link_libraries(slick-trader-brokers PUBLIC
 # Enable precompiled headers for faster compilation of Coinbase connectors
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.16)
     target_precompile_headers(slick-trader-brokers PRIVATE
-        brokers/coinbase/coinbase_pch.h
+        brokers/coinbase/coinbase_pch.hpp
     )
 endif()
 

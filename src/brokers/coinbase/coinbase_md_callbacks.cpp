@@ -1,8 +1,8 @@
-#include <slick-trader/brokers/coinbase/coinbase_md_callbacks.h>
-#include <slick-trader/events/event_serializer.h>
-#include <slick-trader/events/order_book_event.h>
-#include <slick-trader/events/quote_event.h>
-#include <slick-trader/events/trade_event.h>
+#include <slick-trader/brokers/coinbase/coinbase_md_callbacks.hpp>
+#include <slick-trader/events/event_serializer.hpp>
+#include <slick-trader/events/order_book_event.hpp>
+#include <slick-trader/events/quote_event.hpp>
+#include <slick-trader/events/trade_event.hpp>
 #include <slick/logger.hpp>
 #include <cassert>
 #include <chrono>

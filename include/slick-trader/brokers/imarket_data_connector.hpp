@@ -4,7 +4,7 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
-#include <slick-trader/events/event.h>
+#include <slick-trader/events/event.hpp>
 
 // Forward declare SlickQueue
 namespace slick {

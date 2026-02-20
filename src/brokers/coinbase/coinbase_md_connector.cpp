@@ -1,5 +1,5 @@
-#include <slick-trader/brokers/coinbase/coinbase_md_connector.h>
-#include <slick-trader/brokers/coinbase/coinbase_md_callbacks.h>
+#include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_md_callbacks.hpp>
 #include <slick/logger.hpp>
 #include <coinbase/websocket.hpp>
 #include <algorithm>
@@ -28,7 +28,7 @@ bool CoinbaseMDConnector::connect() {
     ws_client_ = std::make_unique<coinbase::WebSocketClient>(callbacks_.get(), ws_url_);
 
     // Subscribe to heartbeat channel to open connection
-    ws_client_->subscribe({}, {coinbase::WebSocketChannel::HEARTBEAT});
+    ws_client_->subscribe({}, {coinbase::WebSocketChannel::HEARTBEATS});
     return true;
 }
 

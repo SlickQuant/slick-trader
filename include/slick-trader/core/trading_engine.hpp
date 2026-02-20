@@ -1,7 +1,7 @@
 #pragma once
 
-#include <slick-trader/brokers/ibroker.h>
-#include <slick-trader/strategy/istrategy.h>
+#include <slick-trader/brokers/ibroker.hpp>
+#include <slick-trader/strategy/istrategy.hpp>
 #include <slick/queue.h>
 #include <memory>
 #include <string>

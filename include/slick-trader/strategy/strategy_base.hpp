@@ -1,7 +1,7 @@
 #pragma once
 
-#include <slick-trader/strategy/istrategy.h>
-#include <slick-trader/events/event_serializer.h>
+#include <slick-trader/strategy/istrategy.hpp>
+#include <slick-trader/events/event_serializer.hpp>
 #include <slick/logger.hpp>
 #include <atomic>
 #include <string>

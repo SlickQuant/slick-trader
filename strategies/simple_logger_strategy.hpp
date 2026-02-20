@@ -1,6 +1,6 @@
 #pragma once
 
-#include <slick-trader/strategy/strategy_base.h>
+#include <slick-trader/strategy/strategy_base.hpp>
 #include <slick/logger.hpp>
 #include <string>
 #include <unordered_map>
