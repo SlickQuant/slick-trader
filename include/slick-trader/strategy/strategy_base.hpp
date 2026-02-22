@@ -3,6 +3,7 @@
 #include <slick-trader/strategy/istrategy.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/core/position_tracker.hpp>
+#include <slick-trader/core/risk_manager.hpp>
 #include <slick/logger.hpp>
 #include <atomic>
 #include <string>
@@ -11,7 +12,6 @@ namespace slick::trader {
 
 // Forward declarations
 class PnLCalculator;
-class RiskManager;
 
 // Base class for strategies
 // Provides common functionality and utilities
@@ -91,6 +91,24 @@ protected:
         if (!order_submission_queue_) {
             LOG_ERROR("Strategy {}: Order submission queue not set", name_);
             return;
+        }
+
+        // Pre-trade risk validation
+        if (risk_manager_) {
+            std::string reject_reason;
+            if (!risk_manager_->validate_order(name_, order, &reject_reason)) {
+                LOG_WARN("Strategy {}: Order {} REJECTED by risk: {}",
+                         name_, order.client_order_id, reject_reason);
+
+                // Publish internal reject event back to strategy
+                OrderRejectEvent reject;
+                reject.timestamp_ns = order.timestamp_ns;
+                reject.set_instrument(order.instrument);
+                reject.set_client_order_id(order.client_order_id);
+                reject.set_reason(reject_reason.c_str());
+                on_order_reject(reject);
+                return;
+            }
         }
 
         EventSerializer::publish(*order_submission_queue_, order);
