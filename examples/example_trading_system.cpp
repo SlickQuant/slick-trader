@@ -13,6 +13,7 @@
 
 #include <slick/logger.hpp>
 #include <slick-trader/core/trading_engine.hpp>
+#include <slick-trader/web/web_server.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_broker.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_order_connector.hpp>
@@ -20,6 +21,7 @@
 // Include example strategies
 #include "../strategies/simple_logger_strategy.hpp"
 #include "../strategies/simple_market_maker.hpp"
+#include "simple_strategy.hpp"
 #include <coinbase/logging.hpp>
 
 #include <iostream>
@@ -113,7 +115,22 @@ int main(int argc, char* argv[]) {
     auto logger_strategy = std::make_shared<SimpleLoggerStrategy>();
     engine.add_strategy(logger_strategy);
 
-    // Strategy 2: Simple market maker for BTC-USD
+    // Strategy 2: Simple example strategy demonstrating position tracking & PnL
+    // NOTE: This is a demo strategy - it will actually submit orders!
+    // Uncomment only if you want to trade (requires API credentials)
+    /*
+    auto simple_strategy = std::make_shared<slick::trader::examples::SimpleStrategy>();
+    engine.add_strategy(simple_strategy);
+
+    // Set risk limits for the simple strategy
+    RiskLimits limits;
+    limits.max_position_size = to_qty_t(0.1);      // Max 0.1 BTC position
+    limits.max_order_value = to_price_t(10000.0);  // Max $10k per order
+    limits.max_orders_per_second = 10;             // Max 10 orders/sec
+    engine.get_risk_manager().set_limits("SimpleStrategy", limits);
+    */
+
+    // Strategy 3: Simple market maker for BTC-USD
     // Uncomment to enable market making (requires API credentials)
     /*
     auto market_maker = std::make_shared<SimpleMarketMaker>(
@@ -138,6 +155,10 @@ int main(int argc, char* argv[]) {
 
     LOG_INFO("=== SlickTrader is running ===");
     LOG_INFO("Receiving market data and processing events");
+    LOG_INFO("Web server running on http://localhost:{}", engine.get_web_server().get_port());
+    LOG_INFO("  - GET /api/health");
+    LOG_INFO("  - GET /api/positions");
+    LOG_INFO("  - GET /api/pnl");
     LOG_INFO("Press Ctrl+C to shutdown gracefully");
     LOG_INFO("");
 
