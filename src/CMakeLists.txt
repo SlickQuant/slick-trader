@@ -1,11 +1,12 @@
 # SlickTrader - Main library and executable
 
-# Core library
+# Core library (includes web server)
 add_library(slick-trader-core STATIC
     core/trading_engine.cpp
     core/position_tracker.cpp
     core/pnl_calculator.cpp
     core/risk_manager.cpp
+    web/web_server.cpp
 )
 
 target_include_directories(slick-trader-core PUBLIC
@@ -16,6 +17,7 @@ target_link_libraries(slick-trader-core PUBLIC
     slick::logger
     nlohmann_json::nlohmann_json
     slick::orderbook
+    unofficial::uwebsockets::uwebsockets
 )
 
 # Broker implementations library
@@ -67,22 +69,6 @@ endif()
 #
 # target_link_libraries(slick-trader-strategies PUBLIC
 #     slick-trader-core
-# )
-
-# Web server library (to be implemented)
-# add_library(slick-trader-web STATIC
-#     web/web_server.cpp
-#     web/rest_api_handler.cpp
-#     web/websocket_handler.cpp
-# )
-#
-# target_include_directories(slick-trader-web PUBLIC
-#     ${CMAKE_SOURCE_DIR}/include
-# )
-#
-# target_link_libraries(slick-trader-web PUBLIC
-#     slick-trader-core
-#     unofficial::uwebsockets::uwebsockets
 # )
 
 # Main executable

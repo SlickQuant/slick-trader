@@ -3,6 +3,7 @@
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/risk_manager.hpp>
+#include <slick-trader/web/web_server.hpp>
 #include <slick-trader/strategy/strategy_manager.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/brokers/imarket_data_connector.hpp>
@@ -22,6 +23,9 @@ TradingEngine::TradingEngine()
     // Create PnLCalculator and RiskManager with position_tracker reference
     pnl_calculator_ = std::make_unique<PnLCalculator>(*position_tracker_);
     risk_manager_ = std::make_unique<RiskManager>(*position_tracker_);
+
+    // Create WebServer with strategy manager and position/pnl trackers
+    web_server_ = std::make_unique<WebServer>(*strategy_manager_, *position_tracker_, *pnl_calculator_);
 }
 
 TradingEngine::~TradingEngine() {
@@ -74,6 +78,19 @@ bool TradingEngine::initialize(const std::string& config_path) {
         return false;
     }
 
+    // Initialize web server (optional, configurable)
+    bool enable_web_server = config.value("enable_web_server", true);
+    if (enable_web_server) {
+        WebServer::Config web_config;
+        web_config.port = config.value("web_server_port", 8080);
+        web_config.enable_cors = config.value("web_server_cors", true);
+
+        if (!web_server_->initialize(web_config)) {
+            LOG_ERROR("Failed to initialize web server");
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -84,6 +101,11 @@ void TradingEngine::start() {
     }
 
     LOG_INFO("Starting TradingEngine");
+
+    // Start web server (if initialized)
+    if (web_server_) {
+        web_server_->start();
+    }
 
     // Start strategy manager
     strategy_manager_->start();
@@ -135,6 +157,11 @@ void TradingEngine::stop() {
 
     // Stop strategy manager
     strategy_manager_->stop();
+
+    // Stop web server
+    if (web_server_) {
+        web_server_->stop();
+    }
 
     running_.store(false, std::memory_order_release);
     LOG_INFO("TradingEngine stopped");
@@ -221,6 +248,10 @@ PnLCalculator& TradingEngine::get_pnl_calculator() {
 
 RiskManager& TradingEngine::get_risk_manager() {
     return *risk_manager_;
+}
+
+WebServer& TradingEngine::get_web_server() {
+    return *web_server_;
 }
 
 } // namespace slick::trader

@@ -15,6 +15,7 @@ class StrategyManager;
 class PositionTracker;
 class PnLCalculator;
 class RiskManager;
+class WebServer;
 
 class TradingEngine {
 public:
@@ -40,6 +41,9 @@ public:
     PositionTracker& get_position_tracker();
     PnLCalculator& get_pnl_calculator();
     RiskManager& get_risk_manager();
+
+    // Web server access
+    WebServer& get_web_server();
 
     // Queue access
     std::shared_ptr<slick::SlickQueue<uint8_t>> get_md_queue() { return md_queue_; }
@@ -69,6 +73,9 @@ private:
     std::unique_ptr<PositionTracker> position_tracker_;
     std::unique_ptr<PnLCalculator> pnl_calculator_;
     std::unique_ptr<RiskManager> risk_manager_;
+
+    // Web server
+    std::unique_ptr<WebServer> web_server_;
 
     // Message queues
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
