@@ -15,6 +15,7 @@ target_include_directories(example_trading_system PRIVATE
 target_link_libraries(example_trading_system PRIVATE
     slick-trader-core
     slick-trader-brokers
+    slick-trader-strategies
     slick::logger
     nlohmann_json::nlohmann_json
 )

@@ -57,19 +57,23 @@ if(MSVC)
     target_compile_options(slick-trader-core PRIVATE /FS)
 endif()
 
-# Strategy library (to be implemented)
-# add_library(slick-trader-strategies STATIC
-#     strategies/cpp_strategy.cpp
-#     strategies/strategy_loader.cpp
-# )
-#
-# target_include_directories(slick-trader-strategies PUBLIC
-#     ${CMAKE_SOURCE_DIR}/include
-# )
-#
-# target_link_libraries(slick-trader-strategies PUBLIC
-#     slick-trader-core
-# )
+# Strategy library
+add_library(slick-trader-strategies STATIC
+    strategy/strategy_loader.cpp
+)
+
+if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
+    set_target_properties(slick-trader-strategies PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+endif()
+
+target_include_directories(slick-trader-strategies PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_link_libraries(slick-trader-strategies PUBLIC
+    slick-trader-core
+    ${CMAKE_DL_LIBS}
+)
 
 # Main executable
 add_executable(slick-trader

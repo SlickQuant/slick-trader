@@ -14,14 +14,14 @@
 #include <slick/logger.hpp>
 #include <slick-trader/core/trading_engine.hpp>
 #include <slick-trader/web/web_server.hpp>
+#include <slick-trader/strategy/strategy_loader.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_broker.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_order_connector.hpp>
 
-// Include example strategies
+// Include example strategies (compiled directly into executable)
 #include "../strategies/simple_logger_strategy.hpp"
 #include "../strategies/simple_market_maker.hpp"
-#include "simple_strategy.hpp"
 #include <coinbase/logging.hpp>
 
 #include <iostream>
@@ -115,19 +115,34 @@ int main(int argc, char* argv[]) {
     auto logger_strategy = std::make_shared<SimpleLoggerStrategy>();
     engine.add_strategy(logger_strategy);
 
-    // Strategy 2: Simple example strategy demonstrating position tracking & PnL
+    // Strategy 2: Dynamically load strategy plugin from shared library
     // NOTE: This is a demo strategy - it will actually submit orders!
     // Uncomment only if you want to trade (requires API credentials)
     /*
-    auto simple_strategy = std::make_shared<slick::trader::examples::SimpleStrategy>();
-    engine.add_strategy(simple_strategy);
+    LOG_INFO("Loading strategy plugin...");
+    StrategyLoader loader;
 
-    // Set risk limits for the simple strategy
-    RiskLimits limits;
-    limits.max_position_size = to_qty_t(0.1);      // Max 0.1 BTC position
-    limits.max_order_value = to_price_t(10000.0);  // Max $10k per order
-    limits.max_orders_per_second = 10;             // Max 10 orders/sec
-    engine.get_risk_manager().set_limits("SimpleStrategy", limits);
+    #ifdef _WIN32
+        const std::string plugin_path = "strategies/simple_strategy_plugin.dll";
+    #else
+        const std::string plugin_path = "strategies/libsimple_strategy_plugin.so";
+    #endif
+
+    auto simple_strategy = loader.load(plugin_path);
+    if (simple_strategy) {
+        engine.add_strategy(simple_strategy);
+
+        // Set risk limits for the plugin strategy
+        RiskLimits limits;
+        limits.max_position_size = to_qty_t(0.1);      // Max 0.1 BTC position
+        limits.max_order_value = to_price_t(10000.0);  // Max $10k per order
+        limits.max_orders_per_second = 10;             // Max 10 orders/sec
+        engine.get_risk_manager().set_limits(simple_strategy->name(), limits);
+
+        LOG_INFO("Successfully loaded and configured strategy plugin");
+    } else {
+        LOG_ERROR("Failed to load strategy plugin: {}", loader.get_last_error());
+    }
     */
 
     // Strategy 3: Simple market maker for BTC-USD
