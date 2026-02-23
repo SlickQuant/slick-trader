@@ -1,0 +1,147 @@
+#include <slick-trader/core/broker_factory.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_broker.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_order_connector.hpp>
+#include <slick/logger.hpp>
+#include <nlohmann/json.hpp>
+#include <cstdlib>
+#include <algorithm>
+
+namespace slick::trader {
+
+std::shared_ptr<IBroker> BrokerFactory::create_broker(const BrokerConfig& config) {
+    if (!config.enabled) {
+        LOG_DEBUG("Broker {} is disabled in config", config.broker_name);
+        return nullptr;
+    }
+
+    std::shared_ptr<IBroker> broker;
+
+    // Create broker based on type
+    switch (config.broker_id) {
+        case BrokerId::COINBASE: {
+            auto coinbase_broker = std::make_shared<CoinbaseBroker>();
+
+            // Configure MD connector
+            if (config.md_config.enabled) {
+                auto md_connector = std::static_pointer_cast<CoinbaseMDConnector>(
+                    coinbase_broker->get_market_data_connector()
+                );
+                md_connector->set_websocket_url(config.md_config.websocket_url);
+                LOG_DEBUG("Configured Coinbase MD connector: {}", config.md_config.websocket_url);
+            }
+
+            // Configure Order connector
+            if (config.order_config.enabled) {
+                auto order_connector = std::static_pointer_cast<CoinbaseOrderConnector>(
+                    coinbase_broker->get_order_connector()
+                );
+                order_connector->set_rest_url(config.order_config.rest_url);
+                order_connector->set_websocket_url(config.order_config.websocket_url);
+
+                // Note: Coinbase connector automatically reads COINBASE_API_KEY and COINBASE_API_SECRET
+                // from environment variables via coinbase-advanced-cpp library
+                LOG_DEBUG("Configured Coinbase Order connector: {} / {}",
+                         config.order_config.rest_url, config.order_config.websocket_url);
+                LOG_DEBUG("Coinbase will use COINBASE_API_KEY and COINBASE_API_SECRET from environment");
+            }
+
+            broker = coinbase_broker;
+            break;
+        }
+
+        case BrokerId::ALPACA:
+            LOG_ERROR("Alpaca broker not yet implemented");
+            return nullptr;
+
+        case BrokerId::SIMULATED:
+            LOG_ERROR("Simulated broker not yet implemented");
+            return nullptr;
+
+        default:
+            LOG_ERROR("Unknown broker ID: {}", static_cast<int>(config.broker_id));
+            return nullptr;
+    }
+
+    LOG_INFO("Created {} broker", config.broker_name);
+    return broker;
+}
+
+BrokerConfig BrokerFactory::parse_broker_config(const nlohmann::json& json) {
+    BrokerConfig config;
+
+    // Parse broker identification
+    config.broker_name = json.value("name", "unknown");
+    config.broker_id = parse_broker_id(config.broker_name);
+    config.enabled = json.value("enabled", true);
+
+    // Parse MD connector config
+    if (json.contains("market_data")) {
+        const auto& md_json = json["market_data"];
+        config.md_config.enabled = md_json.value("enabled", true);
+        config.md_config.websocket_url = md_json.value("websocket_url", "");
+
+        // Parse subscriptions
+        if (md_json.contains("subscriptions")) {
+            for (const auto& sub_json : md_json["subscriptions"]) {
+                SubscriptionConfig sub;
+                sub.type = parse_subscription_type(sub_json.value("type", "trade"));
+
+                if (sub_json.contains("instruments") && sub_json["instruments"].is_array()) {
+                    sub.instruments = sub_json["instruments"].get<std::vector<std::string>>();
+                }
+
+                sub.depth = sub_json.value("depth", 10);
+
+                config.md_config.subscriptions.push_back(sub);
+            }
+        }
+    }
+
+    // Parse Order connector config
+    if (json.contains("order")) {
+        const auto& order_json = json["order"];
+        config.order_config.enabled = order_json.value("enabled", true);
+        config.order_config.rest_url = order_json.value("rest_url", "");
+        config.order_config.websocket_url = order_json.value("websocket_url", "");
+        // Note: API credentials handled via environment variables for Coinbase
+    }
+
+    // Parse custom parameters
+    if (json.contains("custom_params")) {
+        const auto& custom = json["custom_params"];
+        for (auto it = custom.begin(); it != custom.end(); ++it) {
+            if (it.value().is_string()) {
+                config.custom_params[it.key()] = it.value().get<std::string>();
+            }
+        }
+    }
+
+    return config;
+}
+
+BrokerId BrokerFactory::parse_broker_id(const std::string& broker_name) {
+    std::string lower_name = broker_name;
+    std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
+
+    if (lower_name == "coinbase") return BrokerId::COINBASE;
+    if (lower_name == "alpaca") return BrokerId::ALPACA;
+    if (lower_name == "simulated" || lower_name == "sim") return BrokerId::SIMULATED;
+
+    LOG_WARN("Unknown broker name: {}, defaulting to UNKNOWN", broker_name);
+    return BrokerId::UNKNOWN;
+}
+
+SubscriptionType BrokerFactory::parse_subscription_type(const std::string& type_str) {
+    std::string lower_type = type_str;
+    std::transform(lower_type.begin(), lower_type.end(), lower_type.begin(), ::tolower);
+
+    if (lower_type == "trade" || lower_type == "trades") return SubscriptionType::TRADE;
+    if (lower_type == "quote" || lower_type == "quotes" || lower_type == "ticker") return SubscriptionType::QUOTE;
+    if (lower_type == "orderbook" || lower_type == "order_book" || lower_type == "level2") return SubscriptionType::ORDER_BOOK;
+
+    LOG_WARN("Unknown subscription type: {}, defaulting to TRADE", type_str);
+    return SubscriptionType::TRADE;
+}
+
+} // namespace slick::trader

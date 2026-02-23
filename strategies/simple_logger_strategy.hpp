@@ -19,6 +19,14 @@ public:
 
     ~SimpleLoggerStrategy() override = default;
 
+    // Declare what market data this strategy needs
+    std::vector<SubscriptionRequest> get_subscriptions() const override {
+        return {
+            SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::TRADE, {"BTC-USD", "ETH-USD"}),
+            SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::QUOTE, {"BTC-USD", "ETH-USD"})
+        };
+    }
+
 protected:
     bool on_initialize() override {
         LOG_INFO("SimpleLogger: Initialized");

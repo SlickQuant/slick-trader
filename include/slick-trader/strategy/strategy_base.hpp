@@ -28,6 +28,11 @@ public:
     const char* name() const override { return name_.c_str(); }
     const char* version() const override { return version_.c_str(); }
 
+    // Default: no subscriptions (strategies should override this)
+    std::vector<SubscriptionRequest> get_subscriptions() const override {
+        return {};
+    }
+
     bool initialize() override {
         LOG_INFO("Strategy {}: Initializing", name_);
         return on_initialize();

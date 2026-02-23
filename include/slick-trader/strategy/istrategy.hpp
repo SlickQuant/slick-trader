@@ -6,9 +6,11 @@
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/order_book_event.hpp>
 #include <slick-trader/market_data/order_book.hpp>
+#include <slick-trader/strategy/subscription_request.hpp>
 #include <slick/queue.h>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace slick::trader {
 
@@ -22,6 +24,10 @@ public:
     // Strategy identification
     virtual const char* name() const = 0;
     virtual const char* version() const = 0;
+
+    // Subscription requirements
+    // Strategies declare what market data they need
+    virtual std::vector<SubscriptionRequest> get_subscriptions() const = 0;
 
     // Lifecycle
     virtual bool initialize() = 0;

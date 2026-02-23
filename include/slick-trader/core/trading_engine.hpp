@@ -33,9 +33,13 @@ public:
     // Broker management
     bool register_broker(std::shared_ptr<IBroker> broker);
     std::shared_ptr<IBroker> get_broker(BrokerId broker_id);
+    const std::unordered_map<BrokerId, std::shared_ptr<IBroker>>& get_all_brokers() const { return brokers_; }
 
     // Strategy management
     void add_strategy(std::shared_ptr<IStrategy> strategy);
+
+    // Apply strategy subscriptions to brokers
+    void apply_strategy_subscriptions();
 
     // Position & PnL access
     PositionTracker& get_position_tracker();
@@ -50,6 +54,9 @@ public:
     std::shared_ptr<slick::SlickQueue<uint8_t>> get_order_request_queue() { return order_request_queue_; }
     std::shared_ptr<slick::SlickQueue<uint8_t>> get_order_event_queue() { return order_event_queue_; }
 
+    // Config access
+    const std::string& get_strategy_plugins_folder() const { return strategy_plugins_folder_; }
+
     bool is_running() const { return running_.load(std::memory_order_relaxed); }
 
 private:
@@ -62,6 +69,9 @@ private:
     TradingEngine& operator=(TradingEngine&&) = delete;
 
     std::atomic_bool running_;
+
+    // Configuration
+    std::string strategy_plugins_folder_;
 
     // Brokers
     std::unordered_map<BrokerId, std::shared_ptr<IBroker>> brokers_;

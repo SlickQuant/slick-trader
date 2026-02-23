@@ -10,8 +10,20 @@
 #include <slick-trader/brokers/iorder_connector.hpp>
 #include <nlohmann/json.hpp>
 #include <fstream>
+#include <sstream>
 
 namespace slick::trader {
+
+// Helper function to join strings
+static std::string join_strings(const std::vector<std::string>& vec, const std::string& delimiter) {
+    if (vec.empty()) return "";
+    std::ostringstream oss;
+    oss << vec[0];
+    for (size_t i = 1; i < vec.size(); ++i) {
+        oss << delimiter << vec[i];
+    }
+    return oss.str();
+}
 
 TradingEngine::TradingEngine()
     : running_(false)
@@ -50,6 +62,9 @@ bool TradingEngine::initialize(const std::string& config_path) {
         LOG_ERROR("Failed to parse config file: {}", e.what());
         return false;
     }
+
+    // Store configuration values
+    strategy_plugins_folder_ = config.value("strategy_plugins_folder", "strategies");
 
     // Create message queues
     uint32_t md_queue_size = config.value("md_queue_size", 1<<24);
@@ -252,6 +267,81 @@ RiskManager& TradingEngine::get_risk_manager() {
 
 WebServer& TradingEngine::get_web_server() {
     return *web_server_;
+}
+
+void TradingEngine::apply_strategy_subscriptions() {
+    LOG_INFO("Applying strategy-driven market data subscriptions...");
+
+    // Collect all subscription requests from all strategies
+    std::unordered_map<BrokerId, std::unordered_map<SubscriptionType, std::vector<std::string>>> subscription_map;
+
+    // Get all strategies from strategy manager
+    for (const auto& strategy : strategy_manager_->get_all_strategies()) {
+        auto subscriptions = strategy->get_subscriptions();
+
+        for (const auto& sub : subscriptions) {
+            // Add instruments to the subscription map (keyed by broker + type)
+            auto& instruments = subscription_map[sub.broker_id][sub.type];
+            instruments.insert(instruments.end(), sub.instruments.begin(), sub.instruments.end());
+
+            LOG_DEBUG("Strategy {} requests {} subscription for: {}",
+                     strategy->name(),
+                     sub.type == SubscriptionType::TRADE ? "TRADE" :
+                     sub.type == SubscriptionType::QUOTE ? "QUOTE" : "ORDERBOOK",
+                     join_strings(sub.instruments, ", "));
+        }
+    }
+
+    // Apply subscriptions to each broker
+    int total_subscriptions = 0;
+    for (const auto& [broker_id, sub_types] : subscription_map) {
+        auto broker = get_broker(broker_id);
+        if (!broker) {
+            LOG_WARN("Broker ID {} not registered - skipping subscriptions", static_cast<int>(broker_id));
+            continue;
+        }
+
+        auto md_connector = broker->get_market_data_connector();
+        if (!md_connector) {
+            LOG_WARN("Broker {} has no market data connector", broker->get_broker_name());
+            continue;
+        }
+
+        for (const auto& [sub_type, instruments] : sub_types) {
+            if (instruments.empty()) {
+                continue;
+            }
+
+            // Remove duplicates
+            std::vector<std::string> unique_instruments = instruments;
+            std::sort(unique_instruments.begin(), unique_instruments.end());
+            unique_instruments.erase(
+                std::unique(unique_instruments.begin(), unique_instruments.end()),
+                unique_instruments.end()
+            );
+
+            // Subscribe
+            md_connector->subscribe(sub_type, unique_instruments);
+
+            std::string type_str;
+            switch (sub_type) {
+                case SubscriptionType::TRADE: type_str = "trades"; break;
+                case SubscriptionType::QUOTE: type_str = "quotes"; break;
+                case SubscriptionType::ORDER_BOOK: type_str = "orderbook"; break;
+            }
+
+            LOG_INFO("✓ Subscribed {} to {} for: {}",
+                     broker->get_broker_name(), type_str,
+                     join_strings(unique_instruments, ", "));
+            total_subscriptions++;
+        }
+    }
+
+    if (total_subscriptions == 0) {
+        LOG_WARN("⚠ No market data subscriptions from strategies");
+    } else {
+        LOG_INFO("✓ Applied {} strategy-driven subscription(s)", total_subscriptions);
+    }
 }
 
 } // namespace slick::trader

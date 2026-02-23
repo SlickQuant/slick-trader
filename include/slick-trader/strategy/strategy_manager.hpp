@@ -131,6 +131,11 @@ public:
         return running_.load(std::memory_order_acquire);
     }
 
+    // Get all strategies (for subscription collection)
+    const std::vector<std::shared_ptr<IStrategy>>& get_all_strategies() const {
+        return strategies_;
+    }
+
 private:
     void run() {
         LOG_INFO("StrategyManager: Worker thread started");

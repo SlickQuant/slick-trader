@@ -1,5 +1,24 @@
 {
   "md_queue_size": 16777216,
   "order_request_queue_size": 1048576,
-  "order_reply_queue_size": 1048576
+  "order_reply_queue_size": 1048576,
+  "enable_web_server": true,
+  "web_server_port": 8080,
+  "web_server_cors": true,
+  "strategy_plugins_folder": "strategies",
+  "brokers": [
+    {
+      "name": "coinbase",
+      "enabled": true,
+      "market_data": {
+        "enabled": true,
+        "websocket_url": "wss://advanced-trade-ws.coinbase.com"
+      },
+      "order": {
+        "enabled": true,
+        "rest_url": "https://api.coinbase.com",
+        "websocket_url": "wss://advanced-trade-ws-user.coinbase.com"
+      }
+    }
+  ]
 }

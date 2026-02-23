@@ -22,6 +22,7 @@ target_link_libraries(slick-trader-core PUBLIC
 
 # Broker implementations library
 add_library(slick-trader-brokers STATIC
+    core/broker_factory.cpp
     brokers/coinbase/coinbase_broker.cpp
     brokers/coinbase/coinbase_md_callbacks.cpp
     brokers/coinbase/coinbase_md_connector.cpp
@@ -87,6 +88,7 @@ endif()
 target_link_libraries(slick-trader PRIVATE
     slick-trader-core
     slick-trader-brokers
+    slick-trader-strategies
     ${CMAKE_DL_LIBS}
 )
 
