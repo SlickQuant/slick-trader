@@ -20,6 +20,7 @@
 #include <slick-trader/core/trading_engine.hpp>
 #include <slick-trader/core/broker_factory.hpp>
 #include <slick-trader/core/risk_manager.hpp>
+#include <slick-trader/core/strategy_config.hpp>
 #include <slick-trader/web/web_server.hpp>
 #include <slick-trader/strategy/strategy_loader.hpp>
 #include <slick-trader/brokers/imarket_data_connector.hpp>
@@ -189,6 +190,18 @@ int main(int argc, char* argv[]) {
         std::filesystem::create_directories(plugins_folder);
     }
 
+    // Load strategy configurations from main config
+    std::unordered_map<std::string, StrategyConfig> strategy_configs;
+    if (config.contains("strategies") && config["strategies"].is_array()) {
+        for (const auto& strategy_json : config["strategies"]) {
+            auto strategy_config = StrategyConfig::from_json(strategy_json);
+            if (!strategy_config.name.empty()) {
+                strategy_configs[strategy_config.name] = strategy_config;
+                LOG_INFO("Loaded config for strategy: {}", strategy_config.name);
+            }
+        }
+    }
+
     // Determine plugin extension based on platform
     #ifdef _WIN32
         const std::string plugin_extension = ".dll";
@@ -224,16 +237,37 @@ int main(int argc, char* argv[]) {
         for (const auto& plugin_path : plugin_paths) {
             auto strategy = loader.load(plugin_path);
             if (strategy) {
+                std::string strategy_name = strategy->name();
+
+                // Check if strategy is enabled in config (default: enabled)
+                bool enabled = true;
+                if (strategy_configs.count(strategy_name)) {
+                    enabled = strategy_configs[strategy_name].enabled;
+                }
+
+                if (!enabled) {
+                    LOG_INFO("⊘ Strategy {} is disabled in config, skipping", strategy_name);
+                    continue;
+                }
+
                 engine.add_strategy(strategy);
-                LOG_INFO("✓ Loaded strategy: {} from {}", strategy->name(),
+                LOG_INFO("✓ Loaded strategy: {} from {}", strategy_name,
                          std::filesystem::path(plugin_path).filename().string());
 
-                // Set default risk limits for each strategy
+                // Apply risk limits from config or use defaults
                 RiskLimits limits;
-                limits.max_position_size = to_qty_t(1.0);       // Max 1 BTC/ETH
-                limits.max_order_value = to_price_t(50000.0);   // Max $50k per order
-                limits.max_orders_per_second = 10;              // Max 10 orders/sec
-                engine.get_risk_manager().set_limits(strategy->name(), limits);
+                if (strategy_configs.count(strategy_name)) {
+                    limits = strategy_configs[strategy_name].risk_limits;
+                    LOG_INFO("  Using custom risk limits from config");
+                } else {
+                    // Default risk limits
+                    limits.max_position_size = to_qty_t(1.0);       // Max 1 BTC/ETH
+                    limits.max_order_value = to_price_t(50000.0);   // Max $50k per order
+                    limits.max_orders_per_second = 10;              // Max 10 orders/sec
+                    LOG_INFO("  Using default risk limits (no config found)");
+                }
+
+                engine.get_risk_manager().set_limits(strategy_name, limits);
 
                 strategy_count++;
             } else {
@@ -321,7 +355,6 @@ int main(int argc, char* argv[]) {
     LOG_INFO("╔══════════════════════════════════════════════╗");
     LOG_INFO("║        SlickTrader Shutdown Complete         ║");
     LOG_INFO("╚══════════════════════════════════════════════╝");
-    LOG_INFO("Goodbye!");
 
     return 0;
 }
