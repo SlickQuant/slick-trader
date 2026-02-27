@@ -75,22 +75,15 @@ bool CoinbaseOrderConnector::connect() {
 
     // Subscribe to USER channel for order updates
     ws_client_->subscribe({}, {coinbase::WebSocketChannel::USER});
-    ws_client_->subscribe({}, {coinbase::WebSocketChannel::HEARTBEATS});
     return true;
 }
 
 void CoinbaseOrderConnector::disconnect() {
-    LOG_INFO("Coinbase Order: Disconnecting");
-
     if (ws_client_) {
+        LOG_INFO("Coinbase Order: Disconnecting");
         ws_client_.reset();
+        LOG_INFO("Coinbase Order: Disconnected");
     }
-
-    if (rest_client_) {
-        rest_client_.reset();
-    }
-
-    LOG_INFO("Coinbase Order: Disconnected");
 }
 
 bool CoinbaseOrderConnector::is_connected() const { 
@@ -126,6 +119,10 @@ void CoinbaseOrderConnector::stop() {
 
     if (worker_thread_.joinable()) {
         worker_thread_.join();
+    }
+
+    if (rest_client_) {
+        rest_client_.reset();
     }
 
     LOG_INFO("Coinbase Order: Stopped");

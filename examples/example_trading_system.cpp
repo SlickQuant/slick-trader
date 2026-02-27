@@ -165,7 +165,6 @@ int main(int argc, char* argv[]) {
     // md_connector->subscribe(SubscriptionType::ORDER_BOOK, instruments, 10);
 
     // Start the trading engine
-    LOG_INFO("Starting TradingEngine...");
     engine.start();
 
     LOG_INFO("=== SlickTrader is running ===");

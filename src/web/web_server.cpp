@@ -37,7 +37,6 @@ void WebServer::stop() {
     // Close listen socket to unblock uWS loop
     if (listen_socket_) {
         us_listen_socket_close(0, listen_socket_);
-        listen_socket_ = nullptr;
     }
 
     if (worker_thread_.joinable()) {
@@ -52,9 +51,7 @@ void WebServer::run() {
 
     try {
         uWS::App app;
-        app_ = &app;
-
-        setup_routes();
+        setup_routes(app);
 
         app.listen(config_.port, [this](auto* socket) {
             if (socket) {
@@ -73,13 +70,10 @@ void WebServer::run() {
         LOG_ERROR("WebServer: Exception in worker thread: {}", e.what());
     }
 
-    app_ = nullptr;
     LOG_INFO("WebServer: Worker thread stopped");
 }
 
-void WebServer::setup_routes() {
-    auto& app = *app_;
-
+void WebServer::setup_routes(uWS::App &app) {
     // Health check
     app.get("/api/health", [this](auto* res, auto* req) {
         send_json_response(res, R"({"status":"ok"})");

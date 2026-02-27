@@ -76,11 +76,15 @@ void CoinbaseOrderCallbacks::onUserDataGap(WebSocketClient* client) {
 
 void CoinbaseOrderCallbacks::onUserDataSnapshot(
     WebSocketClient* /* client */, uint64_t /* seq_num */, const std::vector<coinbase::Order>& orders,
-    const std::vector<coinbase::PerpetualFuturePosition>& /* perpetual_future_positions */,
-    const std::vector<coinbase::ExpiringFuturePosition>& /* expiring_future_positions */) {
-    LOG_INFO("Received user data snapshot with {} orders", orders.size());
+    const std::vector<coinbase::PerpetualFuturePosition>& perpetual_future_positions,
+    const std::vector<coinbase::ExpiringFuturePosition>& expiring_future_positions) {
+    LOG_DEBUG("Received user data snapshot with {} orders, {} perpetual future positions, {} expiring future positions", orders.size(), perpetual_future_positions.size(), expiring_future_positions.size());
     for (const auto& order : orders) {
         process_order_update(order);
+    }
+
+    for (const auto& pos : expiring_future_positions) {
+        LOG_DEBUG("Expiring future position: {} {} contracts, entry price {}, unrealized PnL {}", pos.product_id, pos.number_of_contracts, pos.entry_price, pos.unrealized_pnl);
     }
 }
 

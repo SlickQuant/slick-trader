@@ -79,13 +79,18 @@ private:
     DestroyStrategyFunc destroy_func_{nullptr};
 
     // Custom deleter for shared_ptr that calls destroy_strategy()
+    // Also keeps the DLL handle alive as long as the strategy exists
     struct StrategyDeleter {
         DestroyStrategyFunc destroy_func;
+        void* dll_handle;  // Keep DLL loaded
 
         void operator()(IStrategy* strategy) const {
             if (destroy_func && strategy) {
                 destroy_func(strategy);
             }
+            // Note: We intentionally don't unload dll_handle here
+            // The DLL will be unloaded when the process exits
+            // This prevents crashes when destructors are called during program shutdown
         }
     };
 };

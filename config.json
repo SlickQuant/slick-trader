@@ -3,9 +3,11 @@
   "order_request_queue_size": 1048576,
   "order_reply_queue_size": 1048576,
   "enable_web_server": true,
-  "web_server_port": 8080,
+  "web_server_port": 6000,
   "web_server_cors": true,
-  "strategy_plugins_folder": "strategies",
+  "strategy_plugins_folder": "build/strategies/Debug",
+  "log_file_path": "logs/slick_trader.log",
+  "log_level": 1,
   "brokers": [
     {
       "name": "coinbase",

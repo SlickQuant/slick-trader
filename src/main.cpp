@@ -33,28 +33,73 @@
 #include <thread>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 using namespace slick::trader;
 using Logger = slick::logger::Logger;
+using json = nlohmann::json;
 
 std::atomic<bool> running{true};
 
+#ifdef _WIN32
+// Windows console control handler
+BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
+    switch (ctrl_type) {
+        case CTRL_C_EVENT:
+        case CTRL_BREAK_EVENT:
+        case CTRL_CLOSE_EVENT:
+            LOG_INFO("Received shutdown signal, shutting down gracefully...");
+            running = false;
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+#endif
+
 void signal_handler(int signal) {
-    std::cout << "\nReceived signal " << signal << ", shutting down gracefully..." << std::endl;
+    LOG_INFO("Received signal {}, shutting down gracefully...", signal);
     running = false;
 }
 
 int main(int argc, char* argv[]) {
-    // Setup signal handlers for graceful shutdown
-    std::signal(SIGINT, signal_handler);
-    std::signal(SIGTERM, signal_handler);
+    // Check command line arguments
+    if (argc < 2) {
+        std::cout << "Usage: " << argv[0] << " <config.json>" << std::endl;
+        return 1;
+    }
+
+    std::string config_path = argv[1];
+
+    std::ifstream config_file(config_path);
+    if (!config_file.is_open()) {
+        std::cerr << "Failed to open config file: " << config_path << std::endl;
+        return 1;
+    }
+
+    json config;
+    try {
+        config = json::parse(config_file);
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to parse config file: " << e.what() << std::endl;
+        return 1;
+    }
+
+    std::string log_file = config.value<std::string>("log_file_path", "logs/slick_trader.log");
+    slick::logger::LogLevel log_level = config.value<slick::logger::LogLevel>("log_level", slick::logger::LogLevel::L_INFO);
 
     // Initialize logger with console and file output
     auto &logger = Logger::instance();
     logger.clear_sinks();
+#ifdef DEBUG
     logger.add_console_sink(true, true);
-    logger.add_file_sink("slick-trader.log");
-    logger.set_level(slick::logger::LogLevel::L_INFO);
+#endif
+    logger.add_file_sink(log_file);
+    logger.set_level(log_level);
     logger.init();
 
     // Forward Coinbase library logs to slick-logger
@@ -63,17 +108,9 @@ int main(int argc, char* argv[]) {
     });
 
     LOG_INFO("╔══════════════════════════════════════════════╗");
-    LOG_INFO("║       SlickTrader v0.1.0 - Starting...      ║");
+    LOG_INFO("║       SlickTrader v0.1.0 - Starting...       ║");
     LOG_INFO("╚══════════════════════════════════════════════╝");
 
-    // Check command line arguments
-    if (argc < 2) {
-        LOG_ERROR("Usage: {} <config.json>", argv[0]);
-        LOG_ERROR("Example: {} config.json", argv[0]);
-        return 1;
-    }
-
-    std::string config_path = argv[1];
     LOG_INFO("Loading configuration from: {}", config_path);
 
     // Initialize Trading Engine (singleton)
@@ -90,21 +127,6 @@ int main(int argc, char* argv[]) {
     // Broker Setup from Configuration
     // ========================================================================
     LOG_INFO("Setting up brokers from configuration...");
-
-    // Re-read config for broker setup
-    std::ifstream config_file_brokers(config_path);
-    if (!config_file_brokers.is_open()) {
-        LOG_ERROR("Failed to re-open config file for brokers: {}", config_path);
-        return 1;
-    }
-
-    nlohmann::json config;
-    try {
-        config_file_brokers >> config;
-    } catch (const std::exception& e) {
-        LOG_ERROR("Failed to parse config file for brokers: {}", e.what());
-        return 1;
-    }
 
     int broker_count = 0;
     if (config.contains("brokers") && config["brokers"].is_array()) {
@@ -149,7 +171,7 @@ int main(int argc, char* argv[]) {
     LOG_INFO("✓ Registered {} broker(s)", broker_count);
 
     // ========================================================================
-    // Strategy Loading
+    // Strategy Loading (Dynamic Discovery)
     // ========================================================================
     LOG_INFO("Loading strategies...");
 
@@ -160,46 +182,72 @@ int main(int argc, char* argv[]) {
     const std::string& plugins_folder = engine.get_strategy_plugins_folder();
     LOG_INFO("Strategy plugins folder: {}", plugins_folder);
 
-    // Define plugin filenames to load
+    // Check if folder exists
+    if (!std::filesystem::exists(plugins_folder)) {
+        LOG_WARN("⚠ Strategy plugins folder does not exist: {}", plugins_folder);
+        LOG_WARN("⚠ Creating folder...");
+        std::filesystem::create_directories(plugins_folder);
+    }
+
+    // Determine plugin extension based on platform
     #ifdef _WIN32
-        const std::vector<std::string> plugin_names = {
-            "simple_strategy_plugin.dll",
-            "simple_logger_strategy_plugin.dll"
-        };
+        const std::string plugin_extension = ".dll";
     #else
-        const std::vector<std::string> plugin_names = {
-            "libsimple_strategy_plugin.so",
-            "libsimple_logger_strategy_plugin.so"
-        };
+        const std::string plugin_extension = ".so";
     #endif
 
-    // Construct full paths and load each plugin
-    for (const auto& plugin_name : plugin_names) {
-        std::string plugin_path = plugins_folder + "/" + plugin_name;
+    // Scan folder for all plugin files
+    std::vector<std::string> plugin_paths;
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(plugins_folder)) {
+            if (entry.is_regular_file()) {
+                const auto& path = entry.path();
+                if (path.extension() == plugin_extension) {
+                    plugin_paths.push_back(path.string());
+                }
+            }
+        }
+    } catch (const std::filesystem::filesystem_error& e) {
+        LOG_ERROR("Failed to scan strategy folder: {}", e.what());
+    }
 
-        auto strategy = loader.load(plugin_path);
-        if (strategy) {
-            engine.add_strategy(strategy);
-            LOG_INFO("✓ Loaded strategy: {} from {}", strategy->name(), plugin_path);
+    if (plugin_paths.empty()) {
+        LOG_WARN("⚠ No strategy plugins found in: {}", plugins_folder);
+        LOG_WARN("⚠ Looking for files with extension: {}", plugin_extension);
+    } else {
+        LOG_INFO("Found {} plugin file(s) in {}", plugin_paths.size(), plugins_folder);
 
-            // Set default risk limits for each strategy
-            RiskLimits limits;
-            limits.max_position_size = to_qty_t(1.0);       // Max 1 BTC/ETH
-            limits.max_order_value = to_price_t(50000.0);   // Max $50k per order
-            limits.max_orders_per_second = 10;              // Max 10 orders/sec
-            engine.get_risk_manager().set_limits(strategy->name(), limits);
+        // Sort for deterministic loading order
+        std::sort(plugin_paths.begin(), plugin_paths.end());
 
-            strategy_count++;
-        } else {
-            LOG_WARN("⚠ Failed to load strategy plugin: {}", plugin_path);
-            LOG_WARN("  Error: {}", loader.get_last_error());
+        // Load each plugin
+        for (const auto& plugin_path : plugin_paths) {
+            auto strategy = loader.load(plugin_path);
+            if (strategy) {
+                engine.add_strategy(strategy);
+                LOG_INFO("✓ Loaded strategy: {} from {}", strategy->name(),
+                         std::filesystem::path(plugin_path).filename().string());
+
+                // Set default risk limits for each strategy
+                RiskLimits limits;
+                limits.max_position_size = to_qty_t(1.0);       // Max 1 BTC/ETH
+                limits.max_order_value = to_price_t(50000.0);   // Max $50k per order
+                limits.max_orders_per_second = 10;              // Max 10 orders/sec
+                engine.get_risk_manager().set_limits(strategy->name(), limits);
+
+                strategy_count++;
+            } else {
+                LOG_WARN("⚠ Failed to load plugin: {}", std::filesystem::path(plugin_path).filename().string());
+                LOG_WARN("  Error: {}", loader.get_last_error());
+            }
         }
     }
 
     if (strategy_count == 0) {
         LOG_WARN("⚠ No strategies loaded - system will receive market data but won't trade");
+        LOG_WARN("⚠ Place strategy plugins ({}) in: {}", plugin_extension, plugins_folder);
     } else {
-        LOG_INFO("✓ Loaded {} strategy/strategies", strategy_count);
+        LOG_INFO("✓ Successfully loaded {} strategy/strategies", strategy_count);
     }
 
     // Market data subscriptions will be applied after engine.start()
@@ -208,11 +256,16 @@ int main(int argc, char* argv[]) {
     // ========================================================================
     // Start Trading Engine
     // ========================================================================
-    LOG_INFO("Starting TradingEngine...");
-
     engine.start();
 
-    LOG_INFO("✓ TradingEngine started");
+    // Register signal handlers after libraries have initialized
+    // (Some libraries may override signal handlers during initialization)
+#ifdef _WIN32
+    SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+#else
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
+#endif
 
     // ========================================================================
     // Market Data Subscriptions (Strategy-Driven)
@@ -225,7 +278,7 @@ int main(int argc, char* argv[]) {
     // ========================================================================
     LOG_INFO("");
     LOG_INFO("╔══════════════════════════════════════════════╗");
-    LOG_INFO("║       SlickTrader is now RUNNING            ║");
+    LOG_INFO("║         SlickTrader is now RUNNING           ║");
     LOG_INFO("╚══════════════════════════════════════════════╝");
     LOG_INFO("");
     LOG_INFO("Market Data: Receiving live feeds from Coinbase");
@@ -247,7 +300,7 @@ int main(int argc, char* argv[]) {
     // Main Event Loop
     // ========================================================================
     while (running) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     // ========================================================================
@@ -255,7 +308,7 @@ int main(int argc, char* argv[]) {
     // ========================================================================
     LOG_INFO("");
     LOG_INFO("╔══════════════════════════════════════════════╗");
-    LOG_INFO("║       Initiating Graceful Shutdown...       ║");
+    LOG_INFO("║        Initiating Graceful Shutdown...       ║");
     LOG_INFO("╚══════════════════════════════════════════════╝");
 
     engine.stop();
@@ -266,7 +319,7 @@ int main(int argc, char* argv[]) {
 
     LOG_INFO("");
     LOG_INFO("╔══════════════════════════════════════════════╗");
-    LOG_INFO("║       SlickTrader Shutdown Complete         ║");
+    LOG_INFO("║        SlickTrader Shutdown Complete         ║");
     LOG_INFO("╚══════════════════════════════════════════════╝");
     LOG_INFO("Goodbye!");
 

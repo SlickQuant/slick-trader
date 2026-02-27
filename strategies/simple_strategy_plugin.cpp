@@ -3,6 +3,7 @@
 
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/strategy/strategy_loader.hpp>
+#include <slick-trader/strategy/subscription_request.hpp>
 #include <slick-trader/core/position.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/utils/types.hpp>
@@ -22,7 +23,7 @@ public:
     SimpleStrategyPlugin()
         : StrategyBase("SimpleStrategyPlugin", "1.0.0")
         , target_instrument_("BTC-USD")
-        , target_position_size_(to_qty_t(0.01))
+        , target_position_size_(to_qty_t(0.0001))
         , order_count_(0) {}
 
     ~SimpleStrategyPlugin() override = default;
@@ -44,6 +45,14 @@ protected:
 
     void on_shutdown() override {
         LOG_INFO("SimpleStrategyPlugin: Shutting down");
+    }
+
+    // Declare what market data this strategy needs
+    std::vector<SubscriptionRequest> get_subscriptions() const override {
+        return {
+            SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::QUOTE, {"BTC-USD"}),
+            SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::TRADE, {"BTC-USD"})
+        };
     }
 
     // Market data handlers

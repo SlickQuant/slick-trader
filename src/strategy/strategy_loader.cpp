@@ -83,10 +83,15 @@ std::shared_ptr<IStrategy> StrategyLoader::load(const std::string& library_path)
     }
 
     // Wrap in shared_ptr with custom deleter
-    std::shared_ptr<IStrategy> strategy(raw_strategy, StrategyDeleter{destroy_func_});
+    // The deleter keeps a reference to the DLL handle to prevent premature unloading
+    std::shared_ptr<IStrategy> strategy(raw_strategy, StrategyDeleter{destroy_func_, handle_});
 
     LOG_INFO("StrategyLoader: Successfully loaded strategy '{}' v{}",
              strategy->name(), strategy->version());
+
+    // Clear handle_ so unload() won't free the library
+    // The library will remain loaded until the process exits
+    handle_ = nullptr;
 
     return strategy;
 }
@@ -96,8 +101,10 @@ void StrategyLoader::unload() {
         return;
     }
 
-    LOG_INFO("StrategyLoader: Unloading strategy from {}", library_path_);
+    LOG_INFO("StrategyLoader: Releasing library handle for {}", library_path_);
 
+    // Note: We only free the library if handle_ is still set
+    // If a strategy was successfully loaded, handle_ is transferred to the deleter
 #ifdef _WIN32
     FreeLibrary(static_cast<HMODULE>(handle_));
 #else

@@ -59,7 +59,7 @@ private:
     void run();
 
     // REST API handlers
-    void setup_routes();
+    void setup_routes(uWS::App &app);
     void handle_get_strategies(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
     void handle_get_positions(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
     void handle_get_pnl(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
@@ -85,7 +85,6 @@ private:
     Config config_;
     std::atomic_bool running_;
     std::thread worker_thread_;
-    uWS::App* app_{nullptr};
     us_listen_socket_t* listen_socket_{nullptr};
 };
 

@@ -33,13 +33,11 @@ bool CoinbaseMDConnector::connect() {
 }
 
 void CoinbaseMDConnector::disconnect() {
-    LOG_INFO("Coinbase MD: Disconnecting");
-
     if (ws_client_) {
+        LOG_INFO("Coinbase MD: Disconnecting");
         ws_client_.reset();
+        LOG_INFO("Coinbase MD: Disconnected");
     }
-
-    LOG_INFO("Coinbase MD: Disconnected");
 }
 
 bool CoinbaseMDConnector::is_connected() const { 

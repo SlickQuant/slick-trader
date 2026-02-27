@@ -69,6 +69,7 @@ private:
     TradingEngine& operator=(TradingEngine&&) = delete;
 
     std::atomic_bool running_;
+    std::atomic_bool shutdown_called_;
 
     // Configuration
     std::string strategy_plugins_folder_;

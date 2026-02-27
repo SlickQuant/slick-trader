@@ -123,7 +123,9 @@ public:
         LOG_INFO("StrategyManager: Shutting down");
 
         for (auto& strategy : strategies_) {
-            strategy->shutdown();
+            if (strategy) {
+                strategy->shutdown();
+            }
         }
     }
 

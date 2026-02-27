@@ -27,6 +27,7 @@ static std::string join_strings(const std::vector<std::string>& vec, const std::
 
 TradingEngine::TradingEngine()
     : running_(false)
+    , shutdown_called_(false)
     , strategy_manager_(std::make_unique<StrategyManager>())
     , position_tracker_(std::make_unique<PositionTracker>())
     , md_queue_(nullptr)
@@ -115,7 +116,7 @@ void TradingEngine::start() {
         return;
     }
 
-    LOG_INFO("Starting TradingEngine");
+    LOG_INFO("Starting TradingEngine...");
 
     // Start web server (if initialized)
     if (web_server_) {
@@ -183,6 +184,12 @@ void TradingEngine::stop() {
 }
 
 void TradingEngine::shutdown() {
+    // Prevent double shutdown
+    bool expected = false;
+    if (!shutdown_called_.compare_exchange_strong(expected, true)) {
+        return; // Already shut down
+    }
+
     stop();
 
     LOG_INFO("Shutting down TradingEngine");
@@ -247,10 +254,26 @@ void TradingEngine::add_strategy(std::shared_ptr<IStrategy> strategy) {
         strategy_base->set_position_tracker(position_tracker_.get());
         strategy_base->set_pnl_calculator(pnl_calculator_.get());
         strategy_base->set_risk_manager(risk_manager_.get());
+        strategy_base->set_order_submission_queue(order_request_queue_);
     }
 
+    // Initialize the strategy immediately
+    if (!strategy->initialize()) {
+        LOG_ERROR("Failed to initialize strategy: {}", strategy->name());
+        return;
+    }
+
+    // Add to strategy manager
     strategy_manager_->add_strategy(strategy);
-    LOG_INFO("Added strategy: {}", strategy->name());
+
+    // If the engine is already running, start the strategy immediately (hot-loading)
+    // Otherwise, it will be started when engine.start() is called
+    if (strategy_manager_->is_running()) {
+        strategy->start();
+        LOG_INFO("Added and started strategy: {}", strategy->name());
+    } else {
+        LOG_INFO("Added strategy: {}", strategy->name());
+    }
 }
 
 PositionTracker& TradingEngine::get_position_tracker() {
