@@ -5,6 +5,7 @@
   "enable_web_server": true,
   "web_server_port": 8080,
   "web_server_cors": true,
+  "web_server_static_path": "web/static",
   "strategy_plugins_folder": "strategies",
   "brokers": [
     {

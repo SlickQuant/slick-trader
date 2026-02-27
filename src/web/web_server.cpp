@@ -4,6 +4,9 @@
 #include <slick-trader/strategy/strategy_manager.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
 
 using json = nlohmann::json;
 
@@ -119,9 +122,63 @@ void WebServer::setup_routes(uWS::App &app) {
         }
     });
 
-    // Static file serving (fallback)
+    // Static file serving
     app.get("/*", [this](auto* res, auto* req) {
-        send_json_response(res, R"({"message":"SlickTrader API v1.0"})", 200);
+        std::string url(req->getUrl());
+
+        // Default to index.html for root path
+        if (url == "/" || url == "") {
+            url = "/index.html";
+        }
+
+        // Construct file path
+        std::filesystem::path file_path = std::filesystem::path(config_.static_files_path) / url.substr(1);
+
+        // Security check: prevent directory traversal
+        auto canonical_base = std::filesystem::weakly_canonical(config_.static_files_path);
+        auto canonical_path = std::filesystem::weakly_canonical(file_path);
+
+        if (canonical_path.string().find(canonical_base.string()) != 0) {
+            send_error_response(res, "Invalid path", 403);
+            return;
+        }
+
+        // Check if file exists
+        if (!std::filesystem::exists(file_path) || !std::filesystem::is_regular_file(file_path)) {
+            send_error_response(res, "File not found", 404);
+            return;
+        }
+
+        // Read file
+        std::ifstream file(file_path, std::ios::binary);
+        if (!file) {
+            send_error_response(res, "Failed to read file", 500);
+            return;
+        }
+
+        std::ostringstream content;
+        content << file.rdbuf();
+        std::string file_content = content.str();
+
+        // Determine content type
+        std::string content_type = "application/octet-stream";
+        std::string extension = file_path.extension().string();
+
+        if (extension == ".html") content_type = "text/html";
+        else if (extension == ".css") content_type = "text/css";
+        else if (extension == ".js") content_type = "application/javascript";
+        else if (extension == ".json") content_type = "application/json";
+        else if (extension == ".png") content_type = "image/png";
+        else if (extension == ".jpg" || extension == ".jpeg") content_type = "image/jpeg";
+        else if (extension == ".svg") content_type = "image/svg+xml";
+        else if (extension == ".ico") content_type = "image/x-icon";
+
+        // Send response
+        add_cors_headers(res);
+        res->writeStatus("200 OK");
+        res->writeHeader("Content-Type", content_type);
+        res->writeHeader("Cache-Control", "public, max-age=3600");
+        res->end(file_content);
     });
 }
 

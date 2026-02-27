@@ -100,6 +100,7 @@ bool TradingEngine::initialize(const std::string& config_path) {
         WebServer::Config web_config;
         web_config.port = config.value("web_server_port", 8080);
         web_config.enable_cors = config.value("web_server_cors", true);
+        web_config.static_files_path = config.value("web_server_static_path", "web/static");
 
         if (!web_server_->initialize(web_config)) {
             LOG_ERROR("Failed to initialize web server");

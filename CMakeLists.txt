@@ -64,19 +64,6 @@ else()
     message(STATUS "Found slick-logger: ${slick-logger_VERSION}")
 endif()
 
-find_package(slick-net 2.0.0 CONFIG QUIET)
-if (NOT slick-net_FOUND)
-    message(STATUS "Fetching slick-net...")
-    FetchContent_Declare(
-        slick-net
-        GIT_REPOSITORY https://github.com/SlickQuant/slick-net.git
-        GIT_TAG v2.0.0
-    )
-    FetchContent_MakeAvailable(slick-net)
-else()
-    message(STATUS "Found slick-net: ${slick-net_VERSION}")
-endif()
-
 # Add slick-orderbook dependency
 find_package(slick-orderbook 1.0.1 CONFIG QUIET)
 if (NOT slick-orderbook_FOUND)
@@ -107,6 +94,17 @@ if (NOT coinbase-advanced-cpp_FOUND)
     FetchContent_MakeAvailable(coinbase-advanced-cpp)
 else()
     message(STATUS "Found coinbase-advanced-cpp: ${coinbase-advanced-cpp_VERSION}")
+endif()
+
+find_package(slick-net 2.0.0 CONFIG QUIET)
+if (NOT slick-net_FOUND)
+    message(STATUS "Fetching slick-net...")
+    FetchContent_Declare(
+        slick-net
+        GIT_REPOSITORY https://github.com/SlickQuant/slick-net.git
+        GIT_TAG v2.0.0
+    )
+    FetchContent_MakeAvailable(slick-net)
 endif()
 
 if(SLICK_TRADER_STRIP_COINBASE_INTERFACE_PCH)

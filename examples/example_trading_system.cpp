@@ -169,10 +169,13 @@ int main(int argc, char* argv[]) {
 
     LOG_INFO("=== SlickTrader is running ===");
     LOG_INFO("Receiving market data and processing events");
-    LOG_INFO("Web server running on http://localhost:{}", engine.get_web_server().get_port());
+    LOG_INFO("");
+    LOG_INFO("Web Dashboard: http://localhost:{}", engine.get_web_server().get_port());
+    LOG_INFO("API Endpoints:");
     LOG_INFO("  - GET /api/health");
     LOG_INFO("  - GET /api/positions");
     LOG_INFO("  - GET /api/pnl");
+    LOG_INFO("");
     LOG_INFO("Press Ctrl+C to shutdown gracefully");
     LOG_INFO("");
 

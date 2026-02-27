@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SlickTrader Dashboard</title>
+    <link rel="stylesheet" href="css/main.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <h1 class="logo">SlickTrader</h1>
+                <span class="version">v1.0</span>
+            </div>
+            <div class="header-right">
+                <div class="connection-status" id="connectionStatus">
+                    <span class="status-indicator" id="statusIndicator"></span>
+                    <span id="statusText">Connecting...</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Summary Cards -->
+            <section class="summary-section">
+                <div class="card summary-card">
+                    <div class="card-header">
+                        <h3>Total P&L</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="metric-value" id="totalPnl">$0.00</div>
+                        <div class="metric-change" id="pnlChange">—</div>
+                    </div>
+                </div>
+                <div class="card summary-card">
+                    <div class="card-header">
+                        <h3>Realized P&L</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="metric-value" id="realizedPnl">$0.00</div>
+                    </div>
+                </div>
+                <div class="card summary-card">
+                    <div class="card-header">
+                        <h3>Unrealized P&L</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="metric-value" id="unrealizedPnl">$0.00</div>
+                    </div>
+                </div>
+                <div class="card summary-card">
+                    <div class="card-header">
+                        <h3>Active Strategies</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="metric-value" id="activeStrategies">0</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- PnL Chart -->
+            <section class="chart-section">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>P&L Over Time</h3>
+                        <div class="chart-controls">
+                            <button class="btn btn-sm" data-timeframe="1h">1H</button>
+                            <button class="btn btn-sm active" data-timeframe="1d">1D</button>
+                            <button class="btn btn-sm" data-timeframe="1w">1W</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <canvas id="pnlChart"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Two Column Layout -->
+            <div class="two-column">
+                <!-- Positions Table -->
+                <section class="positions-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Positions</h3>
+                            <button class="btn btn-sm" id="refreshPositions">Refresh</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-wrapper">
+                                <table class="data-table" id="positionsTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Strategy</th>
+                                            <th>Instrument</th>
+                                            <th>Quantity</th>
+                                            <th>Avg Price</th>
+                                            <th>Realized P&L</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="positionsTableBody">
+                                        <tr class="empty-state">
+                                            <td colspan="5">No positions</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Strategy P&L Table -->
+                <section class="strategies-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Strategy P&L</h3>
+                            <button class="btn btn-sm" id="refreshStrategies">Refresh</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-wrapper">
+                                <table class="data-table" id="strategiesTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Strategy</th>
+                                            <th>Realized</th>
+                                            <th>Unrealized</th>
+                                            <th>Total</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="strategiesTableBody">
+                                        <tr class="empty-state">
+                                            <td colspan="4">No strategies</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- System Log -->
+            <section class="log-section">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>System Log</h3>
+                        <button class="btn btn-sm" id="clearLog">Clear</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="log-container" id="logContainer">
+                            <div class="log-entry log-info">
+                                <span class="log-time">[00:00:00]</span>
+                                <span class="log-message">Dashboard initialized</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/websocket.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
