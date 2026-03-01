@@ -67,6 +67,9 @@ private:
                                         const std::string& strategy_id);
     void handle_get_strategy_pnl(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                   const std::string& strategy_id);
+    void handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpRequest* req, std::string_view body);
+    void handle_post_strategy_control(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                       const std::string& strategy_id, std::string_view body);
 
     // WebSocket handlers
     void handle_ws_open(uWS::WebSocket<false, true, void*>* ws);

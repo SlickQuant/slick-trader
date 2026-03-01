@@ -29,10 +29,10 @@
       "name": "SimpleLoggerStrategy",
       "enabled": true,
       "risk_limits": {
-        "max_position_size": 2.5,
+        "max_position_size": 0,
         "max_order_value": 100000.0,
-        "max_orders_per_second": 20,
-        "max_loss_per_strategy": -25000.0
+        "max_orders_per_second": 0,
+        "max_loss_per_strategy": -100.0
       },
       "parameters": {
         "log_trades": true,

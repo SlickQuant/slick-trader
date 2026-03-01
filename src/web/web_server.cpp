@@ -109,6 +109,27 @@ void WebServer::setup_routes(uWS::App &app) {
         handle_get_strategy_pnl(res, req, strategy_id);
     });
 
+    // POST: Submit manual order
+    app.post("/api/orders", [this](auto* res, auto* req) {
+        res->onData([this, res](std::string_view data, bool last) {
+            if (last) {
+                handle_post_order(res, nullptr, data);
+            }
+        });
+        res->onAborted([]() {});
+    });
+
+    // POST: Strategy control (start/stop)
+    app.post("/api/strategies/:strategy_id/control", [this](auto* res, auto* req) {
+        std::string strategy_id(req->getParameter(0));
+        res->onData([this, res, strategy_id](std::string_view data, bool last) {
+            if (last) {
+                handle_post_strategy_control(res, nullptr, strategy_id, data);
+            }
+        });
+        res->onAborted([]() {});
+    });
+
     // WebSocket endpoint
     app.ws<void*>("/*", {
         .open = [this](auto* ws) {
@@ -186,8 +207,15 @@ void WebServer::handle_get_strategies(uWS::HttpResponse<false>* res, uWS::HttpRe
     try {
         json response = json::array();
 
-        // TODO: Implement get_all_strategies() in StrategyManager
-        // For now, return empty array
+        const auto& strategies = strategy_manager_.get_all_strategies();
+        for (const auto& strategy : strategies) {
+            response.push_back({
+                {"name", strategy->name()},
+                {"id", strategy->name()},  // Use name as ID for now
+                {"status", "running"},      // TODO: Add proper status tracking
+                {"type", "plugin"}          // TODO: Add strategy type
+            });
+        }
 
         send_json_response(res, response.dump());
     } catch (const std::exception& e) {
@@ -341,6 +369,113 @@ void WebServer::add_cors_headers(uWS::HttpResponse<false>* res) {
         res->writeHeader("Access-Control-Allow-Origin", "*");
         res->writeHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
         res->writeHeader("Access-Control-Allow-Headers", "Content-Type");
+    }
+}
+
+void WebServer::handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpRequest* req, std::string_view body) {
+    try {
+        auto order_data = json::parse(body);
+
+        // Validate required fields
+        if (!order_data.contains("strategy_id") || !order_data.contains("instrument") ||
+            !order_data.contains("side") || !order_data.contains("quantity")) {
+            send_error_response(res, "Missing required fields: strategy_id, instrument, side, quantity", 400);
+            return;
+        }
+
+        std::string strategy_id = order_data["strategy_id"];
+        std::string instrument = order_data["instrument"];
+        std::string side_str = order_data["side"];
+        double quantity = order_data["quantity"];
+
+        // Optional fields
+        std::string order_type = order_data.value("type", "market");
+        double price = order_data.value("price", 0.0);
+
+        // Validate side
+        Side side;
+        if (side_str == "buy" || side_str == "BUY") {
+            side = Side::BUY;
+        } else if (side_str == "sell" || side_str == "SELL") {
+            side = Side::SELL;
+        } else {
+            send_error_response(res, "Invalid side: must be 'buy' or 'sell'", 400);
+            return;
+        }
+
+        // Validate order type
+        OrderType type;
+        if (order_type == "market") {
+            type = OrderType::MARKET;
+        } else if (order_type == "limit") {
+            type = OrderType::LIMIT;
+            if (price <= 0.0) {
+                send_error_response(res, "Limit orders require a valid price", 400);
+                return;
+            }
+        } else {
+            send_error_response(res, "Invalid order type: must be 'market' or 'limit'", 400);
+            return;
+        }
+
+        // TODO: Actually submit the order through the strategy
+        // For now, just log it and return success
+        LOG_INFO("WebServer: Manual order request - Strategy: {}, Instrument: {}, Side: {}, Qty: {}, Type: {}",
+                 strategy_id, instrument, side_str, quantity, order_type);
+
+        json response = {
+            {"success", true},
+            {"message", "Order submission not yet implemented"},
+            {"order", {
+                {"strategy_id", strategy_id},
+                {"instrument", instrument},
+                {"side", side_str},
+                {"quantity", quantity},
+                {"type", order_type},
+                {"price", price}
+            }}
+        };
+
+        send_json_response(res, response.dump(), 202);  // 202 Accepted
+    } catch (const json::exception& e) {
+        send_error_response(res, std::string("Invalid JSON: ") + e.what(), 400);
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::handle_post_strategy_control(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                               const std::string& strategy_id, std::string_view body) {
+    try {
+        auto control_data = json::parse(body);
+
+        if (!control_data.contains("action")) {
+            send_error_response(res, "Missing required field: action", 400);
+            return;
+        }
+
+        std::string action = control_data["action"];
+
+        // TODO: Implement actual strategy control
+        // For now, just log and return
+        LOG_INFO("WebServer: Strategy control request - Strategy: {}, Action: {}", strategy_id, action);
+
+        if (action == "start" || action == "stop" || action == "pause" || action == "resume") {
+            json response = {
+                {"success", true},
+                {"message", "Strategy control not yet implemented"},
+                {"strategy_id", strategy_id},
+                {"action", action}
+            };
+            send_json_response(res, response.dump());
+        } else {
+            send_error_response(res, "Invalid action: must be 'start', 'stop', 'pause', or 'resume'", 400);
+        }
+
+    } catch (const json::exception& e) {
+        send_error_response(res, std::string("Invalid JSON: ") + e.what(), 400);
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
     }
 }
 

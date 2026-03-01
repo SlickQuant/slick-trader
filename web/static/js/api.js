@@ -112,6 +112,20 @@ class ApiClient {
         return this.get(`/api/pnl/${strategyId}`);
     }
 
+    /**
+     * Submit manual order
+     */
+    async submitOrder(orderData) {
+        return this.post('/api/orders', orderData);
+    }
+
+    /**
+     * Control strategy (start/stop/pause/resume)
+     */
+    async controlStrategy(strategyId, action) {
+        return this.post(`/api/strategies/${strategyId}/control`, { action });
+    }
+
     // ==================== Helper Methods ====================
 
     /**

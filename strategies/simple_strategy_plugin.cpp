@@ -23,7 +23,7 @@ public:
     SimpleStrategyPlugin()
         : StrategyBase("SimpleStrategyPlugin", "1.0.0")
         , target_instrument_("BTC-USD")
-        , target_position_size_(to_qty_t(0.0001))
+        , target_position_size_(to_qty_t(0.00001))
         , order_count_(0) {}
 
     ~SimpleStrategyPlugin() override = default;

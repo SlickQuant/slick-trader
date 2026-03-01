@@ -151,7 +151,6 @@ void TradingEngine::start() {
 
 void TradingEngine::stop() {
     if (!running_.load(std::memory_order_acquire)) {
-        LOG_WARN("TradingEngine not running");
         return;
     }
 

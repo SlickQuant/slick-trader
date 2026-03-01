@@ -8,6 +8,7 @@ class Dashboard {
         this.pnlHistory = [];
         this.lastPnLUpdate = null;
         this.isInitialized = false;
+        this.strategies = [];  // Store loaded strategies
     }
 
     /**
@@ -40,6 +41,22 @@ class Dashboard {
      * Setup DOM event listeners
      */
     setupEventListeners() {
+        // New Order button
+        const newOrderBtn = document.getElementById('newOrderBtn');
+        if (newOrderBtn) {
+            console.log('[Dashboard] New Order button found, attaching listener');
+            newOrderBtn.addEventListener('click', () => {
+                console.log('[Dashboard] New Order button clicked');
+                if (typeof modalManager !== 'undefined') {
+                    modalManager.showOrderModal();
+                } else {
+                    console.error('[Dashboard] modalManager is not defined!');
+                }
+            });
+        } else {
+            console.warn('[Dashboard] New Order button not found in DOM');
+        }
+
         // Refresh buttons
         document.getElementById('refreshPositions')?.addEventListener('click', () => {
             this.loadPositions();
@@ -153,7 +170,9 @@ class Dashboard {
         try {
             const pnlData = await api.getAllPnL();
             this.updatePnLDisplay(pnlData);
-            this.updatePnLTable(pnlData);
+
+            // Merge with strategies list for complete table
+            await this.updatePnLTable(pnlData);
         } catch (error) {
             console.error('[Dashboard] Failed to load P&L:', error);
         }
@@ -178,8 +197,26 @@ class Dashboard {
         try {
             const strategies = await api.getStrategies();
             this.updateStrategiesCount(strategies);
+            this.strategies = strategies;  // Store for later use
         } catch (error) {
             console.error('[Dashboard] Failed to load strategies:', error);
+        }
+    }
+
+    /**
+     * Control strategy (start/stop/pause/resume)
+     */
+    async controlStrategy(strategyId, action) {
+        try {
+            const result = await api.controlStrategy(strategyId, action);
+            this.log(`Strategy ${strategyId}: ${action}`, 'success');
+            modalManager.showNotification(`Strategy ${action} successful`, 'success');
+
+            // Reload strategies
+            await this.loadStrategies();
+        } catch (error) {
+            this.log(`Strategy control failed: ${error.message}`, 'error');
+            modalManager.showNotification(`Failed to ${action} strategy`, 'error');
         }
     }
 
@@ -237,23 +274,51 @@ class Dashboard {
     /**
      * Update strategy P&L table
      */
-    updatePnLTable(pnlData) {
+    async updatePnLTable(pnlData) {
         const tbody = document.getElementById('strategiesTableBody');
         if (!tbody) return;
 
-        if (Object.keys(pnlData).length === 0) {
-            tbody.innerHTML = '<tr class="empty-state"><td colspan="4">No strategies</td></tr>';
+        // Get strategies list if not already loaded
+        if (!this.strategies || this.strategies.length === 0) {
+            try {
+                this.strategies = await api.getStrategies();
+            } catch (error) {
+                console.error('[Dashboard] Failed to load strategies for table:', error);
+                this.strategies = [];
+            }
+        }
+
+        // If no strategies at all, show empty state
+        if (!this.strategies || this.strategies.length === 0) {
+            tbody.innerHTML = '<tr class="empty-state"><td colspan="5">No strategies loaded</td></tr>';
             return;
         }
 
-        tbody.innerHTML = Object.entries(pnlData).map(([strategyId, pnl]) => `
-            <tr>
-                <td>${strategyId}</td>
-                <td class="${api.getColorClass(pnl.realized_pnl)}">${api.formatCurrency(pnl.realized_pnl)}</td>
-                <td class="${api.getColorClass(pnl.unrealized_pnl)}">${api.formatCurrency(pnl.unrealized_pnl)}</td>
-                <td class="${api.getColorClass(pnl.total_pnl)}">${api.formatCurrency(pnl.total_pnl)}</td>
-            </tr>
-        `).join('');
+        // Build table rows for all strategies
+        tbody.innerHTML = this.strategies.map(strategy => {
+            const strategyId = strategy.name || strategy.id;
+            const pnl = pnlData[strategyId] || {
+                realized_pnl: 0,
+                unrealized_pnl: 0,
+                total_pnl: 0
+            };
+
+            return `
+                <tr>
+                    <td>${strategyId}</td>
+                    <td class="${api.getColorClass(pnl.realized_pnl)}">${api.formatCurrency(pnl.realized_pnl)}</td>
+                    <td class="${api.getColorClass(pnl.unrealized_pnl)}">${api.formatCurrency(pnl.unrealized_pnl)}</td>
+                    <td class="${api.getColorClass(pnl.total_pnl)}">${api.formatCurrency(pnl.total_pnl)}</td>
+                    <td>
+                        <div class="action-buttons">
+                            <button class="btn btn-sm btn-success" onclick="window.dashboard.controlStrategy('${strategyId}', 'start')" title="Start">▶</button>
+                            <button class="btn btn-sm btn-danger" onclick="window.dashboard.controlStrategy('${strategyId}', 'stop')" title="Stop">⏹</button>
+                            <button class="btn btn-sm" onclick="modalManager.showOrderModal('${strategyId}', 'BTC-USD')" title="New Order">📝</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
     }
 
     /**
