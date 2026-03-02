@@ -23,6 +23,7 @@
 #include <slick-trader/core/strategy_config.hpp>
 #include <slick-trader/web/web_server.hpp>
 #include <slick-trader/strategy/strategy_loader.hpp>
+#include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/brokers/imarket_data_connector.hpp>
 #include <coinbase/logging.hpp>
 #include <nlohmann/json.hpp>
@@ -197,8 +198,45 @@ int main(int argc, char* argv[]) {
             auto strategy_config = StrategyConfig::from_json(strategy_json);
             if (!strategy_config.name.empty()) {
                 strategy_configs[strategy_config.name] = strategy_config;
-                LOG_INFO("Loaded config for strategy: {}", strategy_config.name);
+                LOG_INFO("Loaded config for strategy '{}' from main config", strategy_config.name);
             }
+        }
+    }
+
+    // Also look for strategy-specific config files in plugins folder
+    // Format: <strategy_name>.config.json
+    std::string strategy_config_folder = plugins_folder;
+    if (std::filesystem::exists(strategy_config_folder)) {
+        try {
+            for (const auto& entry : std::filesystem::directory_iterator(strategy_config_folder)) {
+                if (entry.is_regular_file()) {
+                    const auto& path = entry.path();
+                    std::string filename = path.filename().string();
+
+                    // Check if it's a strategy config file (*.config.json)
+                    if (filename.ends_with(".config.json")) {
+                        std::ifstream config_file(path);
+                        if (config_file.is_open()) {
+                            try {
+                                json strategy_json = json::parse(config_file);
+                                auto strategy_config = StrategyConfig::from_json(strategy_json);
+
+                                if (!strategy_config.name.empty()) {
+                                    // Strategy-specific file takes precedence over main config
+                                    strategy_configs[strategy_config.name] = strategy_config;
+                                    LOG_INFO("Loaded config for strategy '{}' from {}",
+                                             strategy_config.name, filename);
+                                }
+                            } catch (const json::exception& e) {
+                                LOG_WARN("Failed to parse strategy config file {}: {}",
+                                         filename, e.what());
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (const std::filesystem::filesystem_error& e) {
+            LOG_WARN("Failed to scan for strategy config files: {}", e.what());
         }
     }
 
@@ -248,6 +286,18 @@ int main(int argc, char* argv[]) {
                 if (!enabled) {
                     LOG_INFO("⊘ Strategy {} is disabled in config, skipping", strategy_name);
                     continue;
+                }
+
+                // Pass custom parameters to strategy if available
+                if (strategy_configs.count(strategy_name)) {
+                    const auto& params = strategy_configs[strategy_name].parameters;
+                    if (!params.empty()) {
+                        // Try to cast to StrategyBase to set config
+                        if (auto* base_strategy = dynamic_cast<StrategyBase*>(strategy.get())) {
+                            base_strategy->set_config(params);
+                            LOG_INFO("  Passed {} custom parameter(s) to strategy", params.size());
+                        }
+                    }
                 }
 
                 engine.add_strategy(strategy);

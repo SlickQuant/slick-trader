@@ -64,6 +64,23 @@ inline StrategyConfig StrategyConfig::from_json(const nlohmann::json& j) {
         if (rl.contains("max_loss_per_strategy")) {
             config.risk_limits.max_loss_per_strategy = to_price_t(rl["max_loss_per_strategy"].get<double>());
         }
+
+        // Parse per-instrument limits
+        if (rl.contains("instruments") && rl["instruments"].is_object()) {
+            for (const auto& [instrument, inst_limits] : rl["instruments"].items()) {
+                InstrumentRiskLimits limits;
+
+                if (inst_limits.contains("max_position_size")) {
+                    limits.max_position_size = to_qty_t(inst_limits["max_position_size"].get<double>());
+                }
+
+                if (inst_limits.contains("max_order_value")) {
+                    limits.max_order_value = to_price_t(inst_limits["max_order_value"].get<double>());
+                }
+
+                config.risk_limits.instrument_limits[instrument] = limits;
+            }
+        }
     }
 
     // Store custom parameters

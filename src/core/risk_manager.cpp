@@ -76,11 +76,14 @@ bool RiskManager::check_position_limit(const std::string& strategy_id, const std
         return true;
     }
 
-    const qty_t max_pos = limits_it->second.max_position_size;
+    // Get instrument-specific limits (or defaults)
+    const auto inst_limits = limits_it->second.get_instrument_limits(instrument);
+    const qty_t max_pos = inst_limits.max_position_size;
 
     if (std::abs(from_qty_t(new_position)) > from_qty_t(max_pos)) {
         if (reason) {
-            *reason = "Position limit exceeded: current=" + std::to_string(from_qty_t(pos.quantity)) +
+            *reason = "Position limit exceeded for " + instrument +
+                      ": current=" + std::to_string(from_qty_t(pos.quantity)) +
                       " order=" + std::to_string(from_qty_t(order_qty)) +
                       " max=" + std::to_string(from_qty_t(max_pos));
         }
@@ -95,11 +98,15 @@ bool RiskManager::check_position_limit(const std::string& strategy_id, const std
 bool RiskManager::check_order_value_limit(const NewOrderEvent& order, const RiskLimits& limits,
                                             std::string* reason) {
     const double order_value = from_price_t(order.price) * from_qty_t(order.quantity);
-    const double max_value = from_price_t(limits.max_order_value);
+
+    // Get instrument-specific limits (or defaults)
+    const auto inst_limits = limits.get_instrument_limits(order.instrument);
+    const double max_value = from_price_t(inst_limits.max_order_value);
 
     if (order_value > max_value) {
         if (reason) {
-            *reason = "Order value limit exceeded: value=" + std::to_string(order_value) +
+            *reason = "Order value limit exceeded for " + std::string(order.instrument) +
+                      ": value=" + std::to_string(order_value) +
                       " max=" + std::to_string(max_value);
         }
         LOG_WARN("RiskManager: Order value check failed: {}", reason ? *reason : "");

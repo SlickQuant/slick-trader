@@ -1,6 +1,7 @@
 #include <slick-trader/web/web_server.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
+#include <slick-trader/core/risk_manager.hpp>
 #include <slick-trader/strategy/strategy_manager.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
@@ -128,6 +129,40 @@ void WebServer::setup_routes(uWS::App &app) {
             }
         });
         res->onAborted([]() {});
+    });
+
+    // GET: Risk limits for strategy
+    app.get("/api/strategies/:strategy_id/risk", [this](auto* res, auto* req) {
+        std::string strategy_id(req->getParameter(0));
+        handle_get_risk_limits(res, req, strategy_id);
+    });
+
+    // PUT: Update risk limits for strategy
+    app.put("/api/strategies/:strategy_id/risk", [this](auto* res, auto* req) {
+        std::string strategy_id(req->getParameter(0));
+        res->onData([this, res, strategy_id](std::string_view data, bool last) {
+            if (last) {
+                handle_put_risk_limits(res, nullptr, strategy_id, data);
+            }
+        });
+        res->onAborted([]() {});
+    });
+
+    // POST: Halt strategy
+    app.post("/api/strategies/:strategy_id/halt", [this](auto* res, auto* req) {
+        std::string strategy_id(req->getParameter(0));
+        res->onData([this, res, strategy_id](std::string_view data, bool last) {
+            if (last) {
+                handle_post_halt_strategy(res, nullptr, strategy_id, data);
+            }
+        });
+        res->onAborted([]() {});
+    });
+
+    // POST: Resume strategy
+    app.post("/api/strategies/:strategy_id/resume", [this](auto* res, auto* req) {
+        std::string strategy_id(req->getParameter(0));
+        handle_post_resume_strategy(res, req, strategy_id);
     });
 
     // WebSocket endpoint
@@ -474,6 +509,143 @@ void WebServer::handle_post_strategy_control(uWS::HttpResponse<false>* res, uWS:
 
     } catch (const json::exception& e) {
         send_error_response(res, std::string("Invalid JSON: ") + e.what(), 400);
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::handle_get_risk_limits(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                         const std::string& strategy_id) {
+    try {
+        auto limits = risk_manager_.get_limits(strategy_id);
+
+        json response = {
+            {"strategy_id", strategy_id},
+            {"max_position_size", from_qty_t(limits.max_position_size)},
+            {"max_order_value", from_price_t(limits.max_order_value)},
+            {"max_orders_per_second", limits.max_orders_per_second},
+            {"max_loss_per_strategy", from_price_t(limits.max_loss_per_strategy)},
+            {"halted", risk_manager_.is_halted(strategy_id)}
+        };
+
+        // Add per-instrument limits if any
+        if (!limits.instrument_limits.empty()) {
+            json inst_limits = json::object();
+            for (const auto& [instrument, inst_limit] : limits.instrument_limits) {
+                inst_limits[instrument] = {
+                    {"max_position_size", from_qty_t(inst_limit.max_position_size)},
+                    {"max_order_value", from_price_t(inst_limit.max_order_value)}
+                };
+            }
+            response["instrument_limits"] = inst_limits;
+        }
+
+        send_json_response(res, response.dump());
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::handle_put_risk_limits(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                         const std::string& strategy_id, std::string_view body) {
+    try {
+        auto update_data = json::parse(body);
+
+        // Get current limits
+        auto limits = risk_manager_.get_limits(strategy_id);
+
+        // Update provided fields
+        if (update_data.contains("max_position_size")) {
+            limits.max_position_size = to_qty_t(update_data["max_position_size"].get<double>());
+        }
+
+        if (update_data.contains("max_order_value")) {
+            limits.max_order_value = to_price_t(update_data["max_order_value"].get<double>());
+        }
+
+        if (update_data.contains("max_orders_per_second")) {
+            limits.max_orders_per_second = update_data["max_orders_per_second"].get<uint32_t>();
+        }
+
+        if (update_data.contains("max_loss_per_strategy")) {
+            limits.max_loss_per_strategy = to_price_t(update_data["max_loss_per_strategy"].get<double>());
+        }
+
+        // Update per-instrument limits
+        if (update_data.contains("instrument_limits") && update_data["instrument_limits"].is_object()) {
+            for (const auto& [instrument, inst_data] : update_data["instrument_limits"].items()) {
+                InstrumentRiskLimits inst_limits;
+
+                if (inst_data.contains("max_position_size")) {
+                    inst_limits.max_position_size = to_qty_t(inst_data["max_position_size"].get<double>());
+                }
+
+                if (inst_data.contains("max_order_value")) {
+                    inst_limits.max_order_value = to_price_t(inst_data["max_order_value"].get<double>());
+                }
+
+                limits.instrument_limits[instrument] = inst_limits;
+            }
+        }
+
+        // Apply updated limits
+        risk_manager_.set_limits(strategy_id, limits);
+
+        LOG_INFO("WebServer: Updated risk limits for strategy {}", strategy_id);
+
+        json response = {
+            {"success", true},
+            {"message", "Risk limits updated successfully"},
+            {"strategy_id", strategy_id}
+        };
+
+        send_json_response(res, response.dump());
+    } catch (const json::exception& e) {
+        send_error_response(res, std::string("Invalid JSON: ") + e.what(), 400);
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::handle_post_halt_strategy(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                            const std::string& strategy_id, std::string_view body) {
+    try {
+        auto halt_data = json::parse(body);
+        std::string reason = halt_data.value("reason", "Manual halt via API");
+
+        risk_manager_.halt_strategy(strategy_id, reason);
+
+        LOG_INFO("WebServer: Halted strategy {} - Reason: {}", strategy_id, reason);
+
+        json response = {
+            {"success", true},
+            {"message", "Strategy halted successfully"},
+            {"strategy_id", strategy_id},
+            {"reason", reason}
+        };
+
+        send_json_response(res, response.dump());
+    } catch (const json::exception& e) {
+        send_error_response(res, std::string("Invalid JSON: ") + e.what(), 400);
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::handle_post_resume_strategy(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                              const std::string& strategy_id) {
+    try {
+        risk_manager_.resume_strategy(strategy_id);
+
+        LOG_INFO("WebServer: Resumed strategy {}", strategy_id);
+
+        json response = {
+            {"success", true},
+            {"message", "Strategy resumed successfully"},
+            {"strategy_id", strategy_id}
+        };
+
+        send_json_response(res, response.dump());
     } catch (const std::exception& e) {
         send_error_response(res, e.what(), 500);
     }

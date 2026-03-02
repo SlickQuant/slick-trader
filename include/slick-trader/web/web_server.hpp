@@ -13,6 +13,7 @@ namespace slick::trader {
 class StrategyManager;
 class PositionTracker;
 class PnLCalculator;
+class RiskManager;
 
 // Web server for monitoring and control
 // Provides REST API and WebSocket streaming
@@ -28,10 +29,12 @@ public:
 
     WebServer(StrategyManager& strategy_manager,
               PositionTracker& position_tracker,
-              PnLCalculator& pnl_calculator)
+              PnLCalculator& pnl_calculator,
+              RiskManager& risk_manager)
         : strategy_manager_(strategy_manager)
         , position_tracker_(position_tracker)
         , pnl_calculator_(pnl_calculator)
+        , risk_manager_(risk_manager)
         , running_(false) {}
 
     ~WebServer() {
@@ -70,6 +73,14 @@ private:
     void handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpRequest* req, std::string_view body);
     void handle_post_strategy_control(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                        const std::string& strategy_id, std::string_view body);
+    void handle_get_risk_limits(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                 const std::string& strategy_id);
+    void handle_put_risk_limits(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                 const std::string& strategy_id, std::string_view body);
+    void handle_post_halt_strategy(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                     const std::string& strategy_id, std::string_view body);
+    void handle_post_resume_strategy(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                       const std::string& strategy_id);
 
     // WebSocket handlers
     void handle_ws_open(uWS::WebSocket<false, true, void*>* ws);
@@ -84,6 +95,7 @@ private:
     StrategyManager& strategy_manager_;
     PositionTracker& position_tracker_;
     PnLCalculator& pnl_calculator_;
+    RiskManager& risk_manager_;
 
     Config config_;
     std::atomic_bool running_;

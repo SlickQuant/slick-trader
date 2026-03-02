@@ -5,6 +5,7 @@
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/risk_manager.hpp>
 #include <slick/logger.hpp>
+#include <nlohmann/json.hpp>
 #include <atomic>
 #include <string>
 
@@ -64,6 +65,12 @@ public:
     void set_pnl_calculator(PnLCalculator* calculator) { pnl_calculator_ = calculator; }
     void set_risk_manager(RiskManager* manager) { risk_manager_ = manager; }
 
+    // Configuration (set by TradingEngine during strategy loading)
+    void set_config(const nlohmann::json& params) {
+        config_params_ = params;
+        on_config(params);  // Call derived class hook
+    }
+
     // Default implementations - strategies can override if needed
     void on_trade(const TradeEvent& event) override {}
     void on_quote(const QuoteEvent& event) override {}
@@ -87,6 +94,9 @@ protected:
     virtual void on_start() {}
     virtual void on_stop() {}
     virtual void on_shutdown() {}
+
+    // Configuration hook (called when config is set)
+    virtual void on_config(const nlohmann::json& params) {}
 
     // Fill hook (called after position tracking)
     virtual void on_fill(const OrderFillEvent& event) {}
@@ -140,6 +150,21 @@ protected:
 
     const std::string& get_name() const { return name_; }
 
+    // Configuration access
+    template<typename T>
+    T get_parameter(const std::string& key, const T& default_value) const {
+        if (config_params_.contains(key)) {
+            try {
+                return config_params_[key].get<T>();
+            } catch (const std::exception&) {
+                return default_value;
+            }
+        }
+        return default_value;
+    }
+
+    const nlohmann::json& get_config() const { return config_params_; }
+
     // Position & PnL access
     PositionTracker* get_position_tracker() { return position_tracker_; }
     PnLCalculator* get_pnl_calculator() { return pnl_calculator_; }
@@ -150,6 +175,9 @@ private:
     std::string version_;
     std::atomic_bool running_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_submission_queue_;
+
+    // Configuration parameters
+    nlohmann::json config_params_;
 
     // Position & PnL tracking (non-owning pointers, set by TradingEngine)
     PositionTracker* position_tracker_{nullptr};

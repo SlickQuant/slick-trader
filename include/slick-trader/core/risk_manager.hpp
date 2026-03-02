@@ -9,17 +9,36 @@
 
 namespace slick::trader {
 
+// Per-instrument risk limits
+struct InstrumentRiskLimits {
+    qty_t max_position_size{to_qty_t(1000000.0)};  // Max position for this instrument
+    price_t max_order_value{to_price_t(100000.0)};  // Max notional value per order
+};
+
 // Risk limits configuration
 struct RiskLimits {
-    // Position limits
+    // Default position limits (applies to all instruments without specific limits)
     qty_t max_position_size{to_qty_t(1000000.0)};  // Max position per instrument
     price_t max_order_value{to_price_t(100000.0)};  // Max notional value per order
+
+    // Per-instrument overrides (keyed by instrument name)
+    std::unordered_map<std::string, InstrumentRiskLimits> instrument_limits;
 
     // Rate limits
     uint32_t max_orders_per_second{100};
 
     // Loss limits
     price_t max_loss_per_strategy{to_price_t(-10000.0)};  // Max loss before halt
+
+    // Get effective limits for an instrument
+    InstrumentRiskLimits get_instrument_limits(const std::string& instrument) const {
+        auto it = instrument_limits.find(instrument);
+        if (it != instrument_limits.end()) {
+            return it->second;
+        }
+        // Return default limits
+        return InstrumentRiskLimits{max_position_size, max_order_value};
+    }
 };
 
 // Pre-trade risk manager

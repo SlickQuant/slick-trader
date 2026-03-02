@@ -11,6 +11,7 @@
 #include <thread>
 #include <atomic>
 #include <unordered_map>
+#include <chrono>
 
 namespace slick::trader {
 
@@ -142,13 +143,64 @@ private:
     void run() {
         LOG_INFO("StrategyManager: Worker thread started");
 
+        // Track last PnL check time
+        auto last_pnl_check = std::chrono::steady_clock::now();
+        constexpr auto pnl_check_interval = std::chrono::seconds(1);
+
         while (running_.load(std::memory_order_acquire)) {
             process_market_data();
             process_order_events();
+
+            // Periodically check for loss limits
+            auto now = std::chrono::steady_clock::now();
+            if (now - last_pnl_check >= pnl_check_interval) {
+                check_loss_limits();
+                last_pnl_check = now;
+            }
+
             std::this_thread::yield();
         }
 
         LOG_INFO("StrategyManager: Worker thread stopped");
+    }
+
+    void check_loss_limits() {
+        if (!pnl_calculator_ || !risk_manager_) {
+            return;
+        }
+
+        const auto now_ns = std::chrono::system_clock::now().time_since_epoch().count();
+
+        // Check each strategy
+        for (auto& strategy : strategies_) {
+            const std::string strategy_name(strategy->name());
+
+            // Skip if already halted
+            if (risk_manager_->is_halted(strategy_name)) {
+                continue;
+            }
+
+            // Get risk limits
+            const auto limits = risk_manager_->get_limits(strategy_name);
+
+            // Calculate current PnL
+            const auto pnl = pnl_calculator_->calculate_pnl(strategy_name, now_ns);
+
+            // Check if total PnL has breached the loss limit
+            if (pnl.total_pnl < limits.max_loss_per_strategy) {
+                const double loss = from_price_t(pnl.total_pnl);
+                const double max_loss = from_price_t(limits.max_loss_per_strategy);
+
+                const std::string reason = "Loss limit breached: PnL=" +
+                    std::to_string(loss) + " < max_loss=" + std::to_string(max_loss);
+
+                LOG_ERROR("StrategyManager: {} - {}", strategy_name, reason);
+                risk_manager_->halt_strategy(strategy_name, reason);
+
+                // Stop the strategy
+                strategy->stop();
+            }
+        }
     }
 
     void process_market_data() {

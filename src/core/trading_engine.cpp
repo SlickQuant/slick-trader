@@ -37,8 +37,8 @@ TradingEngine::TradingEngine()
     pnl_calculator_ = std::make_unique<PnLCalculator>(*position_tracker_);
     risk_manager_ = std::make_unique<RiskManager>(*position_tracker_);
 
-    // Create WebServer with strategy manager and position/pnl trackers
-    web_server_ = std::make_unique<WebServer>(*strategy_manager_, *position_tracker_, *pnl_calculator_);
+    // Create WebServer with strategy manager, position/pnl trackers, and risk manager
+    web_server_ = std::make_unique<WebServer>(*strategy_manager_, *position_tracker_, *pnl_calculator_, *risk_manager_);
 }
 
 TradingEngine::~TradingEngine() {
