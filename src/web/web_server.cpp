@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
+#include <set>
 
 using json = nlohmann::json;
 
@@ -245,11 +246,27 @@ void WebServer::handle_get_strategies(uWS::HttpResponse<false>* res, uWS::HttpRe
 
         const auto& strategies = strategy_manager_.get_all_strategies();
         for (const auto& strategy : strategies) {
+            // Collect unique instruments from all subscriptions
+            std::set<std::string> instruments_set;
+            auto subscriptions = strategy->get_subscriptions();
+            for (const auto& sub : subscriptions) {
+                for (const auto& instrument : sub.instruments) {
+                    instruments_set.insert(instrument);
+                }
+            }
+
+            // Convert to array
+            json instruments_array = json::array();
+            for (const auto& inst : instruments_set) {
+                instruments_array.push_back(inst);
+            }
+
             response.push_back({
                 {"name", strategy->name()},
                 {"id", strategy->name()},  // Use name as ID for now
                 {"status", "running"},      // TODO: Add proper status tracking
-                {"type", "plugin"}          // TODO: Add strategy type
+                {"type", "plugin"},         // TODO: Add strategy type
+                {"instruments", instruments_array}
             });
         }
 

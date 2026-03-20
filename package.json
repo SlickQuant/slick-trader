@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@slickquant/slick-ladder": "^0.1.1"
+  }
+}

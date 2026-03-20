@@ -97,7 +97,7 @@ class Dashboard {
             this.log('WebSocket connected', 'success');
 
             // Subscribe to real-time updates
-            this.wsClient.subscribe(['pnl', 'positions', 'orders']);
+            this.wsClient.subscribe(['pnl', 'positions', 'orders', 'orderbook']);
         });
 
         this.wsClient.on('disconnected', () => {
@@ -135,6 +135,11 @@ class Dashboard {
 
         this.wsClient.on('order_update', (data) => {
             this.handleOrderUpdate(data);
+        });
+
+        // Orderbook update handler
+        this.wsClient.on('orderbook_update', (data) => {
+            this.handleOrderbookUpdate(data);
         });
 
         // Connect
@@ -198,8 +203,30 @@ class Dashboard {
             const strategies = await api.getStrategies();
             this.updateStrategiesCount(strategies);
             this.strategies = strategies;  // Store for later use
+
+            // Initialize ladders with strategy instruments
+            if (typeof ladderManager !== 'undefined') {
+                await this.initializeLadders(strategies);
+            }
         } catch (error) {
             console.error('[Dashboard] Failed to load strategies:', error);
+        }
+    }
+
+    /**
+     * Initialize price ladders from strategies
+     */
+    async initializeLadders(strategies) {
+        try {
+            if (strategies && strategies.length > 0) {
+                await ladderManager.init(strategies);
+                this.log('Price ladders initialized', 'success');
+            } else {
+                console.warn('[Dashboard] No strategies found for ladder initialization');
+            }
+        } catch (error) {
+            console.error('[Dashboard] Failed to initialize ladders:', error);
+            this.log('Failed to initialize ladders: ' + error.message, 'error');
         }
     }
 
@@ -391,6 +418,21 @@ class Dashboard {
     handleOrderUpdate(data) {
         console.log('[Dashboard] Order update received:', data);
         this.log(`Order ${data.order_id}: ${data.status}`, 'info');
+    }
+
+    /**
+     * Handle real-time orderbook update
+     */
+    handleOrderbookUpdate(data) {
+        if (!data || !data.instrument) {
+            console.warn('[Dashboard] Invalid orderbook update:', data);
+            return;
+        }
+
+        // Forward to ladder manager
+        if (typeof ladderManager !== 'undefined') {
+            ladderManager.updateOrderbook(data.instrument, data);
+        }
     }
 
     /**
