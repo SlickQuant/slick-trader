@@ -89,6 +89,8 @@ public:
     void on_order_cancel(const OrderCancelEvent& event) override {}
 
 protected:
+    friend class WebServer;  // Allow WebServer to call submit_order
+
     // Lifecycle hooks for derived classes
     virtual bool on_initialize() { return true; }
     virtual void on_start() {}
@@ -101,35 +103,51 @@ protected:
     // Fill hook (called after position tracking)
     virtual void on_fill(const OrderFillEvent& event) {}
 
+    virtual std::string generate_order_id() {
+        return name_ + "_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+    }
+
     // Helper methods for order submission
-    void submit_order(const NewOrderEvent& order) {
+    void submit_order(std::string_view instrument, BrokerId broker_id, Side side, qty_t quantity, OrderType type, price_t price = NULL_PRICE, TimeInForce tif = TimeInForce::FOK, bool post_only = true) {
         if (!order_submission_queue_) {
             LOG_ERROR("Strategy {}: Order submission queue not set", name_);
             return;
         }
 
+        auto client_order_id = generate_order_id();
+
         // Pre-trade risk validation
         if (risk_manager_) {
             std::string reject_reason;
-            if (!risk_manager_->validate_order(name_, order, &reject_reason)) {
+            if (!risk_manager_->validate_order(name_, instrument, side, quantity, price, &reject_reason)) {
                 LOG_WARN("Strategy {}: Order {} REJECTED by risk: {}",
-                         name_, order.client_order_id, reject_reason);
+                         name_, client_order_id, reject_reason);
 
                 // Publish internal reject event back to strategy
                 OrderRejectEvent reject;
-                reject.timestamp_ns = order.timestamp_ns;
-                reject.set_instrument(order.instrument);
-                reject.set_client_order_id(order.client_order_id);
+                reject.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+                reject.set_instrument(instrument);
+                reject.set_client_order_id(client_order_id.data());
                 reject.set_reason(reject_reason.c_str());
                 on_order_reject(reject);
                 return;
             }
         }
 
-        EventSerializer::publish(*order_submission_queue_, order);
+        EventSerializer::publish<NewOrderEvent>(*order_submission_queue_, [=](NewOrderEvent& order) {
+            order.broker_id = broker_id;
+            order.set_instrument(instrument.data());
+            order.set_client_order_id(client_order_id.data());
+            order.side = side;
+            order.order_type = type;
+            order.price = price;
+            order.quantity = quantity;
+            order.time_in_force = tif;
+            order.post_only = post_only;
+        });
         LOG_DEBUG("Strategy {}: Submitted order {} for {} {}@{}",
-                 name_, order.client_order_id, order.instrument,
-                 from_qty_t(order.quantity), from_price_t(order.price));
+                 name_, client_order_id, instrument,
+                 from_qty_t(quantity), from_price_t(price));
     }
 
     void cancel_order(const std::string& order_id, const std::string& client_order_id) {

@@ -14,10 +14,11 @@ class SlickQueue;
 namespace slick::trader {
 
 using WebSocketClient = coinbase::WebSocketClient;
+class CoinbaseMDConnector;
 
 class CoinbaseMDCallbacks : public coinbase::WebsocketCallbacks {
 public:
-    CoinbaseMDCallbacks() = default;
+    CoinbaseMDCallbacks(CoinbaseMDConnector &connector): connector_(connector) {};
     ~CoinbaseMDCallbacks() override = default;
 
     void set_md_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue);
@@ -52,6 +53,7 @@ private:
     void publish_order_book(const coinbase::Level2UpdateBatch& batch, bool is_snapshot);
 
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
+    CoinbaseMDConnector &connector_;
 };
 
 } // namespace slick::trader

@@ -19,7 +19,7 @@ public:
     static bool publish(slick::SlickQueue<uint8_t>& queue, populate_event_fn &&populate_event_func) {
         static_assert(std::is_trivially_copyable_v<T>, "Event must be trivially copyable");
         auto index = queue.reserve(sizeof(T));
-        auto *e = reinterpret_cast<T*>(queue[index]);
+        auto *e = new (queue[index]) T(); // Placement new to construct event in-place
         populate_event_func(*e);
         queue.publish(index, sizeof(T));
         return true;

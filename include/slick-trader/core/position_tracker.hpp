@@ -22,7 +22,7 @@ public:
     void on_fill(const std::string& strategy_id, const OrderFillEvent& fill);
 
     // Get current position for strategy/instrument (single-reader safe)
-    Position get_position(const std::string& strategy_id, const std::string& instrument) const;
+    Position get_position(const std::string& strategy_id, std::string_view instrument) const;
 
     // Get all positions for a strategy (single-reader safe)
     std::unordered_map<std::string, Position> get_all_positions(const std::string& strategy_id) const;

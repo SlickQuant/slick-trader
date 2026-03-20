@@ -18,7 +18,7 @@ constexpr uint64_t QTY_SCALE = 100'000'000;   // 1e8
 
 // Conversion functions
 inline price_t to_price_t(double value) {
-    return static_cast<price_t>(std::round(value * PRICE_SCALE));
+    return std::isnan(value) ? NULL_PRICE : static_cast<price_t>(std::round(value * PRICE_SCALE));
 }
 
 inline qty_t to_qty_t(double value) {
@@ -26,11 +26,17 @@ inline qty_t to_qty_t(double value) {
 }
 
 inline double from_price_t(price_t value) {
-    return static_cast<double>(value) / PRICE_SCALE;
+    return value == NULL_PRICE ? std::numeric_limits<double>::quiet_NaN() : static_cast<double>(value) / PRICE_SCALE;
 }
 
 inline double from_qty_t(qty_t value) {
     return static_cast<double>(value) / QTY_SCALE;
 }
+
+enum class SubscriptionType : uint8_t {
+    TRADE,
+    QUOTE,
+    ORDER_BOOK
+};
 
 } // namespace slick::trader

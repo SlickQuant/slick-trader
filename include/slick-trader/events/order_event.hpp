@@ -58,11 +58,11 @@ struct NewOrderEvent : public OrderEventBase {
     NewOrderEvent()
         : OrderEventBase(EventType::NEW_ORDER)
         , order_type(OrderType::LIMIT)
-        , price(0)
-        , stop_price(0)
+        , price(NULL_PRICE)
+        , stop_price(NULL_PRICE)
         , quantity(0)
         , time_in_force(TimeInForce::GTD)
-        , post_only(false)
+        , post_only(true)
     {}
 };
 

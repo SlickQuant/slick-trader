@@ -1,4 +1,5 @@
 #include <slick-trader/strategy/strategy_loader.hpp>
+#include <slick/logger.hpp>
 
 #ifdef _WIN32
     #include <windows.h>

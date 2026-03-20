@@ -3,6 +3,7 @@
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/risk_manager.hpp>
 #include <slick-trader/strategy/strategy_manager.hpp>
+#include <slick-trader/strategy/strategy_base.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <fstream>
@@ -413,19 +414,35 @@ void WebServer::handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpReques
 
         // Validate required fields
         if (!order_data.contains("strategy_id") || !order_data.contains("instrument") ||
-            !order_data.contains("side") || !order_data.contains("quantity")) {
-            send_error_response(res, "Missing required fields: strategy_id, instrument, side, quantity", 400);
+            !order_data.contains("side") || !order_data.contains("quantity") || !order_data.contains("broker_id")) {
+            send_error_response(res, "Missing required fields: strategy_id, instrument, broker_id, side, quantity", 400);
             return;
         }
 
         std::string strategy_id = order_data["strategy_id"];
         std::string instrument = order_data["instrument"];
+        uint8_t broker_id_raw = order_data["broker_id"];
         std::string side_str = order_data["side"];
         double quantity = order_data["quantity"];
 
         // Optional fields
         std::string order_type = order_data.value("type", "market");
-        double price = order_data.value("price", 0.0);
+        double price = order_data.value("price", std::numeric_limits<double>::quiet_NaN());
+        uint8_t tif_raw = order_data.value("time_in_force", 0);  // Default to GTC
+
+        // Validate broker_id
+        BrokerId broker_id = static_cast<BrokerId>(broker_id_raw);
+        if (broker_id == BrokerId::UNKNOWN) {
+            send_error_response(res, "Invalid broker_id: must be 1 (Coinbase), 2 (Alpaca), or 3 (Simulated)", 400);
+            return;
+        }
+
+        // Validate time_in_force
+        TimeInForce tif = static_cast<TimeInForce>(tif_raw);
+        if (tif_raw > 3) {  // Valid range is 0-3
+            send_error_response(res, "Invalid time_in_force: must be 0 (GTC), 1 (IOC), 2 (FOK), or 3 (GTD)", 400);
+            return;
+        }
 
         // Validate side
         Side side;
@@ -453,21 +470,29 @@ void WebServer::handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpReques
             return;
         }
 
-        // TODO: Actually submit the order through the strategy
-        // For now, just log it and return success
-        LOG_INFO("WebServer: Manual order request - Strategy: {}, Instrument: {}, Side: {}, Qty: {}, Type: {}",
-                 strategy_id, instrument, side_str, quantity, order_type);
+        // Submit the order through the strategy
+        LOG_INFO("WebServer: Manual order request - Strategy: {}, Instrument: {}, Broker: {}, Side: {}, {}@{}, Type: {}, TIF: {}",
+                 strategy_id, instrument, static_cast<int>(broker_id), side_str, quantity, price, order_type, tif_raw);
+
+        auto strategy = strategy_manager_.get_strategy(strategy_id);
+        if (!strategy) {
+            send_error_response(res, "Strategy not found", 404);
+            return;
+        }
+        reinterpret_pointer_cast<StrategyBase>(strategy)->submit_order(instrument, broker_id, side, to_qty_t(quantity), type, to_price_t(price), tif);
 
         json response = {
             {"success", true},
-            {"message", "Order submission not yet implemented"},
+            {"message", "Order submitted successfully"},
             {"order", {
                 {"strategy_id", strategy_id},
                 {"instrument", instrument},
+                {"broker_id", broker_id_raw},
                 {"side", side_str},
                 {"quantity", quantity},
                 {"type", order_type},
-                {"price", price}
+                {"price", price},
+                {"time_in_force", tif_raw}
             }}
         };
 

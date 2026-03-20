@@ -344,12 +344,12 @@ int main(int argc, char* argv[]) {
 
     // Register signal handlers after libraries have initialized
     // (Some libraries may override signal handlers during initialization)
-#ifdef _WIN32
-    SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
-#else
+// #ifdef _WIN32
+//     SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+// #else
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
-#endif
+// #endif
 
     // ========================================================================
     // Market Data Subscriptions (Strategy-Driven)

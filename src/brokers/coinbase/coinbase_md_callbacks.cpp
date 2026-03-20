@@ -1,4 +1,5 @@
 #include <slick-trader/brokers/coinbase/coinbase_md_callbacks.hpp>
+#include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/order_book_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
@@ -24,6 +25,10 @@ void CoinbaseMDCallbacks::onUserDataConnected(WebSocketClient* /* client */) {
 
 void CoinbaseMDCallbacks::onMarketDataDisconnected(WebSocketClient* client) {
     LOG_INFO("WebSocket {:p} market data disconnected", static_cast<void*>(client));
+    if (connector_.is_running()) {
+        LOG_WARN("WebSocket {:p} market data disconnected while running - attempting to reconnect", static_cast<void*>(client));
+        connector_.connect();
+    }
 }
 
 void CoinbaseMDCallbacks::onUserDataDisconnected(WebSocketClient* /* client */) {

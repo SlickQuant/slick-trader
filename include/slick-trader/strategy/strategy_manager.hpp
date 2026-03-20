@@ -40,6 +40,7 @@ public:
     // Strategy registration
     void add_strategy(std::shared_ptr<IStrategy> strategy) {
         strategies_.push_back(strategy);
+        strategy_map_[strategy->name()] = strategy;
         LOG_INFO("StrategyManager: Added strategy '{}'", strategy->name());
     }
 
@@ -137,6 +138,14 @@ public:
     // Get all strategies (for subscription collection)
     const std::vector<std::shared_ptr<IStrategy>>& get_all_strategies() const {
         return strategies_;
+    }
+
+    std::shared_ptr<IStrategy> get_strategy(const std::string& strategy_id) const {
+        auto it = strategy_map_.find(strategy_id);
+        if (it != strategy_map_.end()) {
+            return it->second;
+        }
+        return nullptr;
     }
 
 private:
@@ -346,6 +355,7 @@ private:
     }
 
     std::vector<std::shared_ptr<IStrategy>> strategies_;
+    std::unordered_map<std::string, std::shared_ptr<IStrategy>> strategy_map_;
     slick::orderbook::OrderBookManager<slick::orderbook::OrderBookL2> book_manager_;
     std::unordered_map<std::string, slick::orderbook::SymbolId> symbol_ids_;
     slick::orderbook::SymbolId next_symbol_id_{0};

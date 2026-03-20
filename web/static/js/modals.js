@@ -35,12 +35,41 @@ class ModalManager {
         // Close on escape
         document.addEventListener('keydown', this.handleEscape);
 
-        // Update price field visibility based on order type
+        // Update price field visibility and TIF options based on order type
         const orderTypeSelect = form.querySelector('#orderType');
         const priceField = form.querySelector('.price-field');
+        const tifSelect = form.querySelector('#timeInForce');
+
+        // Find the form-row containing the price field
+        const quantityPriceRow = priceField.closest('.form-row');
+
+        const updateFieldsForOrderType = (orderType) => {
+            if (orderType === 'limit') {
+                priceField.classList.remove('hidden');
+                quantityPriceRow.style.gridTemplateColumns = 'repeat(2, 1fr)';
+                // Limit orders: show all TIF options
+                tifSelect.innerHTML = `
+                    <option value="0">GTC (Good Till Cancel)</option>
+                    <option value="1">IOC (Immediate Or Cancel)</option>
+                    <option value="2">FOK (Fill Or Kill)</option>
+                    <option value="3">GTD (Good Till Date)</option>
+                `;
+            } else {
+                priceField.classList.add('hidden');
+                quantityPriceRow.style.gridTemplateColumns = '1fr';
+                // Market orders: only IOC and FOK
+                tifSelect.innerHTML = `
+                    <option value="1">IOC (Immediate Or Cancel)</option>
+                    <option value="2">FOK (Fill Or Kill)</option>
+                `;
+            }
+        };
+
+        // Initialize fields based on current order type
+        updateFieldsForOrderType(orderTypeSelect.value);
 
         orderTypeSelect.addEventListener('change', (e) => {
-            priceField.style.display = e.target.value === 'limit' ? 'block' : 'none';
+            updateFieldsForOrderType(e.target.value);
         });
     }
 
@@ -68,6 +97,15 @@ class ModalManager {
                             <input type="text" id="instrument" value="${instrument}" required placeholder="BTC-USD">
                         </div>
 
+                        <div class="form-group">
+                            <label for="brokerId">Broker</label>
+                            <select id="brokerId" required>
+                                <option value="1">Coinbase</option>
+                                <option value="2">Alpaca</option>
+                                <option value="3">Simulated</option>
+                            </select>
+                        </div>
+
                         <div class="form-row">
                             <div class="form-group">
                                 <label for="side">Side</label>
@@ -87,13 +125,23 @@ class ModalManager {
                         </div>
 
                         <div class="form-group">
-                            <label for="quantity">Quantity</label>
-                            <input type="number" id="quantity" step="0.00000001" required placeholder="0.01">
+                            <label for="timeInForce">Time In Force</label>
+                            <select id="timeInForce" required>
+                                <option value="1">IOC (Immediate Or Cancel)</option>
+                                <option value="2">FOK (Fill Or Kill)</option>
+                            </select>
                         </div>
 
-                        <div class="form-group price-field" style="display: none;">
-                            <label for="price">Price</label>
-                            <input type="number" id="price" step="0.01" placeholder="50000.00">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="quantity">Quantity</label>
+                                <input type="number" id="quantity" step="0.00000001" required placeholder="0.01">
+                            </div>
+
+                            <div class="form-group price-field hidden">
+                                <label for="price">Price</label>
+                                <input type="number" id="price" step="0.01" placeholder="50000.00">
+                            </div>
                         </div>
 
                         <div class="form-warning">
@@ -116,13 +164,15 @@ class ModalManager {
     async submitOrder(form) {
         const strategyId = form.querySelector('#strategyId').value;
         const instrument = form.querySelector('#instrument').value;
+        const brokerId = parseInt(form.querySelector('#brokerId').value);
         const side = form.querySelector('#side').value;
         const orderType = form.querySelector('#orderType').value;
         const quantity = parseFloat(form.querySelector('#quantity').value);
-        const price = orderType === 'limit' ? parseFloat(form.querySelector('#price').value) : 0;
+        const price = orderType === 'limit' ? parseFloat(form.querySelector('#price').value) : NaN;
+        const timeInForce = parseInt(form.querySelector('#timeInForce').value);
 
         // Validation
-        if (!strategyId || !instrument || !quantity) {
+        if (!strategyId || !instrument || !brokerId || !quantity || timeInForce === undefined) {
             this.showNotification('Please fill in all required fields', 'error');
             return;
         }
@@ -141,10 +191,12 @@ class ModalManager {
             const result = await api.submitOrder({
                 strategy_id: strategyId,
                 instrument: instrument,
+                broker_id: brokerId,
                 side: side,
                 type: orderType,
                 quantity: quantity,
-                price: price
+                time_in_force: timeInForce,
+                ...(orderType === 'limit' && { price: price })
             });
 
             this.showNotification(`Order submitted: ${side} ${quantity} ${instrument}`, 'success');

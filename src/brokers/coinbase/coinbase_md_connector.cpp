@@ -8,7 +8,7 @@
 namespace slick::trader {
 
 CoinbaseMDConnector::CoinbaseMDConnector()
-    : callbacks_(std::make_unique<CoinbaseMDCallbacks>())
+    : callbacks_(std::make_unique<CoinbaseMDCallbacks>(*this))
     , orderbook_depth_(10) {
 }
 

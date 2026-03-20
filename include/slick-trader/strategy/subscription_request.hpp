@@ -1,7 +1,7 @@
 #pragma once
 
 #include <slick-trader/events/event.hpp>
-#include <slick-trader/brokers/imarket_data_connector.hpp>
+#include <slick-trader/utils/types.hpp>
 #include <string>
 #include <vector>
 

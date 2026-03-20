@@ -31,8 +31,8 @@ struct RiskLimits {
     price_t max_loss_per_strategy{to_price_t(-10000.0)};  // Max loss before halt
 
     // Get effective limits for an instrument
-    InstrumentRiskLimits get_instrument_limits(const std::string& instrument) const {
-        auto it = instrument_limits.find(instrument);
+    InstrumentRiskLimits get_instrument_limits(std::string_view instrument) const {
+        auto it = instrument_limits.find(std::string(instrument));
         if (it != instrument_limits.end()) {
             return it->second;
         }
@@ -58,8 +58,8 @@ public:
 
     // Validate order before submission
     // Returns true if order passes all checks, false otherwise
-    bool validate_order(const std::string& strategy_id, const NewOrderEvent& order,
-                        std::string* reject_reason = nullptr);
+    bool validate_order(const std::string& strategy_id, std::string_view instrument,
+                        Side side, qty_t quantity, price_t price, std::string* reject_reason = nullptr);
 
     // Check if strategy is halted due to risk breach
     bool is_halted(const std::string& strategy_id) const;
@@ -77,14 +77,14 @@ private:
         uint64_t window_start_ns{0};
     };
 
-    bool check_position_limit(const std::string& strategy_id, const std::string& instrument,
-                               bool is_buy, qty_t order_qty, std::string* reason);
+    bool check_position_limit(const std::string& strategy_id, std::string_view instrument,
+                                bool is_buy, qty_t order_qty, std::string* reason);
 
-    bool check_order_value_limit(const NewOrderEvent& order, const RiskLimits& limits,
-                                  std::string* reason);
+    bool check_order_value_limit(std::string_view instrument, price_t price, qty_t quantity, 
+                                    const RiskLimits& limits, std::string* reason);
 
     bool check_rate_limit(const std::string& strategy_id, const RiskLimits& limits,
-                           std::string* reason);
+                            std::string* reason);
 
     PositionTracker& position_tracker_;
     std::unordered_map<std::string, RiskLimits> limits_;

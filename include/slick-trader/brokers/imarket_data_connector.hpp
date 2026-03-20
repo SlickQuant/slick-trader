@@ -4,7 +4,7 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
-#include <slick-trader/events/event.hpp>
+#include <slick-trader/utils/types.hpp>
 
 // Forward declare SlickQueue
 namespace slick {
@@ -13,12 +13,6 @@ namespace slick {
 }
 
 namespace slick::trader {
-
-enum class SubscriptionType : uint8_t {
-    TRADE,
-    QUOTE,
-    ORDER_BOOK
-};
 
 // Market data connector interface
 // Each connector runs on its own thread and publishes to SlickQueue<uint8_t>

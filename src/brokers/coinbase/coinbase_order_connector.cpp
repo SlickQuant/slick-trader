@@ -34,6 +34,8 @@ inline coinbase::OrderType to_coinbase_order_type(OrderType type) {
 
 inline coinbase::TimeInForce to_coinbase_time_in_force(TimeInForce tif) {
     switch (tif) {
+        case TimeInForce::GTD:
+            return coinbase::TimeInForce::GOOD_UNTIL_DATE_TIME;
         case TimeInForce::GTC:
             return coinbase::TimeInForce::GOOD_UNTIL_CANCELLED;
         case TimeInForce::IOC:
@@ -49,10 +51,13 @@ inline coinbase::TimeInForce to_coinbase_time_in_force(TimeInForce tif) {
 CoinbaseOrderConnector::CoinbaseOrderConnector()
     : running_(false)
     , connected_(false)
-    , callbacks_(std::make_unique<CoinbaseOrderCallbacks>())
+    , callbacks_(std::make_unique<CoinbaseOrderCallbacks>(*this))
     , order_cursor_(0)
     , rest_url_("https://api.coinbase.com")
     , ws_url_("wss://advanced-trade-ws-user.coinbase.com") {
+    // Create REST client for order submission
+    LOG_INFO("Coinbase Order REST: {}", ws_url_);
+    rest_client_ = std::make_unique<coinbase::CoinbaseRestClient>(rest_url_);
 }
 
 CoinbaseOrderConnector::~CoinbaseOrderConnector() {
@@ -60,15 +65,12 @@ CoinbaseOrderConnector::~CoinbaseOrderConnector() {
 }
 
 bool CoinbaseOrderConnector::connect() {
-    LOG_INFO("Coinbase Order: Connecting to REST: {}, WS: {}", rest_url_, ws_url_);
+    LOG_INFO("Coinbase Order: Connecting to WS: {}", ws_url_);
 
     if (!order_submission_queue_ || !order_event_queue_) {
         LOG_ERROR("Coinbase Order: Queues not set");
         return false;
     }
-
-    // Create REST client for order submission
-    rest_client_ = std::make_unique<coinbase::CoinbaseRestClient>(rest_url_);
 
     // Only user_data_url is needed for order updates
     ws_client_ = std::make_unique<coinbase::WebSocketClient>(callbacks_.get(), "", ws_url_);
@@ -93,6 +95,12 @@ bool CoinbaseOrderConnector::is_connected() const {
 void CoinbaseOrderConnector::set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
     order_event_queue_ = std::move(queue);
     callbacks_->set_order_event_queue(order_event_queue_);
+}
+
+void CoinbaseOrderConnector::set_rest_url(const std::string& url) {
+    rest_url_ = url;
+    LOG_INFO("Coinbase Order REST URL set to {}", rest_url_);
+    rest_client_ = std::make_unique<coinbase::CoinbaseRestClient>(rest_url_);
 }
 
 void CoinbaseOrderConnector::start() {
@@ -134,6 +142,7 @@ void CoinbaseOrderConnector::run() {
     connect();
 
     while (running_.load(std::memory_order_acquire)) {
+        callbacks_->processData();
         process_order_requests();
     }
 
@@ -177,7 +186,8 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
     LOG_INFO("Processing new order request: client_order_id={}, instrument={}, side={}, type={}, tif={}, {}@{}",
             request.client_order_id, request.instrument,
             coinbase::to_string(cb_side), coinbase::to_string(cb_order_type),
-            coinbase::to_string(cb_tif), from_qty_t(request.quantity), from_price_t(request.price));
+            coinbase::to_string(cb_tif), from_qty_t(request.quantity), 
+            request.price == NULL_PRICE ? "NULL_PRICE" : std::to_string(from_price_t(request.price)));
 
     // Submit order via REST API
     try {
@@ -191,7 +201,7 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
             from_price_t(request.price),
             request.post_only,
             false, // size_in_quote
-            request.stop_price > 0 ? std::optional<double>(from_price_t(request.stop_price)) : std::nullopt
+            request.stop_price != NULL_PRICE ? std::optional<double>(from_price_t(request.stop_price)) : std::nullopt
         );
 
         if (response.success) {

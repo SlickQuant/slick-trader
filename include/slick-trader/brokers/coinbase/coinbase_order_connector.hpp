@@ -41,7 +41,7 @@ public:
     void set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) override;
 
     // Configuration
-    void set_rest_url(const std::string& url) { rest_url_ = url; }
+    void set_rest_url(const std::string& url);
     void set_websocket_url(const std::string& url) { ws_url_ = url; }
     void set_api_key(const std::string& key) { api_key_ = key; }
     void set_api_secret(const std::string& secret) { api_secret_ = secret; }

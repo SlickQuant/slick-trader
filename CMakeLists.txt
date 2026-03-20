@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.28)
 
-set(BUILD_VERSION 0.1.0)
-project(SlickTrader VERSION ${BUILD_VERSION} LANGUAGES CXX)
+project(SlickTrader 
+    VERSION 0.1.0
+    LANGUAGES CXX
+)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,7 +14,6 @@ option(SLICK_TRADER_FAST_FETCHCONTENT "Avoid FetchContent update checks on every
 option(SLICK_TRADER_SUPPRESS_VS_REGEN "Disable ZERO_CHECK auto-regeneration for Visual Studio generators" ON)
 option(SLICK_TRADER_ENABLE_LUA_STRATEGY "Enable Lua strategy support auto-detection" OFF)
 option(SLICK_TRADER_ENABLE_PYTHON_STRATEGY "Enable Python strategy support auto-detection" ON)
-option(SLICK_TRADER_STRIP_COINBASE_INTERFACE_PCH "Remove transitive coinbase INTERFACE precompiled headers from downstream targets" ON)
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
     set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
@@ -105,30 +106,6 @@ if (NOT slick-net_FOUND)
         GIT_TAG v2.0.0
     )
     FetchContent_MakeAvailable(slick-net)
-endif()
-
-if(SLICK_TRADER_STRIP_COINBASE_INTERFACE_PCH)
-    function(_strip_interface_pch_if_present target_name)
-        if(NOT TARGET ${target_name})
-            return()
-        endif()
-
-        set(_effective_target ${target_name})
-        get_target_property(_alias_target ${target_name} ALIASED_TARGET)
-        if(_alias_target)
-            set(_effective_target ${_alias_target})
-        endif()
-
-        get_target_property(_iface_pch ${_effective_target} INTERFACE_PRECOMPILE_HEADERS)
-        if(_iface_pch)
-            set_property(TARGET ${_effective_target} PROPERTY INTERFACE_PRECOMPILE_HEADERS "")
-            message(STATUS "Removed INTERFACE precompiled headers from target: ${_effective_target}")
-        endif()
-    endfunction()
-
-    _strip_interface_pch_if_present(coinbase-advanced-cpp)
-    _strip_interface_pch_if_present(slick::coinbase-advanced-cpp)
-    _strip_interface_pch_if_present(slick::net)
 endif()
 
 # Add Alpaca SDK (assuming GitHub repo exists)

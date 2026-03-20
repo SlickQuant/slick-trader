@@ -2,7 +2,7 @@
 // This demonstrates the plugin architecture for SlickTrader strategies
 
 #include <slick-trader/strategy/strategy_base.hpp>
-#include <slick-trader/strategy/strategy_loader.hpp>
+#include <slick-trader/strategy/strategy_export.hpp>
 #include <slick-trader/strategy/subscription_request.hpp>
 #include <slick-trader/core/position.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
@@ -133,36 +133,16 @@ protected:
 
 private:
     void submit_buy_order(const std::string& instrument, price_t price, qty_t quantity) {
-        NewOrderEvent order;
-        order.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
-        order.set_instrument(instrument.c_str());
-        order.set_client_order_id(generate_order_id().c_str());
-        order.side = Side::BUY;
-        order.order_type = OrderType::LIMIT;
-        order.time_in_force = TimeInForce::GTC;
-        order.price = price;
-        order.quantity = quantity;
-
-        submit_order(order);
+        submit_order(instrument.data(), BrokerId::SIMULATED, Side::BUY, quantity, OrderType::LIMIT, price);
         order_count_++;
     }
 
     void submit_sell_order(const std::string& instrument, price_t price, qty_t quantity) {
-        NewOrderEvent order;
-        order.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
-        order.set_instrument(instrument.c_str());
-        order.set_client_order_id(generate_order_id().c_str());
-        order.side = Side::SELL;
-        order.order_type = OrderType::LIMIT;
-        order.time_in_force = TimeInForce::GTC;
-        order.price = price;
-        order.quantity = quantity;
-
-        submit_order(order);
+        submit_order(instrument.data(), BrokerId::SIMULATED, Side::SELL, quantity, OrderType::LIMIT, price);
         order_count_++;
     }
 
-    std::string generate_order_id() {
+    std::string generate_order_id() override {
         return "simple_plugin_" + std::to_string(order_count_);
     }
 

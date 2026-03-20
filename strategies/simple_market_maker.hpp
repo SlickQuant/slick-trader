@@ -161,35 +161,13 @@ private:
 
         // Place buy order
         if (active_buy_order_id_.empty()) {
-            NewOrderEvent buy_order;
-            buy_order.set_instrument(instrument_);
-            std::string client_order_id = std::string("MM_") + std::to_string(order_id_counter_++) + "_BUY";
-            buy_order.set_client_order_id(client_order_id);
-            buy_order.side = Side::BUY;
-            buy_order.order_type = OrderType::LIMIT;
-            buy_order.price = to_price_t(bid_price);
-            buy_order.quantity = to_qty_t(order_size_);
-            buy_order.time_in_force = TimeInForce::GTC;
-            buy_order.post_only = true;
-
-            submit_order(buy_order);
+            submit_order(instrument_, BrokerId::SIMULATED, Side::BUY, to_qty_t(order_size_), OrderType::LIMIT, to_price_t(bid_price), TimeInForce::GTC);
             LOG_INFO("SimpleMarketMaker: Placed BUY order {} @ {}", order_size_, bid_price);
         }
 
         // Place sell order
         if (active_sell_order_id_.empty()) {
-            NewOrderEvent sell_order;
-            sell_order.set_instrument(instrument_);
-            std::string client_order_id = std::string("MM_") + std::to_string(order_id_counter_++) + "_SELL";
-            sell_order.set_client_order_id(client_order_id);
-            sell_order.side = Side::SELL;
-            sell_order.order_type = OrderType::LIMIT;
-            sell_order.price = to_price_t(ask_price);
-            sell_order.quantity = to_qty_t(order_size_);
-            sell_order.time_in_force = TimeInForce::GTC;
-            sell_order.post_only = true;
-
-            submit_order(sell_order);
+            submit_order(instrument_, BrokerId::SIMULATED, Side::SELL, to_qty_t(order_size_), OrderType::LIMIT, to_price_t(ask_price), TimeInForce::GTC);
             LOG_INFO("SimpleMarketMaker: Placed SELL order {} @ {}", order_size_, ask_price);
         }
     }

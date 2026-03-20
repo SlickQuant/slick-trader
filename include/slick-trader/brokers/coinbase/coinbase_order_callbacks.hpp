@@ -15,10 +15,11 @@ class SlickQueue;
 namespace slick::trader {
 
 using WebSocketClient = coinbase::WebSocketClient;
+class CoinbaseOrderConnector;
 
-class CoinbaseOrderCallbacks : public coinbase::WebsocketCallbacks {
+class CoinbaseOrderCallbacks : public coinbase::UserThreadWebsocketCallbacks {
 public:
-    CoinbaseOrderCallbacks() = default;
+    CoinbaseOrderCallbacks(CoinbaseOrderConnector &connector) : connector_(connector) {}
     ~CoinbaseOrderCallbacks() override = default;
 
     void set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue);
@@ -56,6 +57,7 @@ private:
     OrderStatus map_order_status(coinbase::OrderStatus status);
 
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
+    CoinbaseOrderConnector &connector_;
 };
 
 } // namespace slick::trader

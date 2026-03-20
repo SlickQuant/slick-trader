@@ -107,7 +107,7 @@ price_t PositionTracker::calculate_new_avg_price(price_t current_avg, qty_t curr
     return to_price_t(total_cost / total_qty);
 }
 
-Position PositionTracker::get_position(const std::string& strategy_id, const std::string& instrument) const {
+Position PositionTracker::get_position(const std::string& strategy_id, std::string_view instrument) const {
     // Single-reader safe (called from same thread)
 
     auto strategy_it = positions_.find(strategy_id);
@@ -115,7 +115,7 @@ Position PositionTracker::get_position(const std::string& strategy_id, const std
         return Position(instrument);
     }
 
-    auto pos_it = strategy_it->second.find(instrument);
+    auto pos_it = strategy_it->second.find(std::string(instrument));
     if (pos_it == strategy_it->second.end()) {
         return Position(instrument);
     }

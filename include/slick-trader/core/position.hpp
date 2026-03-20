@@ -2,6 +2,7 @@
 
 #include <slick-trader/utils/types.hpp>
 #include <string>
+#include <string_view>
 #include <cstdint>
 
 namespace slick::trader {
@@ -15,7 +16,7 @@ struct Position {
     uint64_t last_update_time{0}; // Last update timestamp
 
     Position() = default;
-    Position(const std::string& inst) : instrument(inst) {}
+    Position(std::string_view inst) : instrument(std::string(inst)) {}
 
     bool is_flat() const { return quantity == 0; }
     bool is_long() const { return quantity > 0; }
