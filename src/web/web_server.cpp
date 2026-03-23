@@ -63,13 +63,18 @@ void WebServer::run() {
             if (socket) {
                 listen_socket_ = socket;
                 LOG_INFO("WebServer: Listening on port {}", config_.port);
+
+                // Start polling market data after listen succeeds
+                uWS::Loop::get()->defer([this]() {
+                    process_market_data_events();
+                });
             } else {
                 LOG_ERROR("WebServer: Failed to listen on port {}", config_.port);
                 running_.store(false, std::memory_order_release);
             }
         });
 
-        // Run event loop
+        // Run event loop (blocking)
         app.run();
 
     } catch (const std::exception& e) {
@@ -386,9 +391,33 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
         std::string type = msg.value("type", "");
 
         if (type == "subscribe") {
-            // TODO: Implement subscription management
-            LOG_DEBUG("WebServer: WebSocket subscribe request");
-            ws->send(R"({"type":"subscribed"})", uWS::OpCode::TEXT);
+            std::string channel = msg.value("channel", "");
+            std::string instrument = msg.value("instrument", "");
+
+            if (channel == "level2" && !instrument.empty()) {
+                level2_subscriptions_[instrument].clients.insert(ws);
+                LOG_INFO("WebServer: Client subscribed to level2 for {}", instrument);
+
+                json response = {
+                    {"type", "subscribed"},
+                    {"channel", channel},
+                    {"instrument", instrument}
+                };
+                ws->send(response.dump(), uWS::OpCode::TEXT);
+            } else {
+                LOG_WARN("WebServer: Invalid subscription request - channel: {}, instrument: {}", channel, instrument);
+            }
+        } else if (type == "unsubscribe") {
+            std::string channel = msg.value("channel", "");
+            std::string instrument = msg.value("instrument", "");
+
+            if (channel == "level2" && !instrument.empty()) {
+                auto it = level2_subscriptions_.find(instrument);
+                if (it != level2_subscriptions_.end()) {
+                    it->second.clients.erase(ws);
+                    LOG_INFO("WebServer: Client unsubscribed from level2 for {}", instrument);
+                }
+            }
         } else if (type == "ping") {
             ws->send(R"({"type":"pong"})", uWS::OpCode::TEXT);
         } else {
@@ -400,7 +429,12 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
 }
 
 void WebServer::handle_ws_close(uWS::WebSocket<false, true, void*>* ws) {
-    LOG_INFO("WebServer: WebSocket connection closed");
+    // Remove from all subscriptions
+    for (auto& [instrument, sub] : level2_subscriptions_) {
+        sub.clients.erase(ws);
+    }
+
+    LOG_INFO("WebServer: WebSocket connection closed and cleaned up");
 }
 
 void WebServer::send_json_response(uWS::HttpResponse<false>* res, const std::string& json, int status) {
@@ -690,6 +724,129 @@ void WebServer::handle_post_resume_strategy(uWS::HttpResponse<false>* res, uWS::
         send_json_response(res, response.dump());
     } catch (const std::exception& e) {
         send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::process_market_data_events() {
+    if (!running_.load(std::memory_order_acquire)) {
+        return;  // Stop polling if server is shutting down
+    }
+
+    if (!md_queue_) {
+        // Re-schedule even if no queue yet
+        uWS::Loop::get()->defer([this]() { process_market_data_events(); });
+        return;
+    }
+
+    // Process up to 100 events per tick (avoid blocking WebSocket I/O)
+    int events_processed = 0;
+    for (int i = 0; i < 100; ++i) {
+        auto [data, size] = md_queue_->read(ws_md_cursor_);
+        if (!data) break;  // No more data available
+
+        const Event* event = reinterpret_cast<const Event*>(data);
+
+        if (event->type == EventType::LEVEL2_UPDATE) {
+            const auto* level2_event = reinterpret_cast<const Level2UpdateEvent*>(data);
+            broadcast_level2_update(*level2_event);
+            events_processed++;
+        }
+    }
+
+    if (events_processed > 1) {
+        LOG_DEBUG("WebServer: Processed {} level2 events", events_processed);
+    }
+
+    // Re-schedule for next tick (~10ms interval via uWS event loop)
+    uWS::Loop::get()->defer([this]() { process_market_data_events(); });
+}
+
+void WebServer::broadcast_level2_update(const Level2UpdateEvent& event) {
+    std::string instrument(event.instrument);
+
+    // Build JSON
+    json level2_update;
+    level2_update["type"] = "level2";
+    level2_update["instrument"] = instrument;
+    level2_update["timestamp"] = event.event_time_ns / 1000000; // Convert to ms
+    level2_update["seq_num"] = event.sequence_num;
+    level2_update["is_snapshot"] = event.is_snapshot;
+
+    json levels = json::array();
+    for (uint16_t i = 0; i < event.num_levels; ++i) {
+        levels.push_back({
+            from_price_t(event.levels[i].price),
+            from_qty_t(event.levels[i].quantity),
+            event.levels[i].side
+        });
+    }
+    level2_update["levels"] = levels;
+
+    std::string message = level2_update.dump();
+
+    // Broadcast to subscribers
+    auto it = level2_subscriptions_.find(instrument);
+    if (it != level2_subscriptions_.end() && !it->second.clients.empty()) {
+        // LOG_DEBUG("WebServer: Broadcasting {} orderbook update to {} client(s)",
+        //           instrument, it->second.clients.size());
+        for (auto* ws : it->second.clients) {
+            ws->send(message, uWS::OpCode::TEXT);
+        }
+    } else {
+        static uint64_t unsubscribed_count = 0;
+        if (++unsubscribed_count % 100 == 0) {  // Log every 100th to avoid spam
+            LOG_DEBUG("WebServer: No subscribers for {} orderbook (total unsubscribed events: {})",
+                      instrument, unsubscribed_count);
+        }
+    }
+}
+
+void WebServer::broadcast_orderbook(const OrderBookEvent& event) {
+    std::string instrument(event.instrument);
+
+    // Build JSON
+    json orderbook;
+    orderbook["type"] = "orderbook";
+    orderbook["instrument"] = instrument;
+    orderbook["timestamp"] = event.event_time_ns / 1000000; // Convert to ms
+    orderbook["is_snapshot"] = event.is_snapshot;
+
+    // Bids
+    json bids = json::array();
+    for (uint16_t i = 0; i < event.num_bids; ++i) {
+        bids.push_back({
+            from_price_t(event.bids[i].price),
+            from_qty_t(event.bids[i].quantity)
+        });
+    }
+    orderbook["bids"] = bids;
+
+    // Asks
+    json asks = json::array();
+    for (uint16_t i = 0; i < event.num_asks; ++i) {
+        asks.push_back({
+            from_price_t(event.asks[i].price),
+            from_qty_t(event.asks[i].quantity)
+        });
+    }
+    orderbook["asks"] = asks;
+
+    std::string message = orderbook.dump();
+
+    // Broadcast to subscribers
+    auto it = level2_subscriptions_.find(instrument);
+    if (it != level2_subscriptions_.end() && !it->second.clients.empty()) {
+        // LOG_DEBUG("WebServer: Broadcasting {} orderbook update to {} client(s)",
+        //           instrument, it->second.clients.size());
+        for (auto* ws : it->second.clients) {
+            ws->send(message, uWS::OpCode::TEXT);
+        }
+    } else {
+        static uint64_t unsubscribed_count = 0;
+        if (++unsubscribed_count % 100 == 0) {  // Log every 100th to avoid spam
+            LOG_DEBUG("WebServer: No subscribers for {} orderbook (total unsubscribed events: {})",
+                      instrument, unsubscribed_count);
+        }
     }
 }
 

@@ -16,6 +16,16 @@ class EventSerializer {
 public:
     // Publish event to queue
     template<typename T, typename populate_event_fn>
+    static bool publish(slick::SlickQueue<uint8_t>& queue, uint32_t size, populate_event_fn &&populate_event_func) {
+        static_assert(std::is_trivially_copyable_v<T>, "Event must be trivially copyable");
+        auto index = queue.reserve(size);
+        auto *e = new (queue[index]) T(); // Placement new to construct event in-place
+        populate_event_func(*e);
+        queue.publish(index, size);
+        return true;
+    }
+
+    template<typename T, typename populate_event_fn>
     static bool publish(slick::SlickQueue<uint8_t>& queue, populate_event_fn &&populate_event_func) {
         static_assert(std::is_trivially_copyable_v<T>, "Event must be trivially copyable");
         auto index = queue.reserve(sizeof(T));

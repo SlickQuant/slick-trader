@@ -20,6 +20,7 @@ enum class BrokerId : uint8_t {
 enum class EventType : uint8_t {
     TRADE,
     QUOTE,
+    LEVEL2_UPDATE,
     ORDER_BOOK,
     CANDLE,
     NEW_ORDER,

@@ -50,7 +50,7 @@ protected:
     // Declare what market data this strategy needs
     std::vector<SubscriptionRequest> get_subscriptions() const override {
         return {
-            SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::QUOTE, {"BTC-USD"}),
+            SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::ORDER_BOOK, {"BTC-USD"}),
             SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::TRADE, {"BTC-USD"})
         };
     }

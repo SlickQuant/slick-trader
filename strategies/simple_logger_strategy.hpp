@@ -23,7 +23,8 @@ public:
     std::vector<SubscriptionRequest> get_subscriptions() const override {
         return {
             SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::TRADE, {"BTC-USD", "ETH-USD"}),
-            SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::QUOTE, {"BTC-USD", "ETH-USD"})
+            SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::QUOTE, {"BTC-USD", "ETH-USD"}),
+            SubscriptionRequest(BrokerId::COINBASE, SubscriptionType::LEVEL2, {"BTC-USD", "ETH-USD"}, 20)  // 20 levels
         };
     }
 

@@ -36,7 +36,8 @@ inline double from_qty_t(qty_t value) {
 enum class SubscriptionType : uint8_t {
     TRADE,
     QUOTE,
-    ORDER_BOOK
+    LEVEL2,
+    ORDER_BOOK,
 };
 
 } // namespace slick::trader

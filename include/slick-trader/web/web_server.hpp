@@ -1,11 +1,18 @@
 #pragma once
 
 #include <slick/logger.hpp>
+#include <slick/queue.h>
 #include <uwebsockets/App.h>
+#include <slick-trader/events/event.hpp>
+#include <slick-trader/events/order_book_event.hpp>
+#include <slick-trader/events/level2_update_event.hpp>
 #include <atomic>
 #include <thread>
 #include <string>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace slick::trader {
 
@@ -58,6 +65,11 @@ public:
     // Get current port
     uint16_t get_port() const { return config_.port; }
 
+    // Set market data queue for real-time WebSocket streaming
+    void set_market_data_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
+        md_queue_ = queue;
+    }
+
 private:
     void run();
 
@@ -92,6 +104,16 @@ private:
     void send_error_response(uWS::HttpResponse<false>* res, const std::string& error, int status = 400);
     void add_cors_headers(uWS::HttpResponse<false>* res);
 
+    // Market data streaming
+    void process_market_data_events();
+    void broadcast_level2_update(const Level2UpdateEvent& event);
+    void broadcast_orderbook(const OrderBookEvent& event);
+
+    // WebSocket subscription tracking
+    struct Subscription {
+        std::unordered_set<uWS::WebSocket<false, true, void*>*> clients;
+    };
+
     StrategyManager& strategy_manager_;
     PositionTracker& position_tracker_;
     PnLCalculator& pnl_calculator_;
@@ -101,6 +123,13 @@ private:
     std::atomic_bool running_;
     std::thread worker_thread_;
     us_listen_socket_t* listen_socket_{nullptr};
+
+    // Market data queue (shared with StrategyManager)
+    std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
+    uint64_t ws_md_cursor_{0};  // Independent cursor for WebServer
+
+    // Subscription management
+    std::unordered_map<std::string, Subscription> level2_subscriptions_;
 };
 
 } // namespace slick::trader

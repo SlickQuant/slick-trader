@@ -36,8 +36,7 @@ class LadderManager {
 
         console.log('[LadderManager] Initialized ladders for instruments:', this.instruments);
 
-        // Start simulated data for testing (remove when real data is available)
-        this.startSimulatedData();
+        // Real market data now provided via WebSocket - simulated data removed
     }
 
     /**
@@ -199,8 +198,10 @@ class LadderManager {
                 visibleRows: 24,
                 tickSize: this.getTickSize(instrument),
                 mode: 'PriceLevel',  // Start with aggregated price level mode
-                showVolumeBars: true,
-                showOrderCount: true,
+                removalMode: 'removeRow',
+                showVolumeBars: false,
+                showOrderCount: false,
+                minQuantityThreshold: 0.0001,
                 colors: {
                     background: '#1e1e1e',
                     bidQtyBackground: '#1a2f3a',
@@ -216,7 +217,7 @@ class LadderManager {
             });
 
             this.ladders.set(instrument, ladder);
-            console.log(`[LadderManager] Created ladder for ${instrument}`);
+            console.log(`[LadderManager] Created JavaScript ladder for ${instrument}`);
         } catch (error) {
             console.error(`[LadderManager] Failed to create ladder for ${instrument}:`, error);
         }
@@ -266,6 +267,36 @@ class LadderManager {
     }
 
     /**
+     * Update ladder with level2 data
+     */
+    updateOrderbookWithLevelUpdate(instrument, data) {
+        const ladder = this.ladders.get(instrument);
+        if (!ladder) {
+            console.warn(`[LadderManager] No ladder found for ${instrument}`);
+            return;
+        }
+
+        // console.log(`[LadderManager] Updating orderbook with level update for ${instrument}:`, {
+        //     levels: data.levels?.length || 0,
+        //     is_snapshot: data.is_snapshot
+        // });
+
+        try {
+            if (data.levels && Array.isArray(data.levels)) {
+                const levelUpdates = data.levels.map(([price, qty, side]) => ({
+                    side: side == 0 ? SlickLadder.Side.BID : SlickLadder.Side.ASK,
+                    price: parseFloat(price),
+                    quantity: parseFloat(qty),
+                    numOrders: data.seq_num     // use seq_num as numOrders for debuging
+                }));
+                ladder.processBatch(levelUpdates);
+            }
+        } catch (error) {
+            console.error(`[LadderManager] Error updating ladder for ${instrument}:`, error);
+        }
+    }
+
+    /**
      * Update ladder with orderbook data
      */
     updateOrderbook(instrument, data) {
@@ -274,6 +305,12 @@ class LadderManager {
             console.warn(`[LadderManager] No ladder found for ${instrument}`);
             return;
         }
+
+        console.log(`[LadderManager] Updating orderbook for ${instrument}:`, {
+            bids: data.bids?.length || 0,
+            asks: data.asks?.length || 0,
+            is_snapshot: data.is_snapshot
+        });
 
         try {
             // Process bid updates
@@ -311,7 +348,7 @@ class LadderManager {
 
         try {
             ladder.processUpdate({
-                side: side === 'bid' ? SlickLadder.Side.BID : SlickLadder.Side.ASK,
+                side: side === 0 ? SlickLadder.Side.BID : SlickLadder.Side.ASK,
                 price: parseFloat(price),
                 quantity: parseFloat(quantity),
                 numOrders: numOrders

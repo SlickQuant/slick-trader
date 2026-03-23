@@ -45,6 +45,7 @@ private:
 
     std::vector<std::string> trade_instruments_;
     std::vector<std::string> quote_instruments_;
+    std::vector<std::string> level2_instruments_;
     std::vector<std::string> orderbook_instruments_;
     int orderbook_depth_;
 };

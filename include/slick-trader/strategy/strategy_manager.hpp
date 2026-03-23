@@ -3,6 +3,7 @@
 #include <slick-trader/strategy/istrategy.hpp>
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/events/order_event.hpp>
+#include <slick-trader/events/level2_update_event.hpp>
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick/queue.h>
 #include <slick/logger.hpp>
@@ -227,6 +228,9 @@ private:
             case EventType::QUOTE:
                 dispatch_quote(*reinterpret_cast<const QuoteEvent*>(data));
                 break;
+            case EventType::LEVEL2_UPDATE:
+                dispatch_level2_updates(*reinterpret_cast<const Level2UpdateEvent*>(data));
+                break;
             case EventType::ORDER_BOOK:
                 dispatch_order_book(*reinterpret_cast<const OrderBookEvent*>(data));
                 break;
@@ -276,6 +280,36 @@ private:
     void dispatch_quote(const QuoteEvent& event) {
         for (auto& strategy : strategies_) {
             strategy->on_quote(event);
+        }
+    }
+
+    void dispatch_level2_updates(const Level2UpdateEvent& event) {
+        const std::string instrument(event.instrument);
+        slick::orderbook::SymbolId sid = get_or_create_symbol_id(instrument);
+        slick::orderbook::OrderBookL2* book = book_manager_.getOrCreateOrderBook(sid);
+
+        if (event.is_snapshot) {
+            book->clear();
+        }
+
+        auto last = event.num_levels - 1;
+        for (uint16_t i = 0; i < event.num_levels; ++i) {
+            if (event.levels[i].side == Side::BUY) {
+                book->updateLevel(slick::orderbook::Side::Buy,
+                                  static_cast<slick::orderbook::Price>(event.levels[i].price),
+                                  static_cast<slick::orderbook::Quantity>(event.levels[i].quantity),
+                                  event.event_time_ns,
+                                  event.sequence_num,
+                                  i == last);
+            }
+            else {
+                book->updateLevel(slick::orderbook::Side::Sell,
+                                  static_cast<slick::orderbook::Price>(event.levels[i].price),
+                                  static_cast<slick::orderbook::Quantity>(event.levels[i].quantity),
+                                  event.event_time_ns,
+                                  event.sequence_num,
+                                  i == last);
+            }
         }
     }
 

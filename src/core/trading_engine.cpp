@@ -101,11 +101,14 @@ bool TradingEngine::initialize(const std::string& config_path) {
         web_config.port = config.value("web_server_port", 8080);
         web_config.enable_cors = config.value("web_server_cors", true);
         web_config.static_files_path = config.value("web_server_static_path", "web/static");
-        
+
         if (!web_server_->initialize(web_config)) {
             LOG_ERROR("Failed to initialize web server");
             return false;
         }
+
+        // Set market data queue for WebSocket streaming (shares same queue as StrategyManager)
+        web_server_->set_market_data_queue(md_queue_);
     }
 
     return true;
@@ -310,7 +313,8 @@ void TradingEngine::apply_strategy_subscriptions() {
             LOG_DEBUG("Strategy {} requests {} subscription for: {}",
                      strategy->name(),
                      sub.type == SubscriptionType::TRADE ? "TRADE" :
-                     sub.type == SubscriptionType::QUOTE ? "QUOTE" : "ORDERBOOK",
+                     sub.type == SubscriptionType::QUOTE ? "QUOTE" : 
+                     sub.type == SubscriptionType::LEVEL2 ? "LEVEL2" : "ORDERBOOK",
                      join_strings(sub.instruments, ", "));
         }
     }
@@ -350,6 +354,7 @@ void TradingEngine::apply_strategy_subscriptions() {
             switch (sub_type) {
                 case SubscriptionType::TRADE: type_str = "trades"; break;
                 case SubscriptionType::QUOTE: type_str = "quotes"; break;
+                case SubscriptionType::LEVEL2: type_str = "level2"; break;
                 case SubscriptionType::ORDER_BOOK: type_str = "orderbook"; break;
             }
 

@@ -42,7 +42,7 @@ class WebSocketClient {
             this.ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    console.log('[WebSocket] Message received:', data.type);
+                    // console.log('[WebSocket] Message received:', data.type);
                     this.emit('message', data);
 
                     // Emit specific event types
@@ -105,7 +105,7 @@ class WebSocketClient {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             const message = typeof data === 'string' ? data : JSON.stringify(data);
             this.ws.send(message);
-            console.log('[WebSocket] Sent:', data);
+            // console.log('[WebSocket] Sent:', data);
         } else {
             console.warn('[WebSocket] Cannot send, not connected');
         }

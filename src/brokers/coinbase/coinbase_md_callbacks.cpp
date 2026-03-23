@@ -2,6 +2,7 @@
 #include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/order_book_event.hpp>
+#include <slick-trader/events/level2_update_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/trade_event.hpp>
 #include <slick/logger.hpp>
@@ -34,12 +35,12 @@ void CoinbaseMDCallbacks::onMarketDataDisconnected(WebSocketClient* client) {
 void CoinbaseMDCallbacks::onUserDataDisconnected(WebSocketClient* /* client */) {
 }
 
-void CoinbaseMDCallbacks::onLevel2Snapshot(WebSocketClient* /* client */, uint64_t /* seq_num */, const coinbase::Level2UpdateBatch& snapshot) {
-    publish_order_book(snapshot, true);
+void CoinbaseMDCallbacks::onLevel2Snapshot(WebSocketClient* /* client */, uint64_t seq_num, const coinbase::Level2UpdateBatch& snapshot) {
+    publish_level2_update(snapshot, seq_num, true);
 }
 
-void CoinbaseMDCallbacks::onLevel2Updates(WebSocketClient* /* client */, uint64_t /* seq_num */, const coinbase::Level2UpdateBatch& updates) {
-    publish_order_book(updates, false);
+void CoinbaseMDCallbacks::onLevel2Updates(WebSocketClient* /* client */, uint64_t seq_num, const coinbase::Level2UpdateBatch& updates) {
+    publish_level2_update(updates, seq_num, false);
 }
 
 void CoinbaseMDCallbacks::onMarketTradesSnapshot(WebSocketClient* /* client */, uint64_t /* seq_num */, const std::vector<coinbase::MarketTrade>& snapshots) {
@@ -147,9 +148,32 @@ void CoinbaseMDCallbacks::publish_ticker(const coinbase::Ticker& ticker, uint64_
     });
 }
 
-void CoinbaseMDCallbacks::publish_order_book(const coinbase::Level2UpdateBatch& batch, bool is_snapshot) {
+void CoinbaseMDCallbacks::publish_level2_update(const coinbase::Level2UpdateBatch& batch, uint64_t seq_num, bool is_snapshot) {
     assert(md_queue_ && "Market data queue not set");
-    EventSerializer::publish<OrderBookEvent>(*md_queue_, [&batch, is_snapshot](OrderBookEvent& event) {
+    uint32_t size = static_cast<uint32_t>(sizeof(Level2UpdateEvent) + batch.updates.size() * sizeof(PriceLevel));
+    EventSerializer::publish<Level2UpdateEvent>(*md_queue_, size, [&batch, seq_num, is_snapshot](Level2UpdateEvent& event) {
+        event.type = EventType::LEVEL2_UPDATE;
+        event.broker_id = BrokerId::COINBASE;
+        event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        event.set_instrument(batch.product_id);
+        event.is_snapshot = is_snapshot;
+        event.event_time_ns = batch.updates[0].event_time;
+        event.sequence_num = seq_num;
+        event.num_levels = static_cast<uint32_t>(batch.updates.size());
+
+        size_t level_count = 0;
+        for (const auto& update : batch.updates) {
+            event.levels[level_count].price = to_price_t(update.price_level);
+            event.levels[level_count].quantity = to_qty_t(update.new_quantity);
+            event.levels[level_count].side = static_cast<Side>(update.side);
+            ++level_count;
+        }
+    });
+}
+
+void CoinbaseMDCallbacks::publish_order_book(const coinbase::Level2UpdateBatch& batch, uint64_t seq_num, bool is_snapshot) {
+    assert(md_queue_ && "Market data queue not set");
+    EventSerializer::publish<OrderBookEvent>(*md_queue_, [&batch, seq_num, is_snapshot](OrderBookEvent& event) {
         event.type = EventType::ORDER_BOOK;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
@@ -160,7 +184,7 @@ void CoinbaseMDCallbacks::publish_order_book(const coinbase::Level2UpdateBatch& 
         size_t ask_count = 0;
         for (const auto& update : batch.updates) {
             event.event_time_ns = update.event_time;
-            event.sequence_num = update.seq_num;
+            event.sequence_num = seq_num;
 
             if (update.side == coinbase::Side::BUY && bid_count < MAX_ORDER_BOOK_LEVELS) {
                 event.bids[bid_count].price = to_price_t(update.price_level);

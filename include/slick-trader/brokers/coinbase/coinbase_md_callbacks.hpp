@@ -50,7 +50,8 @@ public:
 private:
     void publish_trade(const coinbase::MarketTrade& trade);
     void publish_ticker(const coinbase::Ticker& ticker, uint64_t timestamp);
-    void publish_order_book(const coinbase::Level2UpdateBatch& batch, bool is_snapshot);
+    void publish_level2_update(const coinbase::Level2UpdateBatch& batch, uint64_t seq_num, bool is_snapshot);
+    void publish_order_book(const coinbase::Level2UpdateBatch& batch, uint64_t seq_num, bool is_snapshot);
 
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
     CoinbaseMDConnector &connector_;

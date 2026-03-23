@@ -96,8 +96,8 @@ class Dashboard {
             this.updateConnectionStatus('connected');
             this.log('WebSocket connected', 'success');
 
-            // Subscribe to real-time updates
-            this.wsClient.subscribe(['pnl', 'positions', 'orders', 'orderbook']);
+            // Subscribe to level2 for instruments (if ladder already initialized)
+            this.subscribeToMarketData();
         });
 
         this.wsClient.on('disconnected', () => {
@@ -121,7 +121,7 @@ class Dashboard {
         });
 
         this.wsClient.on('pong', () => {
-            console.log('[Dashboard] Received pong');
+            // console.log('[Dashboard] Received pong');
         });
 
         // Real-time data handlers
@@ -137,9 +137,9 @@ class Dashboard {
             this.handleOrderUpdate(data);
         });
 
-        // Orderbook update handler
-        this.wsClient.on('orderbook_update', (data) => {
-            this.handleOrderbookUpdate(data);
+        // level2 update handler
+        this.wsClient.on('level2', (data) => {
+            this.handleLevel2Update(data);
         });
 
         // Connect
@@ -221,6 +221,9 @@ class Dashboard {
             if (strategies && strategies.length > 0) {
                 await ladderManager.init(strategies);
                 this.log('Price ladders initialized', 'success');
+
+                // Subscribe to market data now that instruments are known
+                this.subscribeToMarketData();
             } else {
                 console.warn('[Dashboard] No strategies found for ladder initialization');
             }
@@ -421,6 +424,21 @@ class Dashboard {
     }
 
     /**
+     * Handle real-time level2 update
+     */
+    handleLevel2Update(data) {
+        if (!data || !data.instrument) {
+            console.warn('[Dashboard] Invalid level2 update:', data);
+            return;
+        }
+
+        // Forward to ladder manager
+        if (typeof ladderManager !== 'undefined') {
+            ladderManager.updateOrderbookWithLevelUpdate(data.instrument, data);
+        }
+    }
+
+    /**
      * Handle real-time orderbook update
      */
     handleOrderbookUpdate(data) {
@@ -433,6 +451,39 @@ class Dashboard {
         if (typeof ladderManager !== 'undefined') {
             ladderManager.updateOrderbook(data.instrument, data);
         }
+    }
+
+    /**
+     * Get list of instruments to subscribe to from ladder manager
+     */
+    getSubscribedInstruments() {
+        if (typeof ladderManager === 'undefined') return [];
+        return Array.from(ladderManager.instruments);
+    }
+
+    /**
+     * Subscribe to market data for all instruments
+     */
+    subscribeToMarketData() {
+        if (!this.wsClient || !this.wsClient.isConnected()) {
+            console.log('[Dashboard] WebSocket not connected yet, skipping subscription');
+            return;
+        }
+
+        const instruments = this.getSubscribedInstruments();
+        if (instruments.length === 0) {
+            console.log('[Dashboard] No instruments to subscribe to yet');
+            return;
+        }
+
+        console.log('[Dashboard] Subscribing to level2 for instruments:', instruments);
+        instruments.forEach(instrument => {
+            this.wsClient.send({
+                type: 'subscribe',
+                channel: 'level2',
+                instrument: instrument
+            });
+        });
     }
 
     /**

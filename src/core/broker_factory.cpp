@@ -138,7 +138,7 @@ SubscriptionType BrokerFactory::parse_subscription_type(const std::string& type_
 
     if (lower_type == "trade" || lower_type == "trades") return SubscriptionType::TRADE;
     if (lower_type == "quote" || lower_type == "quotes" || lower_type == "ticker") return SubscriptionType::QUOTE;
-    if (lower_type == "orderbook" || lower_type == "order_book" || lower_type == "level2") return SubscriptionType::ORDER_BOOK;
+    if (lower_type == "orderbook" || lower_type == "order_book" || lower_type == "level2") return SubscriptionType::LEVEL2;
 
     LOG_WARN("Unknown subscription type: {}, defaulting to TRADE", type_str);
     return SubscriptionType::TRADE;

@@ -29,6 +29,7 @@ bool CoinbaseMDConnector::connect() {
 
     // Subscribe to heartbeat channel to open connection
     ws_client_->subscribe({}, {coinbase::WebSocketChannel::HEARTBEATS});
+    ws_client_->logData("logs/coinbase");
     return true;
 }
 
@@ -66,6 +67,7 @@ bool CoinbaseMDConnector::subscribe(SubscriptionType type, const std::vector<std
                 ws_client_->subscribe(instruments, {coinbase::WebSocketChannel::TICKER});
             }
             break;
+        case SubscriptionType::LEVEL2:
         case SubscriptionType::ORDER_BOOK:
             orderbook_instruments_.insert(orderbook_instruments_.end(), instruments.begin(), instruments.end());
             orderbook_depth_ = depth;
@@ -102,6 +104,7 @@ bool CoinbaseMDConnector::unsubscribe(SubscriptionType type, const std::vector<s
                     ws_client_->unsubscribe({instrument}, {coinbase::WebSocketChannel::TICKER});
                 }
                 break;
+            case SubscriptionType::LEVEL2:
             case SubscriptionType::ORDER_BOOK:
                 orderbook_instruments_.erase(
                     std::remove(orderbook_instruments_.begin(), orderbook_instruments_.end(), instrument),
