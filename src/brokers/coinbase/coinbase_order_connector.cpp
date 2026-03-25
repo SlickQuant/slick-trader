@@ -189,7 +189,6 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
             coinbase::to_string(cb_tif), from_qty_t(request.quantity), 
             request.price == NULL_PRICE ? "NULL_PRICE" : std::to_string(from_price_t(request.price)));
 
-    return;
     // Submit order via REST API
     try {
         auto response = rest_client_->create_order(

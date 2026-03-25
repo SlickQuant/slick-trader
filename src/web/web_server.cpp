@@ -753,7 +753,7 @@ void WebServer::process_market_data_events() {
         }
     }
 
-    if (events_processed > 1) {
+    if (events_processed > 5) {
         LOG_DEBUG("WebServer: Processed {} level2 events", events_processed);
     }
 
@@ -792,13 +792,13 @@ void WebServer::broadcast_level2_update(const Level2UpdateEvent& event) {
         for (auto* ws : it->second.clients) {
             ws->send(message, uWS::OpCode::TEXT);
         }
-    } else {
+    }/*  else {
         static uint64_t unsubscribed_count = 0;
         if (++unsubscribed_count % 100 == 0) {  // Log every 100th to avoid spam
             LOG_DEBUG("WebServer: No subscribers for {} orderbook (total unsubscribed events: {})",
                       instrument, unsubscribed_count);
         }
-    }
+    } */
 }
 
 void WebServer::broadcast_orderbook(const OrderBookEvent& event) {

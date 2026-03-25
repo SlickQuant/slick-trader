@@ -136,19 +136,20 @@ private:
         submit_order(instrument.data(), BrokerId::SIMULATED, Side::BUY, quantity, OrderType::LIMIT, price);
         order_count_++;
     }
-
+    
     void submit_sell_order(const std::string& instrument, price_t price, qty_t quantity) {
         submit_order(instrument.data(), BrokerId::SIMULATED, Side::SELL, quantity, OrderType::LIMIT, price);
         order_count_++;
     }
 
     std::string generate_order_id() override {
-        return "simple_plugin_" + std::to_string(order_count_);
+        return "simple_plugin_" + std::to_string(next_order_id_++);
     }
 
     std::string target_instrument_;
     qty_t target_position_size_;
     uint64_t order_count_;
+    uint64_t next_order_id_{0};
     uint64_t trade_count_{0};
 };
 

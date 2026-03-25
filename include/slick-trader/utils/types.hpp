@@ -10,11 +10,11 @@ namespace slick::trader {
 // price_t: int64_t with 8 decimal places (1e-8 precision)
 // qty_t: uint64_t with 8 decimal places (1e-8 precision)
 using price_t = int64_t;
-using qty_t = uint64_t;
+using qty_t = int64_t;
 
 constexpr price_t NULL_PRICE = std::numeric_limits<price_t>::max();
 constexpr int64_t PRICE_SCALE = 100'000'000;  // 1e8
-constexpr uint64_t QTY_SCALE = 100'000'000;   // 1e8
+constexpr int64_t QTY_SCALE = 100'000'000;   // 1e8
 
 // Conversion functions
 inline price_t to_price_t(double value) {

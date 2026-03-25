@@ -157,7 +157,7 @@ void CoinbaseMDCallbacks::publish_level2_update(const coinbase::Level2UpdateBatc
         event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
         event.set_instrument(batch.product_id);
         event.is_snapshot = is_snapshot;
-        event.event_time_ns = batch.updates[0].event_time;
+        event.event_time_ns = batch.updates.empty() ?  std::chrono::system_clock::now().time_since_epoch().count() : batch.updates[0].event_time;
         event.sequence_num = seq_num;
         event.num_levels = static_cast<uint32_t>(batch.updates.size());
 

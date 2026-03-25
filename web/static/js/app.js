@@ -41,22 +41,6 @@ class Dashboard {
      * Setup DOM event listeners
      */
     setupEventListeners() {
-        // New Order button
-        const newOrderBtn = document.getElementById('newOrderBtn');
-        if (newOrderBtn) {
-            console.log('[Dashboard] New Order button found, attaching listener');
-            newOrderBtn.addEventListener('click', () => {
-                console.log('[Dashboard] New Order button clicked');
-                if (typeof modalManager !== 'undefined') {
-                    modalManager.showOrderModal();
-                } else {
-                    console.error('[Dashboard] modalManager is not defined!');
-                }
-            });
-        } else {
-            console.warn('[Dashboard] New Order button not found in DOM');
-        }
-
         // Refresh buttons
         document.getElementById('refreshPositions')?.addEventListener('click', () => {
             this.loadPositions();
