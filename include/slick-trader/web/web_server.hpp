@@ -13,6 +13,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <nlohmann/json.hpp>
 
 namespace slick::trader {
 
@@ -50,6 +51,7 @@ public:
 
     // Initialize with configuration
     bool initialize(const Config& config);
+    bool initialize(const Config& config, const nlohmann::json& full_config);
 
     // Start web server thread
     void start();
@@ -93,6 +95,9 @@ private:
                                      const std::string& strategy_id, std::string_view body);
     void handle_post_resume_strategy(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                        const std::string& strategy_id);
+    void handle_get_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
+    void handle_put_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                   const std::string& body);
 
     // WebSocket handlers
     void handle_ws_open(uWS::WebSocket<false, true, void*>* ws);
@@ -130,6 +135,9 @@ private:
 
     // Subscription management
     std::unordered_map<std::string, Subscription> level2_subscriptions_;
+
+    // Ladder configuration
+    nlohmann::json ladder_config_;
 };
 
 } // namespace slick::trader

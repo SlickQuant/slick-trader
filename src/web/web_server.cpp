@@ -21,6 +21,27 @@ bool WebServer::initialize(const Config& config) {
     return true;
 }
 
+bool WebServer::initialize(const Config& config, const json& full_config) {
+    config_ = config;
+
+    // Load ladder config if present
+    if (full_config.contains("ladder_config")) {
+        ladder_config_ = full_config["ladder_config"];
+        LOG_INFO("WebServer: Loaded ladder config");
+    } else {
+        // Set defaults if not in config
+        ladder_config_ = {
+            {"default_qty", 0.01},
+            {"default_strategy_id", ""},
+            {"per_instrument", json::object()}
+        };
+        LOG_INFO("WebServer: Using default ladder config");
+    }
+
+    LOG_INFO("WebServer: Initialized on {}:{}", config_.host, config_.port);
+    return true;
+}
+
 void WebServer::start() {
     if (running_.load(std::memory_order_relaxed)) {
         LOG_WARN("WebServer: Already running");
@@ -172,6 +193,23 @@ void WebServer::setup_routes(uWS::App &app) {
         handle_post_resume_strategy(res, req, strategy_id);
     });
 
+    // GET: Ladder configuration
+    app.get("/api/ladder-config", [this](auto* res, auto* req) {
+        handle_get_ladder_config(res, req);
+    });
+
+    // PUT: Update ladder configuration
+    app.put("/api/ladder-config", [this](auto* res, auto* req) {
+        auto body_ptr = std::make_shared<std::string>();
+        res->onData([this, res, body_ptr](std::string_view data, bool last) mutable {
+            body_ptr->append(data.data(), data.size());
+            if (last) {
+                handle_put_ladder_config(res, nullptr, *body_ptr);
+            }
+        });
+        res->onAborted([]() {});
+    });
+
     // WebSocket endpoint
     app.ws<void*>("/*", {
         .open = [this](auto* ws) {
@@ -314,7 +352,7 @@ void WebServer::handle_get_positions(uWS::HttpResponse<false>* res, uWS::HttpReq
 
 void WebServer::handle_get_pnl(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
     try {
-        const uint64_t now_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        const uint64_t now_ns = get_timestamp_ns();
         auto all_pnl = pnl_calculator_.calculate_all_pnl(now_ns);
 
         json response = json::object();
@@ -360,7 +398,7 @@ void WebServer::handle_get_strategy_positions(uWS::HttpResponse<false>* res, uWS
 void WebServer::handle_get_strategy_pnl(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                          const std::string& strategy_id) {
     try {
-        const uint64_t now_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        const uint64_t now_ns = get_timestamp_ns();
         auto pnl = pnl_calculator_.calculate_pnl(strategy_id, now_ns);
 
         json response = {
@@ -527,6 +565,7 @@ void WebServer::handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpReques
 
         auto strategy = strategy_manager_.get_strategy(strategy_id);
         if (!strategy) {
+            LOG_ERROR("WebServer: strategy {} not found", strategy_id);
             send_error_response(res, "Strategy not found", 404);
             return;
         }
@@ -847,6 +886,48 @@ void WebServer::broadcast_orderbook(const OrderBookEvent& event) {
             LOG_DEBUG("WebServer: No subscribers for {} orderbook (total unsubscribed events: {})",
                       instrument, unsubscribed_count);
         }
+    }
+}
+
+void WebServer::handle_get_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    add_cors_headers(res);
+    try {
+        send_json_response(res, ladder_config_.dump());
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::handle_put_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                          const std::string& body) {
+    add_cors_headers(res);
+
+    try {
+        auto new_config = json::parse(body);
+
+        // Validate config structure
+        if (!new_config.contains("default_qty") || !new_config.contains("default_strategy_id")) {
+            send_error_response(res, "Invalid ladder config format: missing required fields", 400);
+            return;
+        }
+
+        // Update in-memory config
+        ladder_config_ = new_config;
+
+        LOG_INFO("WebServer: Updated ladder config - default_qty: {}, default_strategy_id: {}",
+                 ladder_config_["default_qty"].get<double>(),
+                 ladder_config_["default_strategy_id"].get<std::string>());
+
+        json response = {
+            {"status", "ok"},
+            {"message", "Ladder config updated successfully"}
+        };
+        send_json_response(res, response.dump());
+
+    } catch (const json::exception& e) {
+        send_error_response(res, std::string("Invalid JSON: ") + e.what(), 400);
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
     }
 }
 

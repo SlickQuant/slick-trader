@@ -126,6 +126,20 @@ class ApiClient {
         return this.post(`/api/strategies/${strategyId}/control`, { action });
     }
 
+    /**
+     * Get ladder configuration
+     */
+    async getLadderConfig() {
+        return this.get('/api/ladder-config');
+    }
+
+    /**
+     * Update ladder configuration
+     */
+    async saveLadderConfig(configData) {
+        return this.put('/api/ladder-config', configData);
+    }
+
     // ==================== Helper Methods ====================
 
     /**

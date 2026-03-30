@@ -4,6 +4,7 @@
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/risk_manager.hpp>
+#include <slick-trader/utils/time.hpp>
 #include <slick/logger.hpp>
 #include <nlohmann/json.hpp>
 #include <atomic>
@@ -104,7 +105,7 @@ protected:
     virtual void on_fill(const OrderFillEvent& event) {}
 
     virtual std::string generate_order_id() {
-        return name_ + "_" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+        return name_ + "_" + std::to_string(get_timestamp_ns());
     }
 
     // Helper methods for order submission
@@ -125,7 +126,7 @@ protected:
 
                 // Publish internal reject event back to strategy
                 OrderRejectEvent reject;
-                reject.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+                reject.timestamp_ns = get_timestamp_ns();
                 reject.set_instrument(instrument);
                 reject.set_client_order_id(client_order_id.data());
                 reject.set_reason(reject_reason.c_str());

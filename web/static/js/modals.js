@@ -8,9 +8,12 @@ class ModalManager {
 
     /**
      * Show order submission modal
+     * @param {string} strategy_id - Strategy ID
+     * @param {string} instrument - Instrument symbol
+     * @param {object} prefillData - Optional prefill data {side, price, quantity, orderType}
      */
-    showOrderModal(strategy_id = '', instrument = '') {
-        const modal = this.createOrderModal(strategy_id, instrument);
+    showOrderModal(strategy_id = '', instrument = '', prefillData = null) {
+        const modal = this.createOrderModal(strategy_id, instrument, prefillData);
         document.body.appendChild(modal);
         this.activeModal = modal;
 
@@ -76,7 +79,14 @@ class ModalManager {
     /**
      * Create order modal HTML
      */
-    createOrderModal(strategy_id, instrument) {
+    createOrderModal(strategy_id, instrument, prefillData = null) {
+        // Apply prefill data if provided
+        const side = prefillData?.side || 'buy';
+        const orderType = prefillData?.orderType || (prefillData?.price ? 'limit' : 'market');
+        const quantity = prefillData?.quantity || '';
+        const price = prefillData?.price || '';
+        const priceHidden = orderType === 'market' ? 'hidden' : '';
+
         const modal = document.createElement('div');
         modal.className = 'modal';
         modal.innerHTML = `
@@ -110,16 +120,16 @@ class ModalManager {
                             <div class="form-group">
                                 <label for="side">Side</label>
                                 <select id="side" required>
-                                    <option value="buy">Buy</option>
-                                    <option value="sell">Sell</option>
+                                    <option value="buy" ${side === 'buy' ? 'selected' : ''}>Buy</option>
+                                    <option value="sell" ${side === 'sell' ? 'selected' : ''}>Sell</option>
                                 </select>
                             </div>
 
                             <div class="form-group">
                                 <label for="orderType">Type</label>
                                 <select id="orderType" required>
-                                    <option value="market">Market</option>
-                                    <option value="limit">Limit</option>
+                                    <option value="market" ${orderType === 'market' ? 'selected' : ''}>Market</option>
+                                    <option value="limit" ${orderType === 'limit' ? 'selected' : ''}>Limit</option>
                                 </select>
                             </div>
                         </div>
@@ -129,18 +139,19 @@ class ModalManager {
                             <select id="timeInForce" required>
                                 <option value="1">IOC (Immediate Or Cancel)</option>
                                 <option value="2">FOK (Fill Or Kill)</option>
+                                ${orderType === 'limit' ? '<option value="0">GTC (Good Till Cancel)</option><option value="3">GTD (Good Till Date)</option>' : ''}
                             </select>
                         </div>
 
                         <div class="form-row">
                             <div class="form-group">
                                 <label for="quantity">Quantity</label>
-                                <input type="number" id="quantity" step="0.00000001" required placeholder="0.01">
+                                <input type="number" id="quantity" step="0.00000001" required placeholder="0.01" value="${quantity}">
                             </div>
 
-                            <div class="form-group price-field hidden">
+                            <div class="form-group price-field ${priceHidden}">
                                 <label for="price">Price</label>
-                                <input type="number" id="price" step="0.01" placeholder="50000.00">
+                                <input type="number" id="price" step="0.01" placeholder="50000.00" value="${price}">
                             </div>
                         </div>
 
@@ -233,6 +244,88 @@ class ModalManager {
     }
 
     /**
+     * Show ladder settings modal
+     */
+    showLadderSettingsModal() {
+        const currentConfig = window.ladderManager?.ladderConfig || { default_qty: 0.01, default_strategy_id: '' };
+
+        const modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.innerHTML = `
+            <div class="modal-content settings-modal">
+                <div class="modal-header">
+                    <h3>Ladder Trading Settings</h3>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <form class="settings-form">
+                        <div class="form-group">
+                            <label for="defaultStrategyId">Default Strategy ID</label>
+                            <input type="text" id="defaultStrategyId"
+                                   value="${currentConfig.default_strategy_id}" required placeholder="SimpleLoggerStrategy">
+                            <small>Strategy to use for click-to-trade orders</small>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-cancel">Cancel</button>
+                    <button class="btn btn-primary btn-save">Save Settings</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+        this.activeModal = modal;
+
+        // Setup event listeners
+        const closeBtn = modal.querySelector('.modal-close');
+        const cancelBtn = modal.querySelector('.btn-cancel');
+        const saveBtn = modal.querySelector('.btn-save');
+        const form = modal.querySelector('.settings-form');
+
+        closeBtn.addEventListener('click', () => this.closeModal());
+        cancelBtn.addEventListener('click', () => this.closeModal());
+        saveBtn.addEventListener('click', () => this.saveLadderSettings(form));
+
+        // Close on backdrop click
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                this.closeModal();
+            }
+        });
+
+        // Close on escape
+        document.addEventListener('keydown', this.handleEscape);
+    }
+
+    /**
+     * Save ladder settings to server
+     */
+    async saveLadderSettings(form) {
+        const defaultStrategyId = form.querySelector('#defaultStrategyId').value.trim();
+
+        if (!defaultStrategyId) {
+            this.showNotification('Default strategy ID is required', 'error');
+            return;
+        }
+
+        try {
+            const newConfig = {
+                default_qty: window.ladderManager?.ladderConfig?.default_qty ?? 0.01,
+                default_strategy_id: defaultStrategyId,
+                per_instrument: window.ladderManager?.ladderConfig?.per_instrument || {}
+            };
+
+            await window.ladderManager.saveLadderConfig(newConfig);
+            this.showNotification('Ladder settings saved successfully', 'success');
+            this.closeModal();
+
+        } catch (error) {
+            this.showNotification(`Failed to save settings: ${error.message}`, 'error');
+        }
+    }
+
+    /**
      * Show notification toast
      */
     showNotification(message, type = 'info') {
@@ -255,3 +348,4 @@ class ModalManager {
 
 // Create global modal manager instance
 const modalManager = new ModalManager();
+window.modalManager = modalManager;

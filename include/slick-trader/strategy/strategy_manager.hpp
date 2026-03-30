@@ -179,7 +179,7 @@ private:
             return;
         }
 
-        const auto now_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        const auto now_ns = get_timestamp_ns();
 
         // Check each strategy
         for (auto& strategy : strategies_) {

@@ -125,8 +125,7 @@ protected:
         }
 
         if (get_pnl_calculator()) {
-            auto pnl = get_pnl_calculator()->calculate_pnl(get_name(),
-                std::chrono::system_clock::now().time_since_epoch().count());
+            auto pnl = get_pnl_calculator()->calculate_pnl(get_name(), get_timestamp_ns());
             LOG_INFO("SimpleStrategy: PnL - realized: {}, unrealized: {}, total: {}",
                      pnl.get_realized(), pnl.get_unrealized(), pnl.get_total());
         }
@@ -145,7 +144,7 @@ protected:
 private:
     void submit_buy_order(const std::string& instrument, price_t price, qty_t quantity) {
         NewOrderEvent order;
-        order.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        order.timestamp_ns = get_timestamp_ns();
         order.set_instrument(instrument.c_str());
         order.set_client_order_id(generate_order_id().c_str());
         order.side = Side::BUY;
@@ -160,7 +159,7 @@ private:
 
     void submit_sell_order(const std::string& instrument, price_t price, qty_t quantity) {
         NewOrderEvent order;
-        order.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        order.timestamp_ns = get_timestamp_ns();
         order.set_instrument(instrument.c_str());
         order.set_client_order_id(generate_order_id().c_str());
         order.side = Side::SELL;

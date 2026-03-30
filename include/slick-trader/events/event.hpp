@@ -5,6 +5,7 @@
 #include <cstring>
 #include <string_view>
 #include <algorithm>
+#include <slick-trader/utils/time.hpp>
 
 namespace slick::trader {
 
@@ -45,7 +46,7 @@ struct Event {
 
     Event(EventType t = EventType::TRADE)
         : type(t)
-        , timestamp_ns(std::chrono::system_clock::now().time_since_epoch().count())
+        , timestamp_ns(get_timestamp_ns())
         , event_time_ns(0)
         , broker_id(BrokerId::UNKNOWN)
         , instrument{} {}

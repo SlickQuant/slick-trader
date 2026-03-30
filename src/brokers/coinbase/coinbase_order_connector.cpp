@@ -211,7 +211,7 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
             EventSerializer::publish<OrderAckEvent>(*order_event_queue_, [&request, &response](OrderAckEvent &event) {
                 event.type = EventType::ORDER_ACK;
                 event.broker_id = BrokerId::COINBASE;
-                event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+                event.timestamp_ns = get_timestamp_ns();
                 event.set_instrument(request.instrument);
                 event.set_client_order_id(response.success_response.client_order_id);
                 event.set_order_id(response.success_response.order_id);
@@ -229,7 +229,7 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
                 EventSerializer::publish<OrderRejectEvent>(*order_event_queue_, [&request, &response](OrderRejectEvent &reject_event) {
                 reject_event.type = EventType::ORDER_REJECT;
                 reject_event.broker_id = BrokerId::COINBASE;
-                reject_event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+                reject_event.timestamp_ns = get_timestamp_ns();
                 reject_event.set_instrument(request.instrument);
                 reject_event.set_client_order_id(request.client_order_id);
                 reject_event.set_reason(response.error_response.message);
@@ -245,7 +245,7 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
         EventSerializer::publish<OrderRejectEvent>(*order_event_queue_, [&request, &e](OrderRejectEvent &reject_event) {
             reject_event.type = EventType::ORDER_REJECT;
             reject_event.broker_id = BrokerId::COINBASE;
-            reject_event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+            reject_event.timestamp_ns = get_timestamp_ns();
             reject_event.set_instrument(request.instrument);
             reject_event.set_client_order_id(request.client_order_id);
             reject_event.set_reason(e.what());

@@ -15,6 +15,20 @@ class LadderManager {
     async init(strategies) {
         console.log('[LadderManager] Initializing with strategies:', strategies);
 
+        // Load ladder config from server
+        try {
+            this.ladderConfig = await api.getLadderConfig();
+            console.log('[LadderManager] Loaded ladder config:', this.ladderConfig);
+        } catch (error) {
+            console.error('[LadderManager] Failed to load ladder config:', error);
+            // Use defaults if server config unavailable
+            this.ladderConfig = {
+                default_qty: 0.01,
+                default_strategy_id: '',
+                per_instrument: {}
+            };
+        }
+
         // Extract unique instruments from strategies
         this.instruments = this.extractInstruments(strategies);
 
@@ -145,7 +159,7 @@ class LadderManager {
         // Clear existing content
         container.innerHTML = '';
 
-        // Create instrument selector
+        // Row 1: instrument selector + settings button
         const selectorDiv = document.createElement('div');
         selectorDiv.className = 'ladder-selector';
         selectorDiv.innerHTML = `
@@ -157,14 +171,74 @@ class LadderManager {
                     </option>
                 `).join('')}
             </select>
+            <button class="ladder-settings-btn" id="ladderSettingsBtn" title="Ladder Settings">⚙️</button>
         `;
         container.appendChild(selectorDiv);
+
+        // Row 2: qty + price inputs
+        const orderControlsDiv = document.createElement('div');
+        orderControlsDiv.className = 'ladder-order-controls';
+        const initialQty = this.getConfigForInstrument(this.selectedInstrument).default_qty ?? 0.01;
+        orderControlsDiv.innerHTML = `
+            <label for="qtyInput">Qty:</label>
+            <input type="number" id="qtyInput" class="qty-input" step="0.00000001" min="0.00000001"
+                   value="${initialQty}" placeholder="0.01" title="Order quantity for click-to-trade">
+            <label for="priceInput">Price:</label>
+            <input type="number" id="priceInput" class="price-input" step="any" min="0"
+                   placeholder="Market / ladder price" title="Override price (leave empty to use clicked ladder price)">
+            <select id="tifSelect" class="tif-select" title="Time In Force">
+                <option value="1" selected>IOC</option>
+                <option value="0">GTC</option>
+                <option value="2">FOK</option>
+            </select>
+        `;
+        container.appendChild(orderControlsDiv);
 
         // Add event listener for instrument selection
         const select = document.getElementById('instrumentSelect');
         if (select) {
             select.addEventListener('change', (e) => {
                 this.switchInstrument(e.target.value);
+            });
+        }
+
+        // Add event listener for qty input
+        const qtyInput = document.getElementById('qtyInput');
+        if (qtyInput) {
+            qtyInput.addEventListener('change', (e) => {
+                const newQty = parseFloat(e.target.value);
+                if (!newQty || newQty <= 0) return;
+                const instrument = this.selectedInstrument;
+                if (this.ladderConfig.per_instrument && this.ladderConfig.per_instrument[instrument]) {
+                    this.ladderConfig.per_instrument[instrument].default_qty = newQty;
+                } else {
+                    this.ladderConfig.default_qty = newQty;
+                }
+                this.saveLadderConfig(this.ladderConfig).catch(err => {
+                    console.error('[LadderManager] Failed to save qty:', err);
+                });
+            });
+        }
+
+        // Update TIF default when price input changes
+        const priceInputEl = document.getElementById('priceInput');
+        const tifSelect = document.getElementById('tifSelect');
+        if (priceInputEl && tifSelect) {
+            priceInputEl.addEventListener('input', () => {
+                const hasPrice = priceInputEl.value.trim() !== '';
+                tifSelect.value = hasPrice ? '0' : '1'; // GTC when price set, IOC when empty
+            });
+        }
+
+        // Add event listener for settings button
+        const settingsBtn = document.getElementById('ladderSettingsBtn');
+        if (settingsBtn) {
+            settingsBtn.addEventListener('click', () => {
+                if (window.modalManager) {
+                    window.modalManager.showLadderSettingsModal();
+                } else {
+                    console.error('[LadderManager] Modal manager not found');
+                }
             });
         }
 
@@ -213,6 +287,9 @@ class LadderManager {
                     gridLine: '#444444',
                     ownOrderBorder: '#ffd700',
                     hoverBackground: 'rgba(255, 255, 255, 0.1)'
+                },
+                onTrade: (price, side) => {
+                    this.handleLadderClick(instrument, price, side);
                 }
             });
 
@@ -261,6 +338,18 @@ class LadderManager {
         const newContainer = document.getElementById(`ladder-${instrument}`);
         if (newContainer) {
             newContainer.style.display = 'block';
+        }
+
+        // Update qty input to reflect per-instrument or global default
+        const qtyInput = document.getElementById('qtyInput');
+        if (qtyInput) {
+            qtyInput.value = this.getConfigForInstrument(instrument).default_qty ?? 0.01;
+        }
+
+        // Clear price override when switching instruments
+        const priceInput = document.getElementById('priceInput');
+        if (priceInput) {
+            priceInput.value = '';
         }
 
         console.log(`[LadderManager] Switched to instrument: ${instrument}`);
@@ -412,7 +501,131 @@ class LadderManager {
             this.resize(instrument, width, height);
         });
     }
+
+    /**
+     * Get ladder config for specific instrument
+     * Merges global config with instrument-specific overrides
+     */
+    getConfigForInstrument(instrument) {
+        if (!this.ladderConfig) {
+            return { default_qty: 0.01, default_strategy_id: '' };
+        }
+
+        // Check for instrument-specific config
+        if (this.ladderConfig.per_instrument && this.ladderConfig.per_instrument[instrument]) {
+            return {
+                ...this.ladderConfig,
+                ...this.ladderConfig.per_instrument[instrument]
+            };
+        }
+
+        return this.ladderConfig;
+    }
+
+    /**
+     * Save ladder configuration to server
+     */
+    async saveLadderConfig(newConfig) {
+        try {
+            await api.saveLadderConfig(newConfig);
+            this.ladderConfig = newConfig;
+            console.log('[LadderManager] Ladder config saved successfully');
+            return true;
+        } catch (error) {
+            console.error('[LadderManager] Failed to save ladder config:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Handle click-to-trade on ladder
+     * @param {string} instrument - Instrument being traded
+     * @param {number} price - Clicked price level
+     * @param {number} side - SlickLadder.Side enum (0=BID, 1=ASK)
+     */
+    async handleLadderClick(instrument, price, side) {
+        console.log(`[LadderManager] Ladder clicked - Instrument: ${instrument}, Price: ${price}, Side: ${side}`);
+
+        // Get config for this instrument
+        const config = this.getConfigForInstrument(instrument);
+
+        // Validate config has strategy ID
+        if (!config.default_strategy_id || config.default_strategy_id.trim() === '') {
+            if (window.modalManager) {
+                window.modalManager.showNotification(
+                    'Please configure a strategy ID in ladder settings (⚙️ icon)',
+                    'error'
+                );
+            }
+            return;
+        }
+
+        // Convert SlickLadder side to order side
+        const orderSide = side === 0 ? 'buy' : 'sell';
+
+        // Determine order type and price:
+        // - Price input has a value -> limit at that price
+        // - Price input empty and ladder price is not null -> limit at ladder price
+        // - Price input empty and ladder price is null -> market order
+        const priceInputEl = document.getElementById('priceInput');
+        const priceOverride = priceInputEl ? parseFloat(priceInputEl.value) : NaN;
+
+        let orderType, orderPrice;
+        if (!isNaN(priceOverride) && priceOverride > 0) {
+            orderType = 'limit';
+            orderPrice = priceOverride;
+        } else if (price !== null && price !== undefined) {
+            orderType = 'limit';
+            orderPrice = price;
+        } else {
+            orderType = 'market';
+            orderPrice = undefined;
+        }
+
+        // Build order payload
+        const brokerId = config.default_broker_id ?? 1;
+        const tifSelectEl = document.getElementById('tifSelect');
+        // If TIF is still at the default (IOC/market default), auto-set based on order type.
+        // This handles the case where the ladder price is used (priceInput is empty so the
+        // input event never fired to switch TIF to GTC).
+        if (tifSelectEl) {
+            const currentTif = parseInt(tifSelectEl.value);
+            const defaultMarketTif = 1; // IOC
+            const defaultLimitTif = 0;  // GTC
+            if (orderType === 'limit' && currentTif === defaultMarketTif) {
+                tifSelectEl.value = String(defaultLimitTif);
+            } else if (orderType === 'market' && currentTif === defaultLimitTif) {
+                tifSelectEl.value = String(defaultMarketTif);
+            }
+        }
+        const timeInForce = tifSelectEl ? parseInt(tifSelectEl.value) : (orderType === 'limit' ? 0 : 1);
+        const payload = {
+            strategy_id: config.default_strategy_id,
+            instrument: instrument,
+            broker_id: brokerId,
+            side: orderSide,
+            type: orderType,
+            quantity: config.default_qty,
+            time_in_force: timeInForce,
+            ...(orderType === 'limit' && { price: orderPrice })
+        };
+
+        try {
+            await api.submitOrder(payload);
+            if (priceInputEl) priceInputEl.value = '';
+            if (tifSelectEl) tifSelectEl.value = '1'; // Reset to IOC after order
+            const priceStr = orderType === 'limit' ? ` @ ${orderPrice}` : '';
+            const msg = `Order submitted: ${orderSide.toUpperCase()} ${config.default_qty} ${instrument}${priceStr}`;
+            if (window.modalManager) window.modalManager.showNotification(msg, 'success');
+            if (window.dashboard) window.dashboard.log(msg, 'success');
+        } catch (error) {
+            const msg = `Order failed: ${error.message}`;
+            if (window.modalManager) window.modalManager.showNotification(msg, 'error');
+            console.error('[LadderManager]', msg);
+        }
+    }
 }
 
 // Create global ladder manager instance
 const ladderManager = new LadderManager();
+window.ladderManager = ladderManager;

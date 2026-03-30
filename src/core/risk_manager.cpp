@@ -117,7 +117,9 @@ bool RiskManager::check_order_value_limit(std::string_view instrument, price_t p
 
 bool RiskManager::check_rate_limit(const std::string& strategy_id, const RiskLimits& limits,
                                      std::string* reason) {
-    const auto now_ns = std::chrono::system_clock::now().time_since_epoch().count();
+    const uint64_t now_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
     constexpr uint64_t ONE_SECOND_NS = 1'000'000'000;
 
     auto& rate_limit = rate_limits_[strategy_id];

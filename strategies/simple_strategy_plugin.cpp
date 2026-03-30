@@ -73,6 +73,14 @@ protected:
             return;
         }
 
+        // Throttle: only act on quotes at most once per second to avoid consuming
+        // the entire rate limit budget and starving manual orders.
+        const uint64_t now_ns = get_timestamp_ns();
+        constexpr uint64_t ONE_SECOND_NS = 1'000'000'000;
+        if (now_ns - last_order_ns_ < ONE_SECOND_NS) {
+            return;
+        }
+
         // Calculate mid price
         const price_t mid_price = to_price_t(
             (from_price_t(event.bid_price) + from_price_t(event.ask_price)) / 2.0
@@ -87,11 +95,11 @@ protected:
 
         // Simple logic: If flat, buy at mid. If long, sell to close.
         if (pos.is_flat()) {
-            // Submit a small buy order
             submit_buy_order(target_instrument_, mid_price, target_position_size_);
+            last_order_ns_ = now_ns;
         } else if (pos.is_long()) {
-            // Close the position
             submit_sell_order(target_instrument_, mid_price, pos.quantity);
+            last_order_ns_ = now_ns;
         }
     }
 
@@ -119,8 +127,7 @@ protected:
         }
 
         if (get_pnl_calculator()) {
-            auto pnl = get_pnl_calculator()->calculate_pnl(get_name(),
-                std::chrono::system_clock::now().time_since_epoch().count());
+            auto pnl = get_pnl_calculator()->calculate_pnl(get_name(), get_timestamp_ns());
             LOG_INFO("SimpleStrategyPlugin: PnL - realized: {}, unrealized: {}, total: {}",
                      pnl.get_realized(), pnl.get_unrealized(), pnl.get_total());
         }
@@ -143,14 +150,14 @@ private:
     }
 
     std::string generate_order_id() override {
-        return "simple_plugin_" + std::to_string(next_order_id_++);
+        return "simple_plugin_" + std::to_string(get_timestamp_ns());
     }
 
     std::string target_instrument_;
     qty_t target_position_size_;
     uint64_t order_count_;
-    uint64_t next_order_id_{0};
     uint64_t trade_count_{0};
+    uint64_t last_order_ns_{0};
 };
 
 // Export the strategy plugin

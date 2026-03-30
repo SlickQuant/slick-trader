@@ -121,7 +121,7 @@ void CoinbaseMDCallbacks::publish_trade(const coinbase::MarketTrade& trade) {
     EventSerializer::publish<TradeEvent>(*md_queue_, [&trade](TradeEvent& event) {
         event.type = EventType::TRADE;
         event.broker_id = BrokerId::COINBASE;
-        event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        event.timestamp_ns = get_timestamp_ns();
         event.event_time_ns = trade.time;
         event.set_instrument(trade.product_id);
 
@@ -137,7 +137,7 @@ void CoinbaseMDCallbacks::publish_ticker(const coinbase::Ticker& ticker, uint64_
     EventSerializer::publish<QuoteEvent>(*md_queue_, [&ticker, timestamp](QuoteEvent& event) {
         event.type = EventType::QUOTE;
         event.broker_id = BrokerId::COINBASE;
-        event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        event.timestamp_ns = get_timestamp_ns();
         event.event_time_ns = timestamp;
         event.set_instrument(ticker.product_id);
 
@@ -154,10 +154,10 @@ void CoinbaseMDCallbacks::publish_level2_update(const coinbase::Level2UpdateBatc
     EventSerializer::publish<Level2UpdateEvent>(*md_queue_, size, [&batch, seq_num, is_snapshot](Level2UpdateEvent& event) {
         event.type = EventType::LEVEL2_UPDATE;
         event.broker_id = BrokerId::COINBASE;
-        event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        event.timestamp_ns = get_timestamp_ns();
         event.set_instrument(batch.product_id);
         event.is_snapshot = is_snapshot;
-        event.event_time_ns = batch.updates.empty() ?  std::chrono::system_clock::now().time_since_epoch().count() : batch.updates[0].event_time;
+        event.event_time_ns = batch.updates.empty() ?  get_timestamp_ns() : batch.updates[0].event_time;
         event.sequence_num = seq_num;
         event.num_levels = static_cast<uint32_t>(batch.updates.size());
 
@@ -176,7 +176,7 @@ void CoinbaseMDCallbacks::publish_order_book(const coinbase::Level2UpdateBatch& 
     EventSerializer::publish<OrderBookEvent>(*md_queue_, [&batch, seq_num, is_snapshot](OrderBookEvent& event) {
         event.type = EventType::ORDER_BOOK;
         event.broker_id = BrokerId::COINBASE;
-        event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        event.timestamp_ns = get_timestamp_ns();
         event.set_instrument(batch.product_id);
         event.is_snapshot = is_snapshot;
 

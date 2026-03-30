@@ -9,34 +9,46 @@
   "strategy_plugins_folder": "build/strategies/Debug",
   "log_file_path": "logs/slick_trader.log",
   "log_level": 1,
+  "ladder_config": {
+    "default_qty": 0.01,
+    "default_strategy_id": "SimpleStrategyPlugin",
+    "per_instrument": {
+      "BTC-USD": {
+        "default_qty": 0.001
+      },
+      "ETH-USD": {
+        "default_qty": 0.01
+      }
+    }
+  },
   "brokers": [
     {
       "name": "coinbase",
       "enabled": true,
       "market_data": {
         "enabled": true,
-        "websocket_url": "wss://advanced-trade-ws.coinbase.com"
+        "websocket_url": "ws://localhost:5000"
       },
       "order": {
         "enabled": true,
-        "rest_url": "https://api.coinbase.com",
-        "websocket_url": "wss://advanced-trade-ws-user.coinbase.com"
+        "rest_url": "http://localhost:4000",
+        "websocket_url": "ws://localhost:4001"
       }
     }
   ],
   "strategies": [
     {
-      "name": "SimpleLoggerStrategy",
+      "name": "SimpleStrategyPlugin",
       "enabled": true,
       "risk_limits": {
-        "max_position_size": 0,
+        "max_position_size": 1,
         "max_order_value": 100000.0,
-        "max_orders_per_second": 0,
-        "max_loss_per_strategy": -100.0,
+        "max_orders_per_second": 5,
+        "max_loss_per_strategy": -2000.0,
         "instruments": {
           "BTC-USD": {
-            "max_position_size": 0,
-            "max_order_value": 0.0
+            "max_position_size": 0.5,
+            "max_order_value": 20000
           },
           "ETH-USD": {
             "max_position_size": 0,

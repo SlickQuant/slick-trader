@@ -159,7 +159,7 @@ void CoinbaseOrderCallbacks::publish_order_ack(const coinbase::Order& order) {
     EventSerializer::publish<OrderAckEvent>(*order_event_queue_, [this, &order, price, stop_price, quantity](OrderAckEvent& event) {
         event.type = EventType::ORDER_ACK;
         event.broker_id = BrokerId::COINBASE;
-        event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        event.timestamp_ns = get_timestamp_ns();
         event.event_time_ns = order.created_time;
         event.set_instrument(order.product_id);
         event.set_order_id(order.order_id);
@@ -177,7 +177,7 @@ void CoinbaseOrderCallbacks::publish_order_fill(const coinbase::Order& order) {
     EventSerializer::publish<OrderFillEvent>(*order_event_queue_, [&order](OrderFillEvent& event) {
         event.type = EventType::ORDER_FILL;
         event.broker_id = BrokerId::COINBASE;
-        event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        event.timestamp_ns = get_timestamp_ns();
         event.event_time_ns = order.last_fill_time > 0 ? order.last_fill_time : order.created_time;
         event.set_instrument(order.product_id);
         event.set_order_id(order.order_id);
@@ -195,7 +195,7 @@ void CoinbaseOrderCallbacks::publish_order_reject(const coinbase::Order& order) 
     EventSerializer::publish<OrderRejectEvent>(*order_event_queue_, [&order](OrderRejectEvent& event) {
         event.type = EventType::ORDER_REJECT;
         event.broker_id = BrokerId::COINBASE;
-        event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        event.timestamp_ns = get_timestamp_ns();
         event.event_time_ns = order.created_time;
         event.set_instrument(order.product_id);
         event.set_order_id(order.order_id);
@@ -209,7 +209,7 @@ void CoinbaseOrderCallbacks::publish_order_cancel(const coinbase::Order& order) 
     EventSerializer::publish<OrderCancelEvent>(*order_event_queue_, [&order](OrderCancelEvent& event) {
         event.type = EventType::ORDER_CANCEL;
         event.broker_id = BrokerId::COINBASE;
-        event.timestamp_ns = std::chrono::system_clock::now().time_since_epoch().count();
+        event.timestamp_ns = get_timestamp_ns();
         event.event_time_ns = order.created_time;
         event.set_instrument(order.product_id);
         event.set_order_id(order.order_id);
