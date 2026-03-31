@@ -792,9 +792,9 @@ void WebServer::process_market_data_events() {
         }
     }
 
-    if (events_processed > 5) {
-        LOG_DEBUG("WebServer: Processed {} level2 events", events_processed);
-    }
+    // if (events_processed > 5) {
+    //     LOG_DEBUG("WebServer: Processed {} level2 events", events_processed);
+    // }
 
     // Re-schedule for next tick (~10ms interval via uWS event loop)
     uWS::Loop::get()->defer([this]() { process_market_data_events(); });
