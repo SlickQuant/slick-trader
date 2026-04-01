@@ -113,20 +113,20 @@ void CoinbaseOrderCallbacks::process_order_update(const coinbase::Order& order) 
     switch (order.status) {
         case coinbase::OrderStatus::PENDING:
         case coinbase::OrderStatus::QUEUED:
+            LOG_INFO("{} Order {} pending/queued: {} @ {}", order.product_id, order.order_id, order.cumulative_quantity, order.limit_price);
             publish_order_ack(order);
             break;
         case coinbase::OrderStatus::OPEN:
-            if (order.cumulative_quantity > 0) {
-                publish_order_fill(order);
-            } else {
-                publish_order_ack(order);
-            }
+            LOG_INFO("{} Order {} acknowledged: {}@{}, cum_qty={}", order.product_id, order.order_id, order.leaves_quantity + order.cumulative_quantity, order.limit_price, order.cumulative_quantity);
+            publish_order_ack(order);
             break;
         case coinbase::OrderStatus::FILLED:
+            LOG_INFO("{} Order {} filled: {}@{}", order.product_id, order.order_id, order.cumulative_quantity, order.avg_price);
             publish_order_fill(order);
             break;
         case coinbase::OrderStatus::CANCELLED:
         case coinbase::OrderStatus::EXPIRED:
+            LOG_INFO("{} Order {} cancelled/expired", order.product_id, order.order_id);
             publish_order_cancel(order);
             break;
         case coinbase::OrderStatus::FAILED:

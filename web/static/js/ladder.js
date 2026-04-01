@@ -448,6 +448,20 @@ class LadderManager {
     }
 
     /**
+     * Clear order book data on all ladders without destroying them
+     */
+    clearBooks() {
+        this.ladders.forEach((ladder, instrument) => {
+            try {
+                ladder.clear();
+            } catch (error) {
+                console.error(`[LadderManager] Error clearing ladder for ${instrument}:`, error);
+            }
+        });
+        console.log('[LadderManager] Cleared all ladder order books');
+    }
+
+    /**
      * Clear all ladders
      */
     clear() {

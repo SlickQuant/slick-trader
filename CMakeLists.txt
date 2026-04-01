@@ -90,7 +90,7 @@ if (NOT coinbase-advanced-cpp_FOUND)
     FetchContent_Declare(
         coinbase-advanced-cpp
         GIT_REPOSITORY https://github.com/SlickQuant/coinbase-advanced-cpp.git
-        GIT_TAG v0.2.2
+        GIT_TAG main
     )
     FetchContent_MakeAvailable(coinbase-advanced-cpp)
 else()

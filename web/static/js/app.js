@@ -80,6 +80,11 @@ class Dashboard {
             this.updateConnectionStatus('connected');
             this.log('WebSocket connected', 'success');
 
+            // Clear stale order book data so the ladder shows fresh data from the new connection
+            if (window.ladderManager) {
+                window.ladderManager.clearBooks();
+            }
+
             // Subscribe to level2 for instruments (if ladder already initialized)
             this.subscribeToMarketData();
         });
