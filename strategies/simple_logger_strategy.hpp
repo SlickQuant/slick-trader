@@ -82,7 +82,7 @@ protected:
                  event.instrument, event.num_bids, event.num_asks, tob.midPrice());
     }
 
-    void on_order_ack(const OrderAckEvent& event) override {
+    void on_ack(const OrderAckEvent& event) override {
         order_count_++;
         LOG_INFO("SimpleLogger: [ORDER_ACK] order_id={} client_order_id={} {} {} {}@{} status={}",
                  event.order_id,
@@ -94,7 +94,7 @@ protected:
                  static_cast<int>(event.status));
     }
 
-    void on_order_fill(const OrderFillEvent& event) override {
+    void on_fill(const OrderFillEvent& event) override {
         LOG_INFO("SimpleLogger: [ORDER_FILL] order_id={} fill_id={} {} Filled: {}@{} (cumulative: {})",
                  event.order_id,
                  event.fill_id,
@@ -104,14 +104,14 @@ protected:
                  from_qty_t(event.cumulative_filled));
     }
 
-    void on_order_reject(const OrderRejectEvent& event) override {
+    void on_reject(const OrderRejectEvent& event) override {
         LOG_WARN("SimpleLogger: [ORDER_REJECT] client_order_id={} {} Reason: {}",
                  event.client_order_id,
                  event.instrument,
                  event.reason);
     }
 
-    void on_order_cancel(const OrderCancelEvent& event) override {
+    void on_cancel(const OrderCancelEvent& event) override {
         LOG_INFO("SimpleLogger: [ORDER_CANCEL] order_id={} {} Reason: {}",
                  event.order_id,
                  event.instrument,

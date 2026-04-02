@@ -330,11 +330,16 @@ void WebServer::handle_get_positions(uWS::HttpResponse<false>* res, uWS::HttpReq
             for (const auto& [instrument, position] : positions) {
                 if (position.is_flat()) continue;  // Skip flat positions
 
+                const price_t mark = pnl_calculator_.get_mark_price(instrument);
+                const double unrealized = position.get_unrealized_pnl(mark);
+
                 strategy_positions.push_back({
                     {"instrument", position.instrument},
                     {"quantity", from_qty_t(position.quantity)},
                     {"avg_price", from_price_t(position.avg_price)},
                     {"realized_pnl", from_price_t(position.realized_pnl)},
+                    {"unrealized_pnl", unrealized},
+                    {"mark_price", from_price_t(mark)},
                     {"last_update_time", position.last_update_time}
                 });
             }

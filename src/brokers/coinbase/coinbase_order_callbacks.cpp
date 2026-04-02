@@ -116,18 +116,24 @@ void CoinbaseOrderCallbacks::process_order_update(const coinbase::Order& order) 
             LOG_INFO("{} Order {} pending/queued: {} @ {}", order.product_id, order.order_id, order.cumulative_quantity, order.limit_price);
             publish_order_ack(order);
             break;
-        case coinbase::OrderStatus::OPEN:
+        case coinbase::OrderStatus::OPEN: {
             LOG_INFO("{} Order {} acknowledged: {}@{}, cum_qty={}", order.product_id, order.order_id, order.leaves_quantity + order.cumulative_quantity, order.limit_price, order.cumulative_quantity);
             publish_order_ack(order);
+            // Emit a fill event if a new partial fill has occurred since last update
+            if (order.number_of_fills > fill_states_[order.order_id].prev_number_of_fills) {
+                publish_order_fill(order);
+            }
             break;
+        }
         case coinbase::OrderStatus::FILLED:
-            LOG_INFO("{} Order {} filled: {}@{}", order.product_id, order.order_id, order.cumulative_quantity, order.avg_price);
             publish_order_fill(order);
+            fill_states_.erase(order.order_id);
             break;
         case coinbase::OrderStatus::CANCELLED:
         case coinbase::OrderStatus::EXPIRED:
             LOG_INFO("{} Order {} cancelled/expired", order.product_id, order.order_id);
             publish_order_cancel(order);
+            fill_states_.erase(order.order_id);
             break;
         case coinbase::OrderStatus::FAILED:
             publish_order_reject(order);
@@ -174,7 +180,34 @@ void CoinbaseOrderCallbacks::publish_order_ack(const coinbase::Order& order) {
 }
 
 void CoinbaseOrderCallbacks::publish_order_fill(const coinbase::Order& order) {
-    EventSerializer::publish<OrderFillEvent>(*order_event_queue_, [&order](OrderFillEvent& event) {
+    auto& state = fill_states_[order.order_id];
+
+    // Coinbase user channel avg_price can be 0, stale, or unreliably scaled.
+    // filled_value / cumulative_quantity is always the correct weighted average (total notional / total qty).
+    double cum_avg_price = (order.cumulative_quantity > 0.0 && order.filled_value > 0.0)
+        ? order.filled_value / order.cumulative_quantity
+        : order.avg_price;
+    double prev_filled_value = state.prev_avg_price * state.prev_cumulative_qty;
+
+    // Compute the incremental fill qty and price from cumulative data.
+    // Since avg_price is a weighted average, the last fill price can be recovered exactly:
+    //   last_price = (avg_N * cum_N - avg_{N-1} * cum_{N-1}) / last_qty
+    double last_qty = order.cumulative_quantity - state.prev_cumulative_qty;
+    double last_price;
+    if (last_qty > 0.0) {
+        last_price = (cum_avg_price * order.cumulative_quantity - prev_filled_value) / last_qty;
+    } else {
+        last_price = cum_avg_price;
+    }
+
+    // Update state before publishing (captures this fill as baseline for the next one)
+    state.prev_cumulative_qty  = order.cumulative_quantity;
+    state.prev_avg_price       = cum_avg_price;
+    state.prev_number_of_fills = order.number_of_fills;
+
+    LOG_INFO("{} Order {} filled: {}@{}, cum_qty={}, avg_price={}({})", order.product_id, order.order_id, last_qty, last_price, order.cumulative_quantity, cum_avg_price, order.avg_price);
+
+    EventSerializer::publish<OrderFillEvent>(*order_event_queue_, [&order, last_qty, last_price](OrderFillEvent& event) {
         event.type = EventType::ORDER_FILL;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();
@@ -184,9 +217,9 @@ void CoinbaseOrderCallbacks::publish_order_fill(const coinbase::Order& order) {
         event.set_client_order_id(order.client_order_id);
         event.set_fill_id(std::to_string(order.number_of_fills));
         event.side = static_cast<Side>(order.side);
-        event.fill_price = to_price_t(order.avg_price);
-        event.fill_quantity = to_qty_t(order.cumulative_quantity);
-        event.cumulative_filled = to_qty_t(order.cumulative_quantity);
+        event.fill_price         = to_price_t(last_price);                  // actual execution price
+        event.fill_quantity      = to_qty_t(last_qty);                      // incremental fill qty
+        event.cumulative_filled  = to_qty_t(order.cumulative_quantity);
         event.remaining_quantity = to_qty_t(order.leaves_quantity);
     });
 }

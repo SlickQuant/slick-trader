@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace slick {
@@ -49,6 +50,12 @@ public:
     void onUserDataError(WebSocketClient* client, std::string &&err) override;
 
 private:
+    struct FillState {
+        double prev_cumulative_qty{0.0};
+        double prev_avg_price{0.0};
+        uint32_t prev_number_of_fills{0};
+    };
+
     void process_order_update(const coinbase::Order& order);
     void publish_order_ack(const coinbase::Order& order);
     void publish_order_fill(const coinbase::Order& order);
@@ -58,6 +65,7 @@ private:
 
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
     CoinbaseOrderConnector &connector_;
+    std::unordered_map<std::string, FillState> fill_states_;  // keyed by order_id
 };
 
 } // namespace slick::trader

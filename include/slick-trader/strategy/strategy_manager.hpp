@@ -1,6 +1,7 @@
 #pragma once
 
 #include <slick-trader/strategy/istrategy.hpp>
+#include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
@@ -42,6 +43,17 @@ public:
     void add_strategy(std::shared_ptr<IStrategy> strategy) {
         strategies_.push_back(strategy);
         strategy_map_[strategy->name()] = strategy;
+
+        // Forward already-configured resources to the new strategy
+        if (auto* base = dynamic_cast<StrategyBase*>(strategy.get())) {
+            if (position_tracker_) base->set_position_tracker(position_tracker_);
+            if (pnl_calculator_)   base->set_pnl_calculator(pnl_calculator_);
+            if (risk_manager_)     base->set_risk_manager(risk_manager_);
+        }
+        if (order_submission_queue_) {
+            strategy->set_order_submission_queue(order_submission_queue_);
+        }
+
         LOG_INFO("StrategyManager: Added strategy '{}'", strategy->name());
     }
 
@@ -64,9 +76,24 @@ public:
     }
 
     // Position & PnL tracking
-    void set_position_tracker(PositionTracker* tracker) { position_tracker_ = tracker; }
-    void set_pnl_calculator(PnLCalculator* calculator) { pnl_calculator_ = calculator; }
-    void set_risk_manager(RiskManager* manager) { risk_manager_ = manager; }
+    void set_position_tracker(PositionTracker* tracker) {
+        position_tracker_ = tracker;
+        for (auto& s : strategies_) {
+            if (auto* base = dynamic_cast<StrategyBase*>(s.get())) base->set_position_tracker(tracker);
+        }
+    }
+    void set_pnl_calculator(PnLCalculator* calculator) {
+        pnl_calculator_ = calculator;
+        for (auto& s : strategies_) {
+            if (auto* base = dynamic_cast<StrategyBase*>(s.get())) base->set_pnl_calculator(calculator);
+        }
+    }
+    void set_risk_manager(RiskManager* manager) {
+        risk_manager_ = manager;
+        for (auto& s : strategies_) {
+            if (auto* base = dynamic_cast<StrategyBase*>(s.get())) base->set_risk_manager(manager);
+        }
+    }
 
     // Lifecycle
     bool initialize() {
@@ -239,7 +266,6 @@ private:
                 break;
         }
 
-        md_cursor_ += size;
     }
 
     void process_order_events() {
@@ -267,17 +293,26 @@ private:
                 LOG_WARN("StrategyManager: Unknown order event type: {}", static_cast<int>(event->type));
                 break;
         }
-
-        order_cursor_ += size;
     }
 
     void dispatch_trade(const TradeEvent& event) {
+        if (pnl_calculator_) {
+            pnl_calculator_->update_mark_price(std::string(event.instrument),
+                                               event.price,
+                                               event.timestamp_ns);
+        }
         for (auto& strategy : strategies_) {
             strategy->on_trade(event);
         }
     }
 
     void dispatch_quote(const QuoteEvent& event) {
+        if (pnl_calculator_ && event.bid_price > 0 && event.ask_price > 0) {
+            const price_t mid = (event.bid_price / 2) + (event.ask_price / 2);
+            pnl_calculator_->update_mark_price(std::string(event.instrument),
+                                               mid,
+                                               event.timestamp_ns);
+        }
         for (auto& strategy : strategies_) {
             strategy->on_quote(event);
         }
@@ -357,6 +392,8 @@ private:
     }
 
     void dispatch_order_ack(const OrderAckEvent& event) {
+        LOG_INFO("StrategyManager: dispatch_order_ack order_id={} client_order_id={} to {} strategies",
+                 std::string(event.order_id), std::string(event.client_order_id), strategies_.size());
         for (auto& strategy : strategies_) {
             strategy->on_order_ack(event);
         }

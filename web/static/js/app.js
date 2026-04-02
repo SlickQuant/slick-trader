@@ -506,10 +506,8 @@ class Dashboard {
     startPeriodicRefresh() {
         // Refresh P&L and positions every 5 seconds
         this.refreshInterval = setInterval(() => {
-            if (this.wsClient && !this.wsClient.isConnected()) {
-                this.loadPnL();
-                this.loadPositions();
-            }
+            this.loadPnL();
+            this.loadPositions();
         }, 5000);
     }
 

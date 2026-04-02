@@ -2,6 +2,7 @@
 
 #include <slick-trader/strategy/istrategy.hpp>
 #include <slick-trader/events/event_serializer.hpp>
+#include <slick-trader/core/order.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/risk_manager.hpp>
 #include <slick-trader/utils/time.hpp>
@@ -9,6 +10,8 @@
 #include <nlohmann/json.hpp>
 #include <atomic>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace slick::trader {
 
@@ -76,18 +79,97 @@ public:
     void on_trade(const TradeEvent& event) override {}
     void on_quote(const QuoteEvent& event) override {}
     void on_order_book(const OrderBookEvent& event, const slick::orderbook::OrderBookL2& book) override {}
-    void on_order_ack(const OrderAckEvent& event) override {}
 
-    // Automatically track fills in position tracker
-    void on_order_fill(const OrderFillEvent& event) override {
-        if (position_tracker_) {
-            position_tracker_->on_fill(name_, event);
+    // Maintains order tracking state, then calls on_ack() hook for derived classes
+    void on_order_ack(const OrderAckEvent& event) override {
+        const std::string client_id(event.client_order_id);
+        const std::string order_id(event.order_id);
+        LOG_INFO("Strategy {}: on_order_ack client_order_id={} order_id={}", name_, client_id, order_id);
+        auto it = orders_by_client_id_.find(client_id);
+        if (it == orders_by_client_id_.end()) {
+            // Order not previously seen (e.g. arrived from reconnect snapshot)
+            LOG_INFO("Strategy {}: ACK for unknown client_order_id={} - inserting new entry", name_, client_id);
+            Order order;
+            order.client_order_id  = client_id;
+            order.order_id         = order_id;
+            order.instrument       = std::string(event.instrument);
+            order.side             = event.side;
+            order.type             = event.order_type;
+            order.time_in_force    = event.time_in_force;
+            order.price            = event.price;
+            order.stop_price       = event.stop_price;
+            order.original_qty     = event.quantity;
+            order.remaining_qty    = event.quantity;
+            order.status           = event.status;
+            order.created_time     = event.event_time_ns;
+            order.last_update_time = event.timestamp_ns;
+            order.post_only        = event.post_only;
+            order_id_to_client_id_[order.order_id] = client_id;
+            orders_by_client_id_.emplace(client_id, std::move(order));
+        } else {
+            // Update existing PENDING_NEW entry with broker-assigned order_id
+            LOG_INFO("Strategy {}: ACK updating existing entry client_order_id={} order_id={}", name_, client_id, order_id);
+            it->second.order_id         = order_id;
+            it->second.status           = event.status;
+            it->second.last_update_time = event.timestamp_ns;
+            order_id_to_client_id_[it->second.order_id] = client_id;
         }
-        on_fill(event);  // Call derived class hook
+        on_ack(event);
     }
 
-    void on_order_reject(const OrderRejectEvent& event) override {}
-    void on_order_cancel(const OrderCancelEvent& event) override {}
+    // Automatically track fills in position tracker and maintain order state
+    void on_order_fill(const OrderFillEvent& event) override {
+        const std::string order_id(event.order_id);
+        LOG_INFO("Strategy {}: on_order_fill called order_id={} qty={} price={} side={}",
+                 name_, order_id, from_qty_t(event.fill_quantity), from_price_t(event.fill_price),
+                 event.side == Side::BUY ? "BUY" : "SELL");
+        auto cid_it = order_id_to_client_id_.find(order_id);
+        if (cid_it != order_id_to_client_id_.end()) {
+            auto& order = orders_by_client_id_.at(cid_it->second);
+            const qty_t new_filled = order.filled_qty + event.fill_quantity;
+            if (new_filled > 0) {
+                order.avg_fill_price = to_price_t(
+                    (from_price_t(order.avg_fill_price) * from_qty_t(order.filled_qty)
+                     + from_price_t(event.fill_price) * from_qty_t(event.fill_quantity))
+                    / from_qty_t(new_filled));
+            }
+            order.filled_qty       = new_filled;
+            order.remaining_qty    = event.remaining_quantity;
+            order.last_update_time = event.timestamp_ns;
+            order.status = (order.remaining_qty == 0)
+                               ? OrderStatus::FILLED
+                               : OrderStatus::PARTIALLY_FILLED;
+
+            LOG_INFO("Strategy {}: order {} owned - tracking position", name_, order_id);
+            if (position_tracker_) {
+                position_tracker_->on_fill(name_, event);
+            }
+            on_fill(event);  // Call derived class hook
+        } else {
+            LOG_INFO("Strategy {}: fill for order_id={} not owned (map size={})",
+                     name_, order_id, order_id_to_client_id_.size());
+        }
+    }
+
+    void on_order_reject(const OrderRejectEvent& event) override {
+        auto it = orders_by_client_id_.find(std::string(event.client_order_id));
+        if (it != orders_by_client_id_.end()) {
+            it->second.status           = OrderStatus::REJECTED;
+            it->second.last_update_time = event.timestamp_ns;
+        }
+        on_reject(event);
+    }
+
+    void on_order_cancel(const OrderCancelEvent& event) override {
+        auto cid_it = order_id_to_client_id_.find(std::string(event.order_id));
+        if (cid_it != order_id_to_client_id_.end()) {
+            auto& order = orders_by_client_id_.at(cid_it->second);
+            order.status           = OrderStatus::CANCELLED;
+            order.remaining_qty    = event.remaining_quantity;
+            order.last_update_time = event.timestamp_ns;
+        }
+        on_cancel(event);
+    }
 
 protected:
     friend class WebServer;  // Allow WebServer to call submit_order
@@ -101,7 +183,13 @@ protected:
     // Configuration hook (called when config is set)
     virtual void on_config(const nlohmann::json& params) {}
 
-    // Fill hook (called after position tracking)
+    // Order lifecycle hooks — override these instead of on_order_ack/reject/cancel
+    // Called after order state has been updated in the internal order map
+    virtual void on_ack(const OrderAckEvent& event) {}
+    virtual void on_reject(const OrderRejectEvent& event) {}
+    virtual void on_cancel(const OrderCancelEvent& event) {}
+
+    // Fill hook (called after position tracking and order state update)
     virtual void on_fill(const OrderFillEvent& event) {}
 
     virtual std::string generate_order_id() {
@@ -146,6 +234,23 @@ protected:
             order.time_in_force = tif;
             order.post_only = post_only;
         });
+
+        // Insert PENDING_NEW entry so get_order() works immediately after submit
+        Order pending;
+        pending.client_order_id  = client_order_id;
+        pending.instrument       = std::string(instrument);
+        pending.side             = side;
+        pending.type             = type;
+        pending.price            = price;
+        pending.original_qty     = quantity;
+        pending.remaining_qty    = quantity;
+        pending.time_in_force    = tif;
+        pending.post_only        = post_only;
+        pending.status           = OrderStatus::PENDING_NEW;
+        pending.created_time     = get_timestamp_ns();
+        pending.last_update_time = pending.created_time;
+        orders_by_client_id_.emplace(client_order_id, std::move(pending));
+
         LOG_DEBUG("Strategy {}: Submitted order {} for {} {}@{}",
                  name_, client_order_id, instrument,
                  from_qty_t(quantity), from_price_t(price));
@@ -163,6 +268,55 @@ protected:
 
         EventSerializer::publish(*order_submission_queue_, cancel);
         LOG_DEBUG("Strategy {}: Cancelled order {}", name_, order_id);
+    }
+
+    // Cancel all open orders
+    void cancel_all_orders() {
+        for (const auto& [cid, order] : orders_by_client_id_) {
+            if (order.is_open() && !order.order_id.empty()) {
+                cancel_order(order.order_id, order.client_order_id);
+            }
+        }
+    }
+
+    // Returns all orders (open and done) for this strategy
+    const std::unordered_map<std::string, Order>& get_orders() const {
+        return orders_by_client_id_;
+    }
+
+    // Lookup by client_order_id (available immediately after submit_order)
+    const Order* get_order(const std::string& client_order_id) const {
+        auto it = orders_by_client_id_.find(client_order_id);
+        return it != orders_by_client_id_.end() ? &it->second : nullptr;
+    }
+
+    // Lookup by broker-assigned order_id (available after on_order_ack)
+    const Order* get_order_by_id(const std::string& order_id) const {
+        auto it = order_id_to_client_id_.find(order_id);
+        if (it == order_id_to_client_id_.end()) return nullptr;
+        auto oit = orders_by_client_id_.find(it->second);
+        return oit != orders_by_client_id_.end() ? &oit->second : nullptr;
+    }
+
+    // Returns pointers to all open orders
+    std::vector<const Order*> get_open_orders() const {
+        std::vector<const Order*> result;
+        for (const auto& [cid, order] : orders_by_client_id_) {
+            if (order.is_open()) result.push_back(&order);
+        }
+        return result;
+    }
+
+    // Remove done (filled/cancelled/rejected) orders from the map
+    void prune_done_orders() {
+        for (auto it = orders_by_client_id_.begin(); it != orders_by_client_id_.end(); ) {
+            if (it->second.is_done()) {
+                order_id_to_client_id_.erase(it->second.order_id);
+                it = orders_by_client_id_.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     bool is_running() const { return running_.load(std::memory_order_acquire); }
@@ -202,6 +356,10 @@ private:
     PositionTracker* position_tracker_{nullptr};
     PnLCalculator* pnl_calculator_{nullptr};
     RiskManager* risk_manager_{nullptr};
+
+    // Order tracking — keyed by client_order_id; reverse map for broker order_id lookup
+    std::unordered_map<std::string, Order> orders_by_client_id_;
+    std::unordered_map<std::string, std::string> order_id_to_client_id_;
 };
 
 } // namespace slick::trader

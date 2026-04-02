@@ -95,7 +95,7 @@ protected:
         }
     }
 
-    void on_order_ack(const OrderAckEvent& event) override {
+    void on_ack(const OrderAckEvent& event) override {
         // Track our active orders
         std::string client_order_id(event.client_order_id);
 
@@ -108,7 +108,7 @@ protected:
         }
     }
 
-    void on_order_fill(const OrderFillEvent& event) override {
+    void on_fill(const OrderFillEvent& event) override {
         std::string order_id(event.order_id);
 
         LOG_INFO("SimpleMarketMaker: Order filled! {} Filled: {}@{} (cumulative: {})",
@@ -130,12 +130,12 @@ protected:
         }
     }
 
-    void on_order_reject(const OrderRejectEvent& event) override {
+    void on_reject(const OrderRejectEvent& event) override {
         LOG_WARN("SimpleMarketMaker: Order rejected: {} Reason: {}",
                  event.client_order_id, event.reason);
     }
 
-    void on_order_cancel(const OrderCancelEvent& event) override {
+    void on_cancel(const OrderCancelEvent& event) override {
         std::string order_id(event.order_id);
 
         LOG_INFO("SimpleMarketMaker: Order cancelled: {}", order_id);

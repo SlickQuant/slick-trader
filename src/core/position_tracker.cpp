@@ -1,3 +1,4 @@
+#include <slick/logger.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <algorithm>
 
@@ -22,13 +23,13 @@ void PositionTracker::on_fill(const std::string& strategy_id, const OrderFillEve
     apply_fill(pos_with_lots, is_buy, fill_qty, fill_price, timestamp);
     pos_with_lots.position.last_update_time = timestamp;
 
-    LOG_DEBUG("PositionTracker: {} {} fill: {} {}@{} | pos: {} avg: {} realized_pnl: {}",
-              strategy_id, instrument,
-              is_buy ? "BUY" : "SELL",
-              from_qty_t(fill_qty), from_price_t(fill_price),
-              from_qty_t(pos_with_lots.position.quantity),
-              from_price_t(pos_with_lots.position.avg_price),
-              from_price_t(pos_with_lots.position.realized_pnl));
+    LOG_INFO("PositionTracker: {} {} fill: {} {}@{} | pos: {} avg: {} realized_pnl: {}",
+             strategy_id, instrument,
+             is_buy ? "BUY" : "SELL",
+             from_qty_t(fill_qty), from_price_t(fill_price),
+             from_qty_t(pos_with_lots.position.quantity),
+             from_price_t(pos_with_lots.position.avg_price),
+             from_price_t(pos_with_lots.position.realized_pnl));
 }
 
 void PositionTracker::apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_qty,

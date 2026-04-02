@@ -1,13 +1,13 @@
 // SimpleStrategy as a dynamically loadable plugin
 // This demonstrates the plugin architecture for SlickTrader strategies
 
+#include <slick/logger.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/strategy/strategy_export.hpp>
 #include <slick-trader/strategy/subscription_request.hpp>
 #include <slick-trader/core/position.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/utils/types.hpp>
-#include <slick/logger.hpp>
 #include <string>
 #include <chrono>
 
@@ -104,7 +104,7 @@ protected:
     }
 
     // Order event handlers
-    void on_order_ack(const OrderAckEvent& event) override {
+    void on_ack(const OrderAckEvent& event) override {
         LOG_INFO("SimpleStrategyPlugin: Order ACK - {} {} (order_id: {})",
                  event.instrument, event.client_order_id, event.order_id);
     }
@@ -133,7 +133,7 @@ protected:
         }
     }
 
-    void on_order_reject(const OrderRejectEvent& event) override {
+    void on_reject(const OrderRejectEvent& event) override {
         LOG_WARN("SimpleStrategyPlugin: Order REJECTED - {} {} - Reason: {}",
                  event.instrument, event.client_order_id, event.reason);
     }

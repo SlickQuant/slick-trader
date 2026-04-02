@@ -632,6 +632,13 @@ class LadderManager {
             const msg = `Order submitted: ${orderSide.toUpperCase()} ${config.default_qty} ${instrument}${priceStr}`;
             if (window.modalManager) window.modalManager.showNotification(msg, 'success');
             if (window.dashboard) window.dashboard.log(msg, 'success');
+            // Refresh positions after a short delay to capture fill
+            setTimeout(() => {
+                if (window.dashboard) {
+                    window.dashboard.loadPositions();
+                    window.dashboard.loadPnL();
+                }
+            }, 1500);
         } catch (error) {
             const msg = `Order failed: ${error.message}`;
             if (window.modalManager) window.modalManager.showNotification(msg, 'error');
