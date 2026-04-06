@@ -1,6 +1,7 @@
 #pragma once
 
 #include <slick-trader/strategy/istrategy.hpp>
+#include <slick/logger.hpp>
 
 #ifdef _WIN32
     #define SLICK_TRADER_EXPORT __declspec(dllexport)
@@ -28,5 +29,8 @@
         SLICK_TRADER_EXPORT const char* get_strategy_version() { \
             static StrategyClass instance; \
             return instance.version(); \
+        } \
+        SLICK_TRADER_EXPORT void set_logger_instance(slick::logger::Logger* logger) { \
+            slick::logger::Logger::set_instance(logger); \
         } \
     }

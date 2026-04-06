@@ -38,6 +38,7 @@ std::shared_ptr<IStrategy> StrategyLoader::load(const std::string& library_path)
     destroy_func_ = reinterpret_cast<DestroyStrategyFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "destroy_strategy"));
     auto get_name_func = reinterpret_cast<GetNameFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "get_strategy_name"));
     auto get_version_func = reinterpret_cast<GetVersionFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "get_strategy_version"));
+    auto set_logger_func = reinterpret_cast<SetLoggerFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "set_logger_instance"));
 
 #else
     // Unix: dlopen
@@ -56,6 +57,7 @@ std::shared_ptr<IStrategy> StrategyLoader::load(const std::string& library_path)
     destroy_func_ = reinterpret_cast<DestroyStrategyFunc>(dlsym(handle_, "destroy_strategy"));
     auto get_name_func = reinterpret_cast<GetNameFunc>(dlsym(handle_, "get_strategy_name"));
     auto get_version_func = reinterpret_cast<GetVersionFunc>(dlsym(handle_, "get_strategy_version"));
+    auto set_logger_func = reinterpret_cast<SetLoggerFunc>(dlsym(handle_, "set_logger_instance"));
 #endif
 
     // Verify required functions exist
@@ -64,6 +66,12 @@ std::shared_ptr<IStrategy> StrategyLoader::load(const std::string& library_path)
         LOG_ERROR("StrategyLoader: {}", last_error_);
         unload();
         return nullptr;
+    }
+
+    // Forward host logger to plugin so LOG_* macros in the plugin route to the
+    // same initialized logger instance rather than the plugin-local singleton.
+    if (set_logger_func) {
+        set_logger_func(&slick::logger::Logger::instance());
     }
 
     // Log strategy info if available

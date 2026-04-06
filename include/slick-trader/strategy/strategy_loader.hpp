@@ -1,6 +1,7 @@
 #pragma once
 
 #include <slick-trader/strategy/istrategy.hpp>
+#include <slick/logger.hpp>
 #include <memory>
 #include <string>
 
@@ -69,6 +70,7 @@ private:
     using DestroyStrategyFunc = void (*)(IStrategy*);
     using GetNameFunc = const char* (*)();
     using GetVersionFunc = const char* (*)();
+    using SetLoggerFunc = void (*)(slick::logger::Logger*);
 
     void* handle_{nullptr};
     std::string library_path_;
