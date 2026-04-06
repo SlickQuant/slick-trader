@@ -7,6 +7,8 @@ class LadderManager {
         this.ladders = new Map();
         this.instruments = [];
         this.selectedInstrument = null;
+        // Maps order_id -> { instrument, price, sideEnum } for clearing hasOwnOrders on fill/cancel
+        this.pendingOrders = new Map();
     }
 
     /**
@@ -288,7 +290,7 @@ class LadderManager {
                     ownOrderBorder: '#ffd700',
                     hoverBackground: 'rgba(255, 255, 255, 0.1)'
                 },
-                onTrade: (price, side) => {
+                onLevelClick: (price, side) => {
                     this.handleLadderClick(instrument, price, side);
                 }
             });
@@ -626,6 +628,9 @@ class LadderManager {
 
         try {
             await api.submitOrder(payload);
+            if (orderType === 'limit') {
+                this.setOwnOrder(instrument, orderPrice, side, true);
+            }
             if (priceInputEl) priceInputEl.value = '';
             if (tifSelectEl) tifSelectEl.value = '1'; // Reset to IOC after order
             const priceStr = orderType === 'limit' ? ` @ ${orderPrice}` : '';
@@ -643,6 +648,50 @@ class LadderManager {
             const msg = `Order failed: ${error.message}`;
             if (window.modalManager) window.modalManager.showNotification(msg, 'error');
             console.error('[LadderManager]', msg);
+        }
+    }
+    /**
+     * Set or clear hasOwnOrders on a price level in the ladder for an instrument.
+     * @param {string} instrument
+     * @param {number} price
+     * @param {number} sideEnum - 0 for BID/buy, 1 for ASK/sell
+     * @param {boolean} value
+     */
+    setOwnOrder(instrument, price, sideEnum, value) {
+        const ladder = this.ladders.get(instrument);
+        if (!ladder) return;
+        ladder.setHasOwnOrders(price, sideEnum, value);
+    }
+
+    /**
+     * Handle order_update WebSocket messages.
+     * - ack: store order in pendingOrders map
+     * - fill (remaining_qty === 0): clear hasOwnOrders
+     * - cancel: clear hasOwnOrders
+     * @param {Object} data
+     */
+    onOrderUpdate(data) {
+        if (data.event === 'ack' && data.order_id && data.instrument && data.price != null) {
+            const sideEnum = data.side === 'buy' ? 0 : 1;
+            this.pendingOrders.set(data.order_id, {
+                instrument: data.instrument,
+                price: data.price,
+                sideEnum
+            });
+        } else if (data.event === 'fill' && data.order_id) {
+            if (data.remaining_qty === 0) {
+                const order = this.pendingOrders.get(data.order_id);
+                if (order) {
+                    this.setOwnOrder(order.instrument, order.price, order.sideEnum, false);
+                    this.pendingOrders.delete(data.order_id);
+                }
+            }
+        } else if (data.event === 'cancel' && data.order_id) {
+            const order = this.pendingOrders.get(data.order_id);
+            if (order) {
+                this.setOwnOrder(order.instrument, order.price, order.sideEnum, false);
+                this.pendingOrders.delete(data.order_id);
+            }
         }
     }
 }

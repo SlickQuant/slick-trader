@@ -72,6 +72,11 @@ public:
         md_queue_ = queue;
     }
 
+    // Set order event queue for real-time order update broadcasting
+    void set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
+        order_event_queue_ = queue;
+    }
+
 private:
     void run();
 
@@ -114,6 +119,10 @@ private:
     void broadcast_level2_update(const Level2UpdateEvent& event);
     void broadcast_orderbook(const OrderBookEvent& event);
 
+    // Order event streaming
+    void process_order_events();
+    void broadcast_order_update(const std::string& message);
+
     // WebSocket subscription tracking
     struct Subscription {
         std::unordered_set<uWS::WebSocket<false, true, void*>*> clients;
@@ -132,6 +141,13 @@ private:
     // Market data queue (shared with StrategyManager)
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
     uint64_t ws_md_cursor_{0};  // Independent cursor for WebServer
+
+    // Order event queue (shared with StrategyManager)
+    std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
+    uint64_t ws_order_cursor_{0};  // Independent cursor for WebServer
+
+    // All connected WebSocket clients (for broadcasting order updates)
+    std::unordered_set<uWS::WebSocket<false, true, void*>*> all_ws_clients_;
 
     // Subscription management
     std::unordered_map<std::string, Subscription> level2_subscriptions_;

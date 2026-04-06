@@ -409,7 +409,10 @@ class Dashboard {
      */
     handleOrderUpdate(data) {
         console.log('[Dashboard] Order update received:', data);
-        this.log(`Order ${data.order_id}: ${data.status}`, 'info');
+        this.log(`Order ${data.order_id}: ${data.event}`, 'info');
+        if (typeof ladderManager !== 'undefined') {
+            ladderManager.onOrderUpdate(data);
+        }
     }
 
     /**

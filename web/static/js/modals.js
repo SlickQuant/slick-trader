@@ -211,6 +211,10 @@ class ModalManager {
             });
 
             this.showNotification(`Order submitted: ${side} ${quantity} ${instrument}`, 'success');
+            if (orderType === 'limit' && typeof ladderManager !== 'undefined') {
+                const sideEnum = side === 'buy' ? 0 : 1;
+                ladderManager.setOwnOrder(instrument, price, sideEnum, true);
+            }
             this.closeModal();
 
             // Log to dashboard

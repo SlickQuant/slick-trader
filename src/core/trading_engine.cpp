@@ -109,6 +109,9 @@ bool TradingEngine::initialize(const std::string& config_path) {
 
         // Set market data queue for WebSocket streaming (shares same queue as StrategyManager)
         web_server_->set_market_data_queue(md_queue_);
+
+        // Set order event queue for real-time order update broadcasting
+        web_server_->set_order_event_queue(order_event_queue_);
     }
 
     return true;

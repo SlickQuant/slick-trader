@@ -4,6 +4,7 @@
 #include <slick-trader/core/risk_manager.hpp>
 #include <slick-trader/strategy/strategy_manager.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
+#include <slick-trader/events/order_event.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <fstream>
@@ -85,9 +86,12 @@ void WebServer::run() {
                 listen_socket_ = socket;
                 LOG_INFO("WebServer: Listening on port {}", config_.port);
 
-                // Start polling market data after listen succeeds
+                // Start polling market data and order events after listen succeeds
                 uWS::Loop::get()->defer([this]() {
                     process_market_data_events();
+                });
+                uWS::Loop::get()->defer([this]() {
+                    process_order_events();
                 });
             } else {
                 LOG_ERROR("WebServer: Failed to listen on port {}", config_.port);
@@ -422,6 +426,7 @@ void WebServer::handle_get_strategy_pnl(uWS::HttpResponse<false>* res, uWS::Http
 
 void WebServer::handle_ws_open(uWS::WebSocket<false, true, void*>* ws) {
     LOG_INFO("WebServer: WebSocket connection opened");
+    all_ws_clients_.insert(ws);
 
     // Send welcome message
     std::string welcome = R"({"type":"welcome","message":"Connected to SlickTrader"})";
@@ -472,7 +477,8 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
 }
 
 void WebServer::handle_ws_close(uWS::WebSocket<false, true, void*>* ws) {
-    // Remove from all subscriptions
+    // Remove from all connected clients and subscriptions
+    all_ws_clients_.erase(ws);
     for (auto& [instrument, sub] : level2_subscriptions_) {
         sub.clients.erase(ws);
     }
@@ -933,6 +939,67 @@ void WebServer::handle_put_ladder_config(uWS::HttpResponse<false>* res, uWS::Htt
         send_error_response(res, std::string("Invalid JSON: ") + e.what(), 400);
     } catch (const std::exception& e) {
         send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::process_order_events() {
+    if (!running_.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    if (!order_event_queue_) {
+        uWS::Loop::get()->defer([this]() { process_order_events(); });
+        return;
+    }
+
+    int events_processed = 0;
+    for (int i = 0; i < 100; ++i) {
+        auto [data, size] = order_event_queue_->read(ws_order_cursor_);
+        if (!data) break;
+
+        const Event* event = reinterpret_cast<const Event*>(data);
+
+        if (event->type == EventType::ORDER_ACK) {
+            const auto* ack = reinterpret_cast<const OrderAckEvent*>(data);
+            if (ack->price != NULL_PRICE) {
+                json msg;
+                msg["type"] = "order_update";
+                msg["event"] = "ack";
+                msg["order_id"] = std::string(ack->order_id);
+                msg["instrument"] = std::string(ack->instrument);
+                msg["side"] = (ack->side == Side::BUY) ? "buy" : "sell";
+                msg["price"] = from_price_t(ack->price);
+                broadcast_order_update(msg.dump());
+                events_processed++;
+            }
+        } else if (event->type == EventType::ORDER_FILL) {
+            const auto* fill = reinterpret_cast<const OrderFillEvent*>(data);
+            json msg;
+            msg["type"] = "order_update";
+            msg["event"] = "fill";
+            msg["order_id"] = std::string(fill->order_id);
+            msg["fill_price"] = from_price_t(fill->fill_price);
+            msg["fill_qty"] = from_qty_t(fill->fill_quantity);
+            msg["remaining_qty"] = from_qty_t(fill->remaining_quantity);
+            broadcast_order_update(msg.dump());
+            events_processed++;
+        } else if (event->type == EventType::ORDER_CANCEL) {
+            const auto* cancel = reinterpret_cast<const OrderCancelEvent*>(data);
+            json msg;
+            msg["type"] = "order_update";
+            msg["event"] = "cancel";
+            msg["order_id"] = std::string(cancel->order_id);
+            broadcast_order_update(msg.dump());
+            events_processed++;
+        }
+    }
+
+    uWS::Loop::get()->defer([this]() { process_order_events(); });
+}
+
+void WebServer::broadcast_order_update(const std::string& message) {
+    for (auto* ws : all_ws_clients_) {
+        ws->send(message, uWS::OpCode::TEXT);
     }
 }
 
