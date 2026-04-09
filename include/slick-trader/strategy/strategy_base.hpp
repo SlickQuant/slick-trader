@@ -3,6 +3,7 @@
 #include <slick-trader/strategy/istrategy.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/core/order.hpp>
+#include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/risk_manager.hpp>
 #include <slick-trader/utils/time.hpp>
@@ -14,9 +15,6 @@
 #include <vector>
 
 namespace slick::trader {
-
-// Forward declarations
-class PnLCalculator;
 
 // Base class for strategies
 // Provides common functionality and utilities
@@ -172,7 +170,8 @@ public:
     }
 
 protected:
-    friend class WebServer;  // Allow WebServer to call submit_order
+    friend class WebServer;        // Allow WebServer to call submit_order
+    friend class StrategyManager;  // Allow StrategyManager to call close_all_positions
 
     // Lifecycle hooks for derived classes
     virtual bool on_initialize() { return true; }
@@ -204,6 +203,9 @@ protected:
         }
 
         auto client_order_id = generate_order_id();
+
+        // Track which broker handles each instrument (used by close_all_positions)
+        instrument_broker_map_[std::string(instrument)] = broker_id;
 
         // Pre-trade risk validation
         if (risk_manager_) {
@@ -276,6 +278,80 @@ protected:
             if (order.is_open() && !order.order_id.empty()) {
                 cancel_order(order.order_id, order.client_order_id);
             }
+        }
+    }
+
+    // Emergency close: cancel open orders then submit aggressive limit orders to flatten all positions.
+    // Bypasses risk manager validation — this is a safety operation triggered by risk breach.
+    // Limit prices are set far into the market (10% away from mark price) to ensure execution.
+    void close_all_positions() {
+        cancel_all_orders();
+
+        if (!position_tracker_ || !order_submission_queue_) return;
+
+        const auto positions = position_tracker_->get_all_positions(name_);
+        for (const auto& [instrument, pos] : positions) {
+            if (pos.is_flat()) continue;
+
+            auto broker_it = instrument_broker_map_.find(instrument);
+            if (broker_it == instrument_broker_map_.end()) {
+                LOG_WARN("Strategy {}: Cannot close position for {} — no broker mapping known",
+                         name_, instrument);
+                continue;
+            }
+
+            // Determine closing side and quantity
+            const Side close_side = pos.is_long() ? Side::SELL : Side::BUY;
+            const qty_t close_qty = pos.is_long() ? pos.quantity : -pos.quantity;
+
+            // Use mark price if available, otherwise fall back to avg entry price
+            price_t ref_price = pos.avg_price;
+            if (pnl_calculator_ && pnl_calculator_->has_mark_price(instrument)) {
+                ref_price = pnl_calculator_->get_mark_price(instrument);
+            }
+
+            // Place limit price 10% into the market to guarantee execution
+            const double ref_double = from_price_t(ref_price);
+            const price_t close_price = pos.is_long()
+                ? to_price_t(ref_double * 0.90)  // Sell well below mark — crosses any bid
+                : to_price_t(ref_double * 1.10); // Buy well above mark  — crosses any ask
+
+            const BrokerId broker_id = broker_it->second;
+            const auto client_order_id = generate_order_id();
+
+            LOG_WARN("Strategy {}: Emergency close {} qty={} limit@{} (ref={})",
+                     name_, instrument, from_qty_t(close_qty),
+                     from_price_t(close_price), from_price_t(ref_price));
+
+            // Submit directly — skip risk manager for safety closure
+            EventSerializer::publish<NewOrderEvent>(*order_submission_queue_,
+                [&](NewOrderEvent& order) {
+                    order.broker_id     = broker_id;
+                    order.set_instrument(instrument.c_str());
+                    order.set_client_order_id(client_order_id.c_str());
+                    order.side          = close_side;
+                    order.order_type    = OrderType::LIMIT;
+                    order.price         = close_price;
+                    order.quantity      = close_qty;
+                    order.time_in_force = TimeInForce::IOC;
+                    order.post_only     = false;
+                });
+
+            // Track as PENDING_NEW so get_order() works immediately
+            Order pending;
+            pending.client_order_id  = client_order_id;
+            pending.instrument       = instrument;
+            pending.side             = close_side;
+            pending.type             = OrderType::LIMIT;
+            pending.price            = close_price;
+            pending.original_qty     = close_qty;
+            pending.remaining_qty    = close_qty;
+            pending.time_in_force    = TimeInForce::IOC;
+            pending.post_only        = false;
+            pending.status           = OrderStatus::PENDING_NEW;
+            pending.created_time     = get_timestamp_ns();
+            pending.last_update_time = pending.created_time;
+            orders_by_client_id_.emplace(client_order_id, std::move(pending));
         }
     }
 
@@ -360,6 +436,9 @@ private:
     // Order tracking — keyed by client_order_id; reverse map for broker order_id lookup
     std::unordered_map<std::string, Order> orders_by_client_id_;
     std::unordered_map<std::string, std::string> order_id_to_client_id_;
+
+    // Maps instrument -> last used BrokerId (populated in submit_order, used by close_all_positions)
+    std::unordered_map<std::string, BrokerId> instrument_broker_map_;
 };
 
 } // namespace slick::trader

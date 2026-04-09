@@ -5,6 +5,8 @@
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
+#include <slick-trader/events/quote_event.hpp>
+#include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick/queue.h>
 #include <slick/logger.hpp>
@@ -64,6 +66,10 @@ public:
 
     void set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
         order_event_queue_ = queue;
+    }
+
+    void set_tob_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
+        tob_queue_ = queue;
     }
 
     void set_order_submission_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
@@ -232,6 +238,12 @@ private:
                     std::to_string(loss) + " < max_loss=" + std::to_string(max_loss);
 
                 LOG_ERROR("StrategyManager: {} - {}", strategy_name, reason);
+
+                // Close all open positions before halting — leaves no unmanaged exposure
+                if (auto* base = dynamic_cast<StrategyBase*>(strategy.get())) {
+                    base->close_all_positions();
+                }
+
                 risk_manager_->halt_strategy(strategy_name, reason);
 
                 // Stop the strategy
@@ -346,6 +358,32 @@ private:
                                   i == last);
             }
         }
+
+        // Check if top-of-book changed; if so update mark price and notify WebServer
+        const auto tob = book->getTopOfBook();
+        const price_t new_bid = static_cast<price_t>(tob.best_bid);
+        const price_t new_ask = static_cast<price_t>(tob.best_ask);
+
+        auto& cached = tob_cache_[instrument];
+        if (new_bid != cached.first || new_ask != cached.second) {
+            cached = {new_bid, new_ask};
+
+            if (pnl_calculator_ && new_bid > 0 && new_ask > 0) {
+                const price_t mid = (new_bid / 2) + (new_ask / 2);
+                pnl_calculator_->update_mark_price(instrument, mid, event.event_time_ns);
+            }
+
+            if (tob_queue_ && new_bid > 0 && new_ask > 0) {
+                EventSerializer::publish<QuoteEvent>(*tob_queue_, [&](QuoteEvent& q) {
+                    q.set_instrument(instrument);
+                    q.bid_price = new_bid;
+                    q.bid_quantity = static_cast<qty_t>(tob.bid_quantity);
+                    q.ask_price = new_ask;
+                    q.ask_quantity = static_cast<qty_t>(tob.ask_quantity);
+                    q.event_time_ns = event.event_time_ns;
+                });
+            }
+        }
     }
 
     void dispatch_order_book(const OrderBookEvent& event) {
@@ -433,6 +471,8 @@ private:
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_submission_queue_;
+    std::shared_ptr<slick::SlickQueue<uint8_t>> tob_queue_;
+    std::unordered_map<std::string, std::pair<price_t, price_t>> tob_cache_; // instrument -> {best_bid, best_ask}
 
     // Position & PnL tracking (non-owning pointers)
     PositionTracker* position_tracker_;

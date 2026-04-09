@@ -72,17 +72,21 @@ bool TradingEngine::initialize(const std::string& config_path) {
     uint32_t order_request_queue_size = config.value("order_request_queue_size", 1<<20);
     uint32_t order_event_queue_size = config.value("order_reply_queue_size", 1<<20);
 
+    uint32_t tob_queue_size = config.value("tob_queue_size", 1<<20);
+
     md_queue_ = std::make_shared<slick::SlickQueue<uint8_t>>(md_queue_size);
     order_request_queue_ = std::make_shared<slick::SlickQueue<uint8_t>>(order_request_queue_size);
     order_event_queue_ = std::make_shared<slick::SlickQueue<uint8_t>>(order_event_queue_size);
+    tob_queue_ = std::make_shared<slick::SlickQueue<uint8_t>>(tob_queue_size);
 
-    LOG_INFO("Created message queues - MD: {}, Order: {}, OrderEvent: {}",
-             md_queue_size, order_request_queue_size, order_event_queue_size);
+    LOG_INFO("Created message queues - MD: {}, Order: {}, OrderEvent: {}, TOB: {}",
+             md_queue_size, order_request_queue_size, order_event_queue_size, tob_queue_size);
 
     // Initialize strategy manager with queues
     strategy_manager_->set_market_data_queue(md_queue_);
     strategy_manager_->set_order_event_queue(order_event_queue_);
     strategy_manager_->set_order_submission_queue(order_request_queue_);
+    strategy_manager_->set_tob_queue(tob_queue_);
 
     // Set position & PnL tracking
     strategy_manager_->set_position_tracker(position_tracker_.get());
@@ -112,6 +116,9 @@ bool TradingEngine::initialize(const std::string& config_path) {
 
         // Set order event queue for real-time order update broadcasting
         web_server_->set_order_event_queue(order_event_queue_);
+
+        // Set top-of-book queue for real-time P&L broadcasting
+        web_server_->set_tob_queue(tob_queue_);
     }
 
     return true;

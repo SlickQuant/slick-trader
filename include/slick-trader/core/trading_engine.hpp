@@ -92,6 +92,7 @@ private:
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_request_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
+    std::shared_ptr<slick::SlickQueue<uint8_t>> tob_queue_;
 };
 
 } // namespace slick::trader

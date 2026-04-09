@@ -5,6 +5,7 @@
 #include <slick-trader/strategy/strategy_manager.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/events/order_event.hpp>
+#include <slick-trader/events/quote_event.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <fstream>
@@ -807,6 +808,20 @@ void WebServer::process_market_data_events() {
     //     LOG_DEBUG("WebServer: Processed {} level2 events", events_processed);
     // }
 
+    // Drain top-of-book events published by StrategyManager
+    if (tob_queue_) {
+        for (int i = 0; i < 100; ++i) {
+            auto [tob_data, tob_size] = tob_queue_->read(ws_tob_cursor_);
+            if (!tob_data) break;
+            const auto* quote = reinterpret_cast<const QuoteEvent*>(tob_data);
+            if (quote->bid_price > 0 && quote->ask_price > 0) {
+                const price_t mid = (quote->bid_price / 2) + (quote->ask_price / 2);
+                pnl_calculator_.update_mark_price(quote->instrument, mid, quote->event_time_ns);
+            }
+            broadcast_pnl_update();
+        }
+    }
+
     // Re-schedule for next tick (~10ms interval via uWS event loop)
     uWS::Loop::get()->defer([this]() { process_market_data_events(); });
 }
@@ -998,6 +1013,27 @@ void WebServer::process_order_events() {
 }
 
 void WebServer::broadcast_order_update(const std::string& message) {
+    for (auto* ws : all_ws_clients_) {
+        ws->send(message, uWS::OpCode::TEXT);
+    }
+}
+
+void WebServer::broadcast_pnl_update() {
+    if (all_ws_clients_.empty()) return;
+
+    const uint64_t now_ns = get_timestamp_ns();
+    auto all_pnl = pnl_calculator_.calculate_all_pnl(now_ns);
+
+    json pnl_obj = json::object();
+    for (const auto& [strategy_id, pnl] : all_pnl) {
+        pnl_obj[strategy_id] = {
+            {"realized_pnl", pnl.get_realized()},
+            {"unrealized_pnl", pnl.get_unrealized()},
+            {"total_pnl", pnl.get_total()}
+        };
+    }
+
+    const std::string message = json{{"type", "pnl_update"}, {"pnl", pnl_obj}}.dump();
     for (auto* ws : all_ws_clients_) {
         ws->send(message, uWS::OpCode::TEXT);
     }

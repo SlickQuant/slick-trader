@@ -77,6 +77,11 @@ public:
         order_event_queue_ = queue;
     }
 
+    // Set top-of-book queue (written by StrategyManager, read by WebServer)
+    void set_tob_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
+        tob_queue_ = queue;
+    }
+
 private:
     void run();
 
@@ -123,6 +128,9 @@ private:
     void process_order_events();
     void broadcast_order_update(const std::string& message);
 
+    // PnL broadcasting
+    void broadcast_pnl_update();
+
     // WebSocket subscription tracking
     struct Subscription {
         std::unordered_set<uWS::WebSocket<false, true, void*>*> clients;
@@ -145,6 +153,10 @@ private:
     // Order event queue (shared with StrategyManager)
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
     uint64_t ws_order_cursor_{0};  // Independent cursor for WebServer
+
+    // Top-of-book queue (written by StrategyManager)
+    std::shared_ptr<slick::SlickQueue<uint8_t>> tob_queue_;
+    uint64_t ws_tob_cursor_{0};
 
     // All connected WebSocket clients (for broadcasting order updates)
     std::unordered_set<uWS::WebSocket<false, true, void*>*> all_ws_clients_;
