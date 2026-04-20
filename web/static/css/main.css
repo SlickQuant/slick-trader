@@ -885,3 +885,14 @@ body {
         justify-content: center;
     }
 }
+
+/* Orders Section */
+.orders-section {
+    margin-bottom: 2rem;
+}
+
+.card-header-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}

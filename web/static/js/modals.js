@@ -330,6 +330,99 @@ class ModalManager {
     }
 
     /**
+     * Show modify order modal
+     * @param {string} strategyId
+     * @param {string} orderId - broker-assigned order_id
+     * @param {string} clientOrderId
+     * @param {number} currentPrice
+     * @param {number} currentQty - remaining quantity
+     */
+    showModifyOrderModal(strategyId, orderId, clientOrderId, currentPrice, currentQty) {
+        const modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Modify Order</h3>
+                    <button class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <form class="order-form">
+                        <div class="form-group">
+                            <label>Strategy</label>
+                            <input type="text" value="${strategyId}" readonly style="opacity:0.6">
+                        </div>
+                        <div class="form-group">
+                            <label>Order ID</label>
+                            <input type="text" value="${orderId}" readonly style="opacity:0.6;font-size:0.75rem">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="modifyPrice">New Price</label>
+                                <input type="number" id="modifyPrice" step="0.01"
+                                       value="${currentPrice}">
+                            </div>
+                            <div class="form-group">
+                                <label for="modifyQty">New Quantity</label>
+                                <input type="number" id="modifyQty" step="0.00000001"
+                                       value="${currentQty}">
+                            </div>
+                        </div>
+                        <div class="form-warning">
+                            ⚠️ Changes will be submitted to the live market. Use with caution!
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-cancel">Cancel</button>
+                    <button class="btn btn-primary btn-submit">Submit Modify</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+        this.activeModal = modal;
+
+        const closeBtn  = modal.querySelector('.modal-close');
+        const cancelBtn = modal.querySelector('.btn-cancel');
+        const submitBtn = modal.querySelector('.btn-submit');
+
+        closeBtn.addEventListener('click',  () => this.closeModal());
+        cancelBtn.addEventListener('click', () => this.closeModal());
+        modal.addEventListener('click', (e) => { if (e.target === modal) this.closeModal(); });
+        document.addEventListener('keydown', this.handleEscape);
+
+        submitBtn.addEventListener('click', async () => {
+            const newPrice = parseFloat(modal.querySelector('#modifyPrice').value);
+            const newQty   = parseFloat(modal.querySelector('#modifyQty').value);
+
+            if (isNaN(newPrice) || newPrice <= 0) {
+                this.showNotification('Price must be a positive number', 'error');
+                return;
+            }
+            if (isNaN(newQty) || newQty <= 0) {
+                this.showNotification('Quantity must be a positive number', 'error');
+                return;
+            }
+
+            try {
+                await api.modifyOrder(strategyId, orderId, {
+                    client_order_id: clientOrderId,
+                    new_price:       newPrice,
+                    new_quantity:    newQty
+                });
+                this.showNotification('Modify request submitted', 'success');
+                if (window.dashboard) {
+                    window.dashboard.log(`Modify submitted: order ${orderId}`, 'info');
+                }
+                this.closeModal();
+            } catch (error) {
+                this.showNotification(`Modify failed: ${error.message}`, 'error');
+            }
+        });
+    }
+
+    /**
      * Show notification toast
      */
     showNotification(message, type = 'info') {

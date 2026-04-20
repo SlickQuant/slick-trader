@@ -156,6 +156,41 @@
                 </section>
             </div>
 
+            <!-- Open Orders -->
+            <section class="orders-section">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Open Orders</h3>
+                        <div class="card-header-actions">
+                            <button class="btn btn-sm" id="refreshOrders">Refresh</button>
+                            <button class="btn btn-sm btn-danger" id="cancelAllOrders">Cancel All</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-wrapper">
+                            <table class="data-table" id="ordersTable">
+                                <thead>
+                                    <tr>
+                                        <th>Strategy</th>
+                                        <th>Instrument</th>
+                                        <th>Side</th>
+                                        <th>Price</th>
+                                        <th>Qty (Rem/Orig)</th>
+                                        <th>Status</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ordersTableBody">
+                                    <tr class="empty-state">
+                                        <td colspan="7">No open orders</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- System Log -->
             <section class="log-section">
                 <div class="card">

@@ -108,6 +108,14 @@ private:
     void handle_get_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
     void handle_put_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                    const std::string& body);
+    void handle_get_orders(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
+    void handle_delete_order(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                             const std::string& strategy_id, const std::string& order_id,
+                             std::string_view body);
+    void handle_put_order(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                          const std::string& strategy_id, const std::string& order_id,
+                          std::string_view body);
+    void handle_delete_all_orders(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
 
     // WebSocket handlers
     void handle_ws_open(uWS::WebSocket<false, true, void*>* ws);
@@ -166,6 +174,28 @@ private:
 
     // Ladder configuration
     nlohmann::json ladder_config_;
+
+    // WebServer-side order tracking — accessed ONLY from the uWS event loop thread (no mutex needed)
+    struct TrackedOrder {
+        std::string strategy_id;
+        std::string client_order_id;
+        std::string order_id;       // broker-assigned; may be empty until ACK
+        std::string instrument;
+        std::string side;           // "buy" / "sell"
+        int         type{0};
+        double      price{0.0};
+        double      qty{0.0};
+        double      filled_qty{0.0};
+        double      remaining_qty{0.0};
+        std::string status{"PENDING_NEW"};
+        uint64_t    created_time{0};
+        uint64_t    last_update_time{0};
+    };
+
+    // Keyed by client_order_id
+    std::unordered_map<std::string, TrackedOrder> open_orders_;
+    // Reverse map: broker order_id → client_order_id
+    std::unordered_map<std::string, std::string> oid_to_cid_;
 };
 
 } // namespace slick::trader

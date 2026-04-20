@@ -120,6 +120,43 @@ class ApiClient {
     }
 
     /**
+     * Get all open orders across all strategies
+     */
+    async getOpenOrders() {
+        return this.get('/api/orders');
+    }
+
+    /**
+     * Cancel a specific order
+     * @param {string} strategyId
+     * @param {string} orderId - broker-assigned order_id
+     * @param {string} clientOrderId - client_order_id required by cancel_order()
+     */
+    async cancelOrder(strategyId, orderId, clientOrderId) {
+        return this.request(`/api/orders/${strategyId}/${encodeURIComponent(orderId)}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ client_order_id: clientOrderId }),
+        });
+    }
+
+    /**
+     * Modify a specific order
+     * @param {string} strategyId
+     * @param {string} orderId
+     * @param {object} updates - { client_order_id, new_price?, new_quantity? }
+     */
+    async modifyOrder(strategyId, orderId, updates) {
+        return this.put(`/api/orders/${strategyId}/${encodeURIComponent(orderId)}`, updates);
+    }
+
+    /**
+     * Cancel all open orders across all strategies
+     */
+    async cancelAllOrders() {
+        return this.request('/api/orders/cancel-all', { method: 'DELETE', body: '{}' });
+    }
+
+    /**
      * Control strategy (start/stop/pause/resume)
      */
     async controlStrategy(strategyId, action) {

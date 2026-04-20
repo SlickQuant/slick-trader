@@ -153,6 +153,37 @@ void WebServer::setup_routes(uWS::App &app) {
         res->onAborted([]() {});
     });
 
+    // GET: All open orders across all strategies
+    app.get("/api/orders", [this](auto* res, auto* req) {
+        handle_get_orders(res, req);
+    });
+
+    // DELETE: Cancel all open orders (must be registered before the parameterized route)
+    app.del("/api/orders/cancel-all", [this](auto* res, auto* req) {
+        res->onData([this, res](std::string_view, bool last) {
+            if (last) handle_delete_all_orders(res, nullptr);
+        });
+        res->onAborted([]() {});
+    });
+
+    // PUT: Modify a specific order
+    app.put("/api/orders/:strategy_id/:order_id", [this](auto* res, auto* req) {
+        std::string sid(req->getParameter(0)), oid(req->getParameter(1));
+        res->onData([this, res, sid, oid](std::string_view data, bool last) {
+            if (last) handle_put_order(res, nullptr, sid, oid, data);
+        });
+        res->onAborted([]() {});
+    });
+
+    // DELETE: Cancel a specific order
+    app.del("/api/orders/:strategy_id/:order_id", [this](auto* res, auto* req) {
+        std::string sid(req->getParameter(0)), oid(req->getParameter(1));
+        res->onData([this, res, sid, oid](std::string_view data, bool last) {
+            if (last) handle_delete_order(res, nullptr, sid, oid, data);
+        });
+        res->onAborted([]() {});
+    });
+
     // POST: Strategy control (start/stop)
     app.post("/api/strategies/:strategy_id/control", [this](auto* res, auto* req) {
         std::string strategy_id(req->getParameter(0));
@@ -581,7 +612,27 @@ void WebServer::handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpReques
             send_error_response(res, "Strategy not found", 404);
             return;
         }
-        reinterpret_pointer_cast<StrategyBase>(strategy)->submit_order(instrument, broker_id, side, to_qty_t(quantity), type, to_price_t(price), tif);
+        std::string client_order_id = reinterpret_pointer_cast<StrategyBase>(strategy)->submit_order(
+            instrument, broker_id, side, to_qty_t(quantity), type, to_price_t(price), tif);
+
+        // Seed WebServer-side tracking so handle_get_orders() can return it immediately
+        if (!client_order_id.empty()) {
+            TrackedOrder t;
+            t.strategy_id     = strategy_id;
+            t.client_order_id = client_order_id;
+            t.instrument      = instrument;
+            t.side            = side_str;
+            t.type            = static_cast<int>(type);
+            t.price           = price;
+            t.qty             = quantity;
+            t.remaining_qty   = quantity;
+            t.status          = "PENDING_NEW";
+            t.created_time    = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            t.last_update_time = t.created_time;
+            open_orders_[client_order_id] = std::move(t);
+        }
 
         json response = {
             {"success", true},
@@ -773,6 +824,147 @@ void WebServer::handle_post_resume_strategy(uWS::HttpResponse<false>* res, uWS::
         };
 
         send_json_response(res, response.dump());
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::handle_get_orders(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    // Use WebServer-side open_orders_ (accessed only from uWS thread — no data race)
+    json response = json::array();
+    for (const auto& [cid, t] : open_orders_) {
+        response.push_back({
+            {"strategy_id",      t.strategy_id},
+            {"order_id",         t.order_id},
+            {"client_order_id",  t.client_order_id},
+            {"instrument",       t.instrument},
+            {"side",             t.side},
+            {"type",             t.type},
+            {"price",            t.price},
+            {"qty",              t.qty},
+            {"filled_qty",       t.filled_qty},
+            {"remaining_qty",    t.remaining_qty},
+            {"status",           t.status},
+            {"created_time",     t.created_time},
+            {"last_update_time", t.last_update_time}
+        });
+    }
+    send_json_response(res, response.dump());
+}
+
+void WebServer::handle_delete_order(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                     const std::string& strategy_id, const std::string& order_id,
+                                     std::string_view body) {
+    try {
+        auto data = json::parse(body);
+        if (!data.contains("client_order_id")) {
+            send_error_response(res, "Missing required field: client_order_id", 400);
+            return;
+        }
+        std::string client_order_id = data["client_order_id"];
+
+        auto strategy = strategy_manager_.get_strategy(strategy_id);
+        if (!strategy) {
+            send_error_response(res, "Strategy not found", 404);
+            return;
+        }
+
+        reinterpret_pointer_cast<StrategyBase>(strategy)->cancel_order(order_id, client_order_id);
+
+        // Optimistically remove from WebServer-side tracking; ORDER_CANCEL event will confirm
+        auto it = open_orders_.find(client_order_id);
+        if (it != open_orders_.end()) {
+            if (!it->second.order_id.empty()) oid_to_cid_.erase(it->second.order_id);
+            open_orders_.erase(it);
+        }
+
+        // Notify WebSocket clients immediately so the UI updates without waiting for the event
+        {
+            json msg;
+            msg["type"]             = "order_update";
+            msg["event"]            = "cancel";
+            msg["order_id"]         = order_id;
+            msg["client_order_id"]  = client_order_id;
+            broadcast_order_update(msg.dump());
+        }
+
+        LOG_INFO("WebServer: Cancel order {} for strategy {}", order_id, strategy_id);
+        send_json_response(res, R"({"success":true,"message":"Cancel request submitted"})", 202);
+    } catch (const json::exception& e) {
+        send_error_response(res, std::string("Invalid JSON: ") + e.what(), 400);
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::handle_put_order(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                  const std::string& strategy_id, const std::string& order_id,
+                                  std::string_view body) {
+    try {
+        auto data = json::parse(body);
+        if (!data.contains("client_order_id")) {
+            send_error_response(res, "Missing required field: client_order_id", 400);
+            return;
+        }
+
+        std::string client_order_id = data["client_order_id"];
+        double new_price    = data.value("new_price",    std::numeric_limits<double>::quiet_NaN());
+        double new_quantity = data.value("new_quantity", std::numeric_limits<double>::quiet_NaN());
+
+        if (std::isnan(new_price) && std::isnan(new_quantity)) {
+            send_error_response(res, "At least one of new_price or new_quantity is required", 400);
+            return;
+        }
+
+        auto strategy = strategy_manager_.get_strategy(strategy_id);
+        if (!strategy) {
+            send_error_response(res, "Strategy not found", 404);
+            return;
+        }
+
+        auto* base = reinterpret_pointer_cast<StrategyBase>(strategy).get();
+        const Order* existing = base->get_order(client_order_id);
+        if (!existing) {
+            send_error_response(res, "Order not found", 404);
+            return;
+        }
+
+        price_t final_price = std::isnan(new_price)    ? existing->price : to_price_t(new_price);
+        qty_t   final_qty   = std::isnan(new_quantity)  ? existing->qty : to_qty_t(new_quantity);
+
+        base->modify_order(client_order_id, final_price, final_qty);
+
+        LOG_INFO("WebServer: Modify order {} for strategy {} price={} qty={}",
+                 order_id, strategy_id, from_price_t(final_price), from_qty_t(final_qty));
+        send_json_response(res, R"({"success":true,"message":"Modify request submitted"})", 202);
+    } catch (const json::exception& e) {
+        send_error_response(res, std::string("Invalid JSON: ") + e.what(), 400);
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::handle_delete_all_orders(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    try {
+        const auto& strategies = strategy_manager_.get_all_strategies();
+        int strategy_count = 0;
+
+        for (const auto& strategy : strategies) {
+            reinterpret_pointer_cast<StrategyBase>(strategy)->cancel_all_orders();
+            ++strategy_count;
+        }
+
+        // Clear WebServer-side tracking optimistically
+        open_orders_.clear();
+        oid_to_cid_.clear();
+
+        LOG_INFO("WebServer: Cancel all orders across {} strategies", strategy_count);
+        json response = {
+            {"success", true},
+            {"message", "Cancel all request submitted"},
+            {"strategies_affected", strategy_count}
+        };
+        send_json_response(res, response.dump(), 202);
     } catch (const std::exception& e) {
         send_error_response(res, e.what(), 500);
     }
@@ -976,36 +1168,129 @@ void WebServer::process_order_events() {
 
         if (event->type == EventType::ORDER_ACK) {
             const auto* ack = reinterpret_cast<const OrderAckEvent*>(data);
-            if (ack->price != NULL_PRICE) {
+            std::string cid(ack->client_order_id);
+            std::string oid(ack->order_id);
+
+            // Update WebServer-side tracking.
+            // Only use ACKs with a valid client_order_id to avoid the empty-cid
+            // second ACK from the Coinbase WebSocket callback overwriting our map.
+            if (!cid.empty()) {
+                auto it = open_orders_.find(cid);
+                if (it != open_orders_.end()) {
+                    // Update existing entry — covers both initial new-order ACK and modify-ack
+                    if (!oid.empty()) {
+                        it->second.order_id = oid;
+                        oid_to_cid_[oid]    = cid;
+                    }
+                    it->second.status           = "ACKNOWLEDGED";
+                    it->second.last_update_time = ack->timestamp_ns;
+                    if (ack->price != NULL_PRICE && ack->price != 0) {
+                        it->second.price = from_price_t(ack->price);
+                    }
+                    if (ack->quantity != 0) {
+                        it->second.qty           = from_qty_t(ack->quantity);
+                        it->second.remaining_qty = from_qty_t(ack->quantity);
+                    }
+                } else if (!oid.empty()) {
+                    // Algo-submitted order: not yet in open_orders_ — create entry now.
+                    // We can derive strategy from client_order_id prefix (name_<timestamp>)
+                    std::string strategy_id;
+                    auto sep = cid.rfind('_');
+                    if (sep != std::string::npos) strategy_id = cid.substr(0, sep);
+
+                    TrackedOrder t;
+                    t.strategy_id      = strategy_id;
+                    t.client_order_id  = cid;
+                    t.order_id         = oid;
+                    t.instrument       = std::string(ack->instrument);
+                    t.side             = (ack->side == Side::BUY) ? "buy" : "sell";
+                    t.type             = static_cast<int>(ack->order_type);
+                    t.price            = (ack->price != NULL_PRICE) ? from_price_t(ack->price) : 0.0;
+                    t.qty              = from_qty_t(ack->quantity);
+                    t.remaining_qty    = from_qty_t(ack->quantity);
+                    t.status           = "ACKNOWLEDGED";
+                    t.created_time     = ack->timestamp_ns;
+                    t.last_update_time = ack->timestamp_ns;
+                    open_orders_[cid]  = std::move(t);
+                    oid_to_cid_[oid]   = cid;
+                }
+            }
+
+            // Only broadcast ACKs with a valid client_order_id.
+            // The Coinbase WebSocket sends a second ACK (OPEN status) with empty client_order_id
+            // and price=0 — that's exchange noise and should not be forwarded to the UI.
+            if (!cid.empty()) {
                 json msg;
-                msg["type"] = "order_update";
-                msg["event"] = "ack";
-                msg["order_id"] = std::string(ack->order_id);
+                msg["type"]       = "order_update";
+                msg["event"]      = "ack";
+                msg["order_id"]   = oid;
                 msg["instrument"] = std::string(ack->instrument);
-                msg["side"] = (ack->side == Side::BUY) ? "buy" : "sell";
-                msg["price"] = from_price_t(ack->price);
+                msg["side"]       = (ack->side == Side::BUY) ? "buy" : "sell";
+                msg["price"]      = from_price_t(ack->price);
                 broadcast_order_update(msg.dump());
                 events_processed++;
             }
         } else if (event->type == EventType::ORDER_FILL) {
             const auto* fill = reinterpret_cast<const OrderFillEvent*>(data);
+            std::string oid(fill->order_id);
+
+            // Update WebServer-side tracking
+            auto cid_it = oid_to_cid_.find(oid);
+            if (cid_it != oid_to_cid_.end()) {
+                auto it = open_orders_.find(cid_it->second);
+                if (it != open_orders_.end()) {
+                    double rem = from_qty_t(fill->remaining_quantity);
+                    it->second.remaining_qty    = rem;
+                    it->second.filled_qty       = it->second.qty - rem;
+                    it->second.last_update_time = fill->timestamp_ns;
+                    if (rem <= 0.0) {
+                        // Fully filled — remove from open orders
+                        open_orders_.erase(it);
+                        oid_to_cid_.erase(cid_it);
+                    } else {
+                        it->second.status = "PARTIALLY_FILLED";
+                    }
+                }
+            }
+
             json msg;
-            msg["type"] = "order_update";
-            msg["event"] = "fill";
-            msg["order_id"] = std::string(fill->order_id);
-            msg["fill_price"] = from_price_t(fill->fill_price);
-            msg["fill_qty"] = from_qty_t(fill->fill_quantity);
+            msg["type"]          = "order_update";
+            msg["event"]         = "fill";
+            msg["order_id"]      = oid;
+            msg["fill_price"]    = from_price_t(fill->fill_price);
+            msg["fill_qty"]      = from_qty_t(fill->fill_quantity);
             msg["remaining_qty"] = from_qty_t(fill->remaining_quantity);
             broadcast_order_update(msg.dump());
             events_processed++;
         } else if (event->type == EventType::ORDER_CANCEL) {
             const auto* cancel = reinterpret_cast<const OrderCancelEvent*>(data);
+            std::string oid(cancel->order_id);
+
+            // Remove from WebServer-side tracking
+            auto cid_it = oid_to_cid_.find(oid);
+            if (cid_it != oid_to_cid_.end()) {
+                open_orders_.erase(cid_it->second);
+                oid_to_cid_.erase(cid_it);
+            }
+
             json msg;
-            msg["type"] = "order_update";
-            msg["event"] = "cancel";
-            msg["order_id"] = std::string(cancel->order_id);
+            msg["type"]     = "order_update";
+            msg["event"]    = "cancel";
+            msg["order_id"] = oid;
             broadcast_order_update(msg.dump());
             events_processed++;
+        } else if (event->type == EventType::ORDER_REJECT) {
+            const auto* reject = reinterpret_cast<const OrderRejectEvent*>(data);
+            std::string cid(reject->client_order_id);
+
+            // Remove rejected orders from WebServer-side tracking
+            if (!cid.empty()) {
+                auto it = open_orders_.find(cid);
+                if (it != open_orders_.end()) {
+                    if (!it->second.order_id.empty()) oid_to_cid_.erase(it->second.order_id);
+                    open_orders_.erase(it);
+                }
+            }
         }
     }
 

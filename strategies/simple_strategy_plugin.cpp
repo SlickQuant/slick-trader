@@ -105,8 +105,8 @@ protected:
 
     // Order event handlers
     void on_ack(const OrderAckEvent& event) override {
-        LOG_INFO("SimpleStrategyPlugin: Order ACK - {} {} (order_id: {})",
-                 event.instrument, event.client_order_id, event.order_id);
+        LOG_INFO("SimpleStrategyPlugin: Order ACK {} - {} {} (order_id: {})",
+                 to_string(event.status), event.instrument, event.client_order_id, event.order_id);
     }
 
     void on_fill(const OrderFillEvent& event) override {

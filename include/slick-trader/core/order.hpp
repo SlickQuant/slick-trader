@@ -16,7 +16,7 @@ struct Order {
     TimeInForce time_in_force{TimeInForce::GTC};
     price_t price{0};
     price_t stop_price{0};
-    qty_t original_qty{0};
+    qty_t qty{0};
     qty_t filled_qty{0};
     qty_t remaining_qty{0};
     price_t avg_fill_price{0};   // updated incrementally on each fill

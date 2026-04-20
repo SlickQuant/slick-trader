@@ -96,7 +96,7 @@ public:
             order.time_in_force    = event.time_in_force;
             order.price            = event.price;
             order.stop_price       = event.stop_price;
-            order.original_qty     = event.quantity;
+            order.qty              = event.quantity;
             order.remaining_qty    = event.quantity;
             order.status           = event.status;
             order.created_time     = event.event_time_ns;
@@ -105,10 +105,17 @@ public:
             order_id_to_client_id_[order.order_id] = client_id;
             orders_by_client_id_.emplace(client_id, std::move(order));
         } else {
-            // Update existing PENDING_NEW entry with broker-assigned order_id
+            // Update existing entry with broker-assigned order_id and any modified fields
+            // (covers both initial new-order ACK and modify-ack with updated price/qty)
             LOG_INFO("Strategy {}: ACK updating existing entry client_order_id={} order_id={}", name_, client_id, order_id);
             it->second.order_id         = order_id;
             it->second.status           = event.status;
+            it->second.price            = event.price;
+            it->second.stop_price       = event.stop_price;
+            it->second.qty              = event.quantity;
+            it->second.remaining_qty    = event.quantity;
+            it->second.time_in_force    = event.time_in_force;
+            it->second.post_only        = event.post_only;
             it->second.last_update_time = event.timestamp_ns;
             order_id_to_client_id_[it->second.order_id] = client_id;
         }
@@ -196,10 +203,10 @@ protected:
     }
 
     // Helper methods for order submission
-    void submit_order(std::string_view instrument, BrokerId broker_id, Side side, qty_t quantity, OrderType type, price_t price = NULL_PRICE, TimeInForce tif = TimeInForce::FOK, bool post_only = true) {
+    std::string submit_order(std::string_view instrument, BrokerId broker_id, Side side, qty_t quantity, OrderType type, price_t price = NULL_PRICE, TimeInForce tif = TimeInForce::FOK, bool post_only = true) {
         if (!order_submission_queue_) {
             LOG_ERROR("Strategy {}: Order submission queue not set", name_);
-            return;
+            return {};
         }
 
         auto client_order_id = generate_order_id();
@@ -221,7 +228,7 @@ protected:
                 reject.set_client_order_id(client_order_id.data());
                 reject.set_reason(reject_reason.c_str());
                 on_order_reject(reject);
-                return;
+                return {};
             }
         }
 
@@ -244,7 +251,7 @@ protected:
         pending.side             = side;
         pending.type             = type;
         pending.price            = price;
-        pending.original_qty     = quantity;
+        pending.qty              = quantity;
         pending.remaining_qty    = quantity;
         pending.time_in_force    = tif;
         pending.post_only        = post_only;
@@ -256,6 +263,7 @@ protected:
         LOG_DEBUG("Strategy {}: Submitted order {} for {} {}@{}",
                  name_, client_order_id, instrument,
                  from_qty_t(quantity), from_price_t(price));
+        return client_order_id;
     }
 
     void cancel_order(const std::string& order_id, const std::string& client_order_id) {
@@ -264,11 +272,10 @@ protected:
             return;
         }
 
-        CancelOrderEvent cancel;
-        cancel.set_order_id(order_id);
-        cancel.set_client_order_id(client_order_id);
-
-        EventSerializer::publish(*order_submission_queue_, cancel);
+        EventSerializer::publish<CancelOrderEvent>(*order_submission_queue_, [&](CancelOrderEvent& ev) {
+            ev.set_order_id(order_id.c_str());
+            ev.set_client_order_id(client_order_id.c_str());
+        });
         LOG_DEBUG("Strategy {}: Cancelled order {}", name_, order_id);
     }
 
@@ -278,6 +285,39 @@ protected:
             if (order.is_open() && !order.order_id.empty()) {
                 cancel_order(order.order_id, order.client_order_id);
             }
+        }
+    }
+
+    void modify_order(Order& order, price_t new_price, qty_t new_quantity, price_t new_stop_price = NULL_PRICE) {
+        if (!order_submission_queue_) {
+            LOG_ERROR("Strategy {}: Order submission queue not set", name_);
+            return;
+        }
+        
+        EventSerializer::publish<ModifyOrderEvent>(*order_submission_queue_, [&order, new_price, new_quantity, new_stop_price](ModifyOrderEvent& ev) {
+            ev.set_order_id(order.order_id);
+            ev.set_client_order_id(order.client_order_id);
+            ev.new_price          = new_price;
+            ev.new_quantity       = new_quantity;
+            ev.new_stop_price     = new_stop_price;
+            ev.new_post_only      = order.post_only;
+            ev.new_time_in_force  = order.time_in_force;
+        });
+
+        order.status = OrderStatus::PENDING_MODIFY;
+        order.last_update_time = get_timestamp_ns();
+
+        LOG_INFO("Strategy {}: Modify order {} new_price={} new_qty={}",
+                  name_, order.order_id, from_price_t(new_price), from_qty_t(new_quantity));
+    }
+
+    void modify_order(const std::string& client_order_id,
+                      price_t new_price,
+                      qty_t   new_quantity,
+                      price_t new_stop_price = NULL_PRICE) {
+        auto it = orders_by_client_id_.find(client_order_id);
+        if (it != orders_by_client_id_.end()) [[likely]] {
+            modify_order(it->second, new_price, new_quantity, new_stop_price);
         }
     }
 
@@ -344,7 +384,7 @@ protected:
             pending.side             = close_side;
             pending.type             = OrderType::LIMIT;
             pending.price            = close_price;
-            pending.original_qty     = close_qty;
+            pending.qty              = close_qty;
             pending.remaining_qty    = close_qty;
             pending.time_in_force    = TimeInForce::IOC;
             pending.post_only        = false;

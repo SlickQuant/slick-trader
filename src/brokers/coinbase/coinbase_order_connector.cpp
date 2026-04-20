@@ -258,29 +258,103 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
 }
 
 void CoinbaseOrderConnector::handle_modify_request(const ModifyOrderEvent& request) {
-    LOG_INFO("Processing modify request: order_id={}, client_order_id={}",
-             request.order_id, request.client_order_id);
+    LOG_INFO("Processing modify request: order_id={}, client_order_id={}, new_price={}, new_qty={}",
+             request.order_id, request.client_order_id,
+             from_price_t(request.new_price), from_qty_t(request.new_quantity));
 
+    auto publish_reject = [&](std::string_view reason) {
+        EventSerializer::publish<OrderRejectEvent>(*order_event_queue_, [&](OrderRejectEvent& ev) {
+            ev.type         = EventType::ORDER_REJECT;
+            ev.broker_id    = BrokerId::COINBASE;
+            ev.timestamp_ns = get_timestamp_ns();
+            ev.set_instrument(request.instrument);
+            ev.set_client_order_id(request.client_order_id);
+            ev.set_order_id(request.order_id);
+            ev.set_reason(reason.data());
+            ev.side         = request.side;
+            ev.price        = request.new_price;
+            ev.stop_price   = request.new_stop_price;
+            ev.quantity     = request.new_quantity;
+        });
+    };
+
+    try {
+        std::optional<double> stop_opt = (request.new_stop_price != NULL_PRICE)
+            ? std::optional<double>(from_price_t(request.new_stop_price))
+            : std::nullopt;
+
+        auto response = rest_client_->modify_order(
+            std::string(request.order_id),
+            std::string(request.instrument),
+            from_price_t(request.new_price),
+            from_qty_t(request.new_quantity),
+            stop_opt
+        );
+
+        if (response.success) {
+            LOG_INFO("Order modified successfully: order_id={}", request.order_id);
+            EventSerializer::publish<OrderAckEvent>(*order_event_queue_, [&](OrderAckEvent& ev) {
+                ev.type          = EventType::ORDER_ACK;
+                ev.broker_id     = BrokerId::COINBASE;
+                ev.timestamp_ns  = get_timestamp_ns();
+                ev.set_instrument(request.instrument);
+                ev.set_client_order_id(request.client_order_id);
+                ev.set_order_id(request.order_id);
+                ev.side          = request.side;
+                ev.price         = request.new_price;
+                ev.stop_price    = request.new_stop_price;
+                ev.quantity      = request.new_quantity;
+                ev.time_in_force = request.new_time_in_force;
+                ev.post_only     = request.new_post_only;
+                ev.status        = OrderStatus::ACKNOWLEDGED;
+            });
+        } else {
+            std::string reason = !response.errors.empty()
+                ? response.errors[0].dump()
+                : "Modify order rejected by exchange";
+            LOG_ERROR("Order modify failed: order_id={}, reason={}", request.order_id, reason);
+            publish_reject(reason);
+        }
+    } catch (const std::exception& e) {
+        LOG_ERROR("Exception modifying order {}: {}", request.order_id, e.what());
+        publish_reject(e.what());
+    }
 }
 
 void CoinbaseOrderConnector::handle_cancel_request(const CancelOrderEvent& request) {
     LOG_INFO("Processing cancel request: order_id={}, client_order_id={}",
              request.order_id, request.client_order_id);
 
+    auto publish_cancel = [&](std::string_view reason) {
+        EventSerializer::publish<OrderCancelEvent>(*order_event_queue_, [&](OrderCancelEvent& ev) {
+            ev.broker_id    = BrokerId::COINBASE;
+            ev.timestamp_ns = get_timestamp_ns();
+            ev.set_order_id(request.order_id);
+            ev.set_client_order_id(request.client_order_id);
+            ev.set_reason(reason.data());
+            ev.remaining_quantity = 0;
+        });
+    };
+
     try {
-        // std::vector<std::string_view> order_ids = { request.order_id };
         auto responses = rest_client_->cancel_orders({ request.order_id });
 
         for (const auto& response : responses) {
             if (response.success) {
                 LOG_INFO("Order cancelled successfully: order_id={}", response.order_id);
+                publish_cancel("CANCELLED");
             } else {
                 LOG_ERROR("Order cancellation failed: order_id={}, reason={}",
                           response.order_id, response.failure_reason);
+                // Coinbase responded but says the order is gone (filled, expired, not found).
+                // Publish a cancel event so WebServer & strategy remove the order locally.
+                // Note: we do NOT publish on network/parse exceptions since the order may still
+                // be live on the exchange in that case.
+                publish_cancel(response.failure_reason);
             }
         }
     } catch (const std::exception& e) {
-        LOG_ERROR("Exception cancelling order: {}", e.what());
+        LOG_ERROR("Exception cancelling order {}: {}", request.order_id, e.what());
     }
 }
 

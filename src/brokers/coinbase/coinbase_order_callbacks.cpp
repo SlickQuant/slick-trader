@@ -135,11 +135,17 @@ void CoinbaseOrderCallbacks::process_order_update(const coinbase::Order& order) 
             publish_order_cancel(order);
             fill_states_.erase(order.order_id);
             break;
+        case coinbase::OrderStatus::CANCEL_QUEUED:
+            LOG_INFO("{} Order {} cancel queued", order.product_id, order.order_id);
+            break;
+        case coinbase::OrderStatus::EDIT_QUEUED:
+            LOG_INFO("{} Order {} edit queued (modify in progress)", order.product_id, order.order_id);
+            break;
         case coinbase::OrderStatus::FAILED:
             publish_order_reject(order);
             break;
         default:
-            LOG_WARN("Unknown order status: {}({})", order.status, coinbase::to_string(order.status));
+            LOG_WARN("Unknown order status: {}", order.status);
             break;
     }
 }
@@ -160,6 +166,9 @@ void CoinbaseOrderCallbacks::publish_order_ack(const coinbase::Order& order) {
         if (order.order_configuration.stop_limit_stop_limit_gtc->base_size.has_value()) {
             quantity = order.order_configuration.stop_limit_stop_limit_gtc->base_size.value();
         }
+    } else {
+        price = order.limit_price;
+        quantity = order.cumulative_quantity + order.leaves_quantity;
     }
 
     EventSerializer::publish<OrderAckEvent>(*order_event_queue_, [this, &order, price, stop_price, quantity](OrderAckEvent& event) {

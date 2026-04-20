@@ -55,6 +55,15 @@ class Dashboard {
             this.clearLog();
         });
 
+        // Orders panel buttons
+        document.getElementById('refreshOrders')?.addEventListener('click', () => {
+            this.loadOrders();
+        });
+
+        document.getElementById('cancelAllOrders')?.addEventListener('click', () => {
+            this.confirmCancelAllOrders();
+        });
+
         // Chart timeframe buttons
         document.querySelectorAll('.chart-controls .btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
@@ -148,7 +157,8 @@ class Dashboard {
             await Promise.all([
                 this.loadPnL(),
                 this.loadPositions(),
-                this.loadStrategies()
+                this.loadStrategies(),
+                this.loadOrders()
             ]);
 
         } catch (error) {
@@ -392,7 +402,7 @@ class Dashboard {
      * Handle real-time P&L update
      */
     handlePnLUpdate(data) {
-        console.log('[Dashboard] P&L update received:', data);
+        // console.log('[Dashboard] P&L update received:', data);
         this.updatePnLDisplay(data.pnl || data);
     }
 
@@ -413,6 +423,7 @@ class Dashboard {
         if (typeof ladderManager !== 'undefined') {
             ladderManager.onOrderUpdate(data);
         }
+        this.loadOrders();
     }
 
     /**
@@ -564,6 +575,93 @@ class Dashboard {
         if (logContainer) {
             logContainer.innerHTML = '';
             this.log('Log cleared', 'info');
+        }
+    }
+
+    /**
+     * Load open orders
+     */
+    async loadOrders() {
+        try {
+            const orders = await api.getOpenOrders();
+            this.updateOrdersTable(orders);
+        } catch (error) {
+            console.error('[Dashboard] Failed to load orders:', error);
+        }
+    }
+
+    /**
+     * Render open orders table
+     */
+    updateOrdersTable(orders) {
+        const tbody = document.getElementById('ordersTableBody');
+        if (!tbody) return;
+
+        if (!orders || orders.length === 0) {
+            tbody.innerHTML = '<tr class="empty-state"><td colspan="7">No open orders</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = orders.map(order => {
+            const sideClass = order.side === 'buy' ? 'positive' : 'negative';
+            const qtyDisplay = `${api.formatQuantity(order.remaining_qty, 4)} / ${api.formatQuantity(order.qty, 4)}`;
+            return `
+                <tr>
+                    <td>${order.strategy_id}</td>
+                    <td>${order.instrument}</td>
+                    <td class="${sideClass}">${order.side.toUpperCase()}</td>
+                    <td>${api.formatCurrency(order.price)}</td>
+                    <td>${qtyDisplay}</td>
+                    <td>${order.status}</td>
+                    <td>
+                        <div class="action-buttons">
+                            <button class="btn btn-sm btn-primary"
+                                onclick="modalManager.showModifyOrderModal(
+                                    '${order.strategy_id}',
+                                    '${order.order_id}',
+                                    '${order.client_order_id}',
+                                    ${order.price},
+                                    ${order.remaining_qty}
+                                )">Modify</button>
+                            <button class="btn btn-sm btn-danger"
+                                onclick="window.dashboard.cancelOrder(
+                                    '${order.strategy_id}',
+                                    '${order.order_id}',
+                                    '${order.client_order_id}'
+                                )">Cancel</button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    /**
+     * Cancel a specific order
+     */
+    async cancelOrder(strategyId, orderId, clientOrderId) {
+        try {
+            await api.cancelOrder(strategyId, orderId, clientOrderId);
+            this.log(`Cancel submitted for order ${orderId}`, 'info');
+            modalManager.showNotification('Cancel request submitted', 'success');
+        } catch (error) {
+            this.log(`Cancel failed: ${error.message}`, 'error');
+            modalManager.showNotification(`Cancel failed: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Cancel all open orders (with confirmation)
+     */
+    async confirmCancelAllOrders() {
+        if (!confirm('Cancel ALL open orders across all strategies?')) return;
+        try {
+            const result = await api.cancelAllOrders();
+            this.log(`Cancel all submitted (${result.strategies_affected} strategies)`, 'warning');
+            modalManager.showNotification('Cancel all request submitted', 'success');
+        } catch (error) {
+            this.log(`Cancel all failed: ${error.message}`, 'error');
+            modalManager.showNotification(`Cancel all failed: ${error.message}`, 'error');
         }
     }
 
