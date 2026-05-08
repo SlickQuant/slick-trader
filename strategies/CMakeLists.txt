@@ -3,32 +3,62 @@
 # Each strategy is built as a shared library (.so/.dll) that can be loaded at runtime
 
 # Simple Strategy Plugin - demonstrates position tracking, PnL, and risk management
-add_library(simple_strategy_plugin SHARED
-    simple_strategy_plugin.cpp
+# add_library(simple_strategy_plugin SHARED
+#     simple_strategy_plugin.cpp
+# )
+
+# if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
+#     set_target_properties(simple_strategy_plugin PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+# endif()
+
+# target_include_directories(simple_strategy_plugin PRIVATE
+#     ${CMAKE_SOURCE_DIR}/include
+# )
+
+# target_link_libraries(simple_strategy_plugin PRIVATE
+#     slick-trader-core
+# )
+
+# set_target_properties(simple_strategy_plugin PROPERTIES
+#     PREFIX ""
+#     OUTPUT_NAME "simple_strategy_plugin"
+#     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
+#     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
+# )
+
+# # Synchronize PDB writes on Windows
+# if(MSVC)
+#     target_compile_options(simple_strategy_plugin PRIVATE /FS)
+# endif()
+
+# Market Maker - full market making plugin with inventory skew,
+# dual-EMA trend detection, book imbalance, and configurable fair value modes
+add_library(market_maker SHARED
+    market_maker.cpp
 )
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
-    set_target_properties(simple_strategy_plugin PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+    set_target_properties(market_maker PROPERTIES CXX_SCAN_FOR_MODULES OFF)
 endif()
 
-target_include_directories(simple_strategy_plugin PRIVATE
+target_include_directories(market_maker PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
-target_link_libraries(simple_strategy_plugin PRIVATE
+target_link_libraries(market_maker PRIVATE
     slick-trader-core
 )
 
-set_target_properties(simple_strategy_plugin PROPERTIES
+set_target_properties(market_maker PROPERTIES
     PREFIX ""
-    OUTPUT_NAME "simple_strategy_plugin"
+    OUTPUT_NAME "market_maker"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
 )
 
 # Synchronize PDB writes on Windows
 if(MSVC)
-    target_compile_options(simple_strategy_plugin PRIVATE /FS)
+    target_compile_options(market_maker PRIVATE /FS)
 endif()
 
 # Install Lua/Python strategy examples

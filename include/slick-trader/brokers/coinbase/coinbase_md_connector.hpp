@@ -29,7 +29,7 @@ public:
 
     void start() override;
     void stop() override;
-    bool is_running() const override { return is_connected(); }
+    bool is_running() const override { return running_.load(std::memory_order_relaxed); }
 
     void set_md_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) override;
 
@@ -37,6 +37,8 @@ public:
     void set_websocket_url(const std::string& url) { ws_url_ = url; }
 
 private:
+    std::atomic_bool running_;
+    
     std::unique_ptr<CoinbaseMDCallbacks> callbacks_;
     std::unique_ptr<coinbase::WebSocketClient> ws_client_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;

@@ -8,7 +8,8 @@
 namespace slick::trader {
 
 CoinbaseMDConnector::CoinbaseMDConnector()
-    : callbacks_(std::make_unique<CoinbaseMDCallbacks>(*this))
+    : running_(false)
+    , callbacks_(std::make_unique<CoinbaseMDCallbacks>(*this))
     , orderbook_depth_(10) {
 }
 
@@ -22,6 +23,10 @@ bool CoinbaseMDConnector::connect() {
     if (!md_queue_) {
         LOG_ERROR("Coinbase MD: MD queue not set");
         return false;
+    }
+
+    if (ws_client_) {
+        ws_client_->stop();
     }
 
     // Create callbacks and WebSocket client
@@ -120,11 +125,22 @@ bool CoinbaseMDConnector::unsubscribe(SubscriptionType type, const std::vector<s
 }
 
 void CoinbaseMDConnector::start() {
-    connect();
+    if (running_.load(std::memory_order_relaxed)) {
+        LOG_WARN("Coinbase MD: Already running");
+        return;
+    }
+    if (connect()) {
+        running_.store(true, std::memory_order_release);
+    }
 }
 
 void CoinbaseMDConnector::stop() {
+    if (!running_.load(std::memory_order_acquire)) {
+        return;
+    }
+
     disconnect();
+    running_.store(false, std::memory_order_release);
 }
 
 } // namespace slick::trader

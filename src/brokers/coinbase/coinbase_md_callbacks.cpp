@@ -150,6 +150,9 @@ void CoinbaseMDCallbacks::publish_ticker(const coinbase::Ticker& ticker, uint64_
 
 void CoinbaseMDCallbacks::publish_level2_update(const coinbase::Level2UpdateBatch& batch, uint64_t seq_num, bool is_snapshot) {
     assert(md_queue_ && "Market data queue not set");
+    if (is_snapshot) {
+        LOG_DEBUG("Publish lv2 snapshot. count={}", batch.updates.size());
+    }
     uint32_t size = static_cast<uint32_t>(sizeof(Level2UpdateEvent) + batch.updates.size() * sizeof(PriceLevel));
     EventSerializer::publish<Level2UpdateEvent>(*md_queue_, size, [&batch, seq_num, is_snapshot](Level2UpdateEvent& event) {
         event.type = EventType::LEVEL2_UPDATE;

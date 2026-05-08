@@ -84,7 +84,7 @@ protected:
         }
     }
 
-    void on_order_book(const OrderBookEvent& event, const slick::orderbook::OrderBookL2& book) override {
+    void on_order_book(const slick::orderbook::OrderBookL2& book) override {
         // Optional: Use order book for more sophisticated strategies
         std::string instrument(event.instrument);
 

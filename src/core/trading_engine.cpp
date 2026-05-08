@@ -119,6 +119,9 @@ bool TradingEngine::initialize(const std::string& config_path) {
 
         // Set top-of-book queue for real-time P&L broadcasting
         web_server_->set_tob_queue(tob_queue_);
+
+        // Allow WebServer to persist runtime config changes back to disk
+        web_server_->set_config_path(config_path);
     }
 
     return true;
@@ -309,7 +312,8 @@ void TradingEngine::apply_strategy_subscriptions() {
     LOG_INFO("Applying strategy-driven market data subscriptions...");
 
     // Collect all subscription requests from all strategies
-    std::unordered_map<BrokerId, std::unordered_map<SubscriptionType, std::vector<std::string>>> subscription_map;
+    // key: broker_id << 8 | sub.type
+    std::unordered_map<uint16_t, std::vector<std::string>> subscription_map;
 
     // Get all strategies from strategy manager
     for (const auto& strategy : strategy_manager_->get_all_strategies()) {
@@ -317,7 +321,7 @@ void TradingEngine::apply_strategy_subscriptions() {
 
         for (const auto& sub : subscriptions) {
             // Add instruments to the subscription map (keyed by broker + type)
-            auto& instruments = subscription_map[sub.broker_id][sub.type];
+            auto& instruments = subscription_map[(static_cast<uint16_t>(sub.broker_id) << 8) | static_cast<uint16_t>(sub.type)];
             instruments.insert(instruments.end(), sub.instruments.begin(), sub.instruments.end());
 
             LOG_DEBUG("Strategy {} requests {} subscription for: {}",
@@ -331,7 +335,8 @@ void TradingEngine::apply_strategy_subscriptions() {
 
     // Apply subscriptions to each broker
     int total_subscriptions = 0;
-    for (const auto& [broker_id, sub_types] : subscription_map) {
+    for (const auto& [key, instruments] : subscription_map) {
+        auto broker_id = static_cast<BrokerId>(key >> 8);
         auto broker = get_broker(broker_id);
         if (!broker) {
             LOG_WARN("Broker ID {} not registered - skipping subscriptions", static_cast<int>(broker_id));
@@ -344,35 +349,38 @@ void TradingEngine::apply_strategy_subscriptions() {
             continue;
         }
 
-        for (const auto& [sub_type, instruments] : sub_types) {
-            if (instruments.empty()) {
-                continue;
+        // Remove duplicates
+        std::vector<std::string> unique_instruments = instruments;
+        std::sort(unique_instruments.begin(), unique_instruments.end());
+        unique_instruments.erase(
+            std::unique(unique_instruments.begin(), unique_instruments.end()),
+            unique_instruments.end()
+        );
+
+        // Subscribe
+        auto sub_type = static_cast<SubscriptionType>(key & 0xFF);
+        md_connector->subscribe(sub_type, unique_instruments);
+
+        std::string type_str;
+        switch (sub_type) {
+            case SubscriptionType::TRADE: type_str = "trades"; break;
+            case SubscriptionType::QUOTE: type_str = "quotes"; break;
+            case SubscriptionType::LEVEL2: {
+                type_str = "level2";
+                strategy_manager_->subscribe_book_update(unique_instruments);
+                break;
             }
-
-            // Remove duplicates
-            std::vector<std::string> unique_instruments = instruments;
-            std::sort(unique_instruments.begin(), unique_instruments.end());
-            unique_instruments.erase(
-                std::unique(unique_instruments.begin(), unique_instruments.end()),
-                unique_instruments.end()
-            );
-
-            // Subscribe
-            md_connector->subscribe(sub_type, unique_instruments);
-
-            std::string type_str;
-            switch (sub_type) {
-                case SubscriptionType::TRADE: type_str = "trades"; break;
-                case SubscriptionType::QUOTE: type_str = "quotes"; break;
-                case SubscriptionType::LEVEL2: type_str = "level2"; break;
-                case SubscriptionType::ORDER_BOOK: type_str = "orderbook"; break;
+            case SubscriptionType::ORDER_BOOK: {
+                type_str = "orderbook";
+                strategy_manager_->subscribe_book_update(unique_instruments);
+                break;
             }
-
-            LOG_INFO("✓ Subscribed {} to {} for: {}",
-                     broker->get_broker_name(), type_str,
-                     join_strings(unique_instruments, ", "));
-            total_subscriptions++;
         }
+
+        LOG_INFO("✓ Subscribed {} to {} for: {}",
+                    broker->get_broker_name(), type_str,
+                    join_strings(unique_instruments, ", "));
+        total_subscriptions += unique_instruments.size();
     }
 
     if (total_subscriptions == 0) {

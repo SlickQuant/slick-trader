@@ -66,7 +66,7 @@ else()
 endif()
 
 # Add slick-orderbook dependency
-find_package(slick-orderbook 1.0.1 CONFIG QUIET)
+find_package(slick-orderbook 1.0.2 CONFIG QUIET)
 if (NOT slick-orderbook_FOUND)
     message(STATUS "Fetching slick-orderbook...")
     set(BUILD_SLICK_ORDERBOOK_TESTS OFF CACHE BOOL "" FORCE)
@@ -75,7 +75,7 @@ if (NOT slick-orderbook_FOUND)
     FetchContent_Declare(
         slick-orderbook
         GIT_REPOSITORY https://github.com/SlickQuant/slick-orderbook.git
-        GIT_TAG v1.0.1
+        GIT_TAG v1.0.2
     )
     FetchContent_MakeAvailable(slick-orderbook)
 else()
@@ -97,13 +97,13 @@ else()
     message(STATUS "Found coinbase-advanced-cpp: ${coinbase-advanced-cpp_VERSION}")
 endif()
 
-find_package(slick-net 2.0.0 CONFIG QUIET)
+find_package(slick-net 2.0.3 CONFIG QUIET)
 if (NOT slick-net_FOUND)
     message(STATUS "Fetching slick-net...")
     FetchContent_Declare(
         slick-net
         GIT_REPOSITORY https://github.com/SlickQuant/slick-net.git
-        GIT_TAG v2.0.0
+        GIT_TAG v2.0.3
     )
     FetchContent_MakeAvailable(slick-net)
 endif()

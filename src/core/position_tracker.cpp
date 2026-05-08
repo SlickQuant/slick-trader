@@ -34,6 +34,10 @@ void PositionTracker::on_fill(const std::string& strategy_id, const OrderFillEve
 
 void PositionTracker::apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_qty,
                                    price_t fill_price, uint64_t timestamp) {
+    if (fill_price == NULL_PRICE || fill_price <= 0) {
+        LOG_ERROR("PositionTracker: fill has invalid fill_price={} — skipping P&L update", fill_price);
+        return;
+    }
     Position& p = pos.position;
     std::vector<Lot>& lots = pos.lots;
 

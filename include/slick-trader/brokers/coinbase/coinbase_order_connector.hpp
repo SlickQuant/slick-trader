@@ -55,7 +55,6 @@ private:
 
 private:
     std::atomic_bool running_;
-    std::atomic_bool connected_;
     std::thread worker_thread_;
 
     std::unique_ptr<CoinbaseOrderCallbacks> callbacks_;

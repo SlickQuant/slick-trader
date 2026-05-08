@@ -82,6 +82,9 @@ public:
         tob_queue_ = queue;
     }
 
+    // Set config file path for persisting runtime changes
+    void set_config_path(const std::string& path) { config_path_ = path; }
+
 private:
     void run();
 
@@ -101,6 +104,10 @@ private:
                                  const std::string& strategy_id);
     void handle_put_risk_limits(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                  const std::string& strategy_id, std::string_view body);
+    void handle_get_strategy_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                     const std::string& strategy_id);
+    void handle_put_strategy_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                     const std::string& strategy_id, std::string_view body);
     void handle_post_halt_strategy(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                      const std::string& strategy_id, std::string_view body);
     void handle_post_resume_strategy(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
@@ -116,6 +123,9 @@ private:
                           const std::string& strategy_id, const std::string& order_id,
                           std::string_view body);
     void handle_delete_all_orders(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
+
+    // Persist updated strategy parameters to config.json on disk
+    void save_strategy_parameters(const std::string& strategy_id, const nlohmann::json& params);
 
     // WebSocket handlers
     void handle_ws_open(uWS::WebSocket<false, true, void*>* ws);
@@ -174,6 +184,9 @@ private:
 
     // Ladder configuration
     nlohmann::json ladder_config_;
+
+    // Path to config.json — used to persist runtime strategy parameter changes
+    std::string config_path_;
 
     // WebServer-side order tracking — accessed ONLY from the uWS event loop thread (no mutex needed)
     struct TrackedOrder {

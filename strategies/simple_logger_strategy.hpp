@@ -76,10 +76,10 @@ protected:
         }
     }
 
-    void on_order_book(const OrderBookEvent& event, const slick::orderbook::OrderBookL2& book) override {
+    void on_order_book(const slick::orderbook::OrderBookL2& book) override {
         auto tob = book.getTopOfBook();
         LOG_DEBUG("SimpleLogger: [ORDER_BOOK] {} bids: {} asks: {} mid: {}",
-                 event.instrument, event.num_bids, event.num_asks, tob.midPrice());
+                 book.symbol(), book.levelCount(slick::orderbook::Side::Buy), book.levelCount(slick::orderbook::Side::Sell), tob.midPrice());
     }
 
     void on_ack(const OrderAckEvent& event) override {

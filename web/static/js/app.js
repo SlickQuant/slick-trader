@@ -391,10 +391,77 @@ class Dashboard {
      * Update strategies count
      */
     updateStrategiesCount(strategies) {
-        const countEl = document.getElementById('activeStrategies');
-        if (countEl) {
-            const count = Array.isArray(strategies) ? strategies.length : Object.keys(strategies).length;
-            countEl.textContent = count;
+        const listEl = document.getElementById('activeStrategies');
+        if (!listEl) return;
+        const items = Array.isArray(strategies) ? strategies : Object.values(strategies);
+        if (items.length === 0) {
+            listEl.innerHTML = '<div class="strategy-item-empty">No strategies</div>';
+            return;
+        }
+        listEl.innerHTML = items.map(s =>
+            `<div class="strategy-item">` +
+            `<span class="strategy-name">${s.name}</span>` +
+            `<div class="strategy-item-actions">` +
+            `<span class="status-badge status-${s.status}">${s.status}</span>` +
+            `<button class="btn-icon" title="Configure" data-strategy="${s.name}">&#9881;</button>` +
+            `</div>` +
+            `</div>`
+        ).join('');
+
+        // Wire gear button clicks via event delegation (re-registered each render)
+        listEl.onclick = (e) => {
+            const btn = e.target.closest('[data-strategy]');
+            if (btn) this.openStrategyConfig(btn.dataset.strategy);
+        };
+    }
+
+    async openStrategyConfig(strategyId) {
+        try {
+            const params = await api.get(`/api/strategies/${encodeURIComponent(strategyId)}/config`);
+            document.getElementById('strategyConfigTitle').textContent = `Configure: ${strategyId}`;
+            document.getElementById('strategyConfigEditor').value = JSON.stringify(params, null, 2);
+            document.getElementById('strategyConfigError').style.display = 'none';
+            this._configStrategyId = strategyId;
+
+            const modal = document.getElementById('strategyConfigModal');
+            modal.style.display = 'flex';
+
+            // Wire buttons (safe to re-wire each open)
+            document.getElementById('strategyConfigClose').onclick  = () => this.closeStrategyConfig();
+            document.getElementById('strategyConfigCancel').onclick = () => this.closeStrategyConfig();
+            document.getElementById('strategyConfigSave').onclick   = () => this.saveStrategyConfig();
+            modal.onclick = (e) => { if (e.target === modal) this.closeStrategyConfig(); };
+        } catch (err) {
+            console.error('[Dashboard] Failed to load strategy config:', err);
+            this.log(`Failed to load config for ${strategyId}`, 'error');
+        }
+    }
+
+    closeStrategyConfig() {
+        document.getElementById('strategyConfigModal').style.display = 'none';
+        this._configStrategyId = null;
+    }
+
+    async saveStrategyConfig() {
+        const errorEl = document.getElementById('strategyConfigError');
+        const raw = document.getElementById('strategyConfigEditor').value;
+
+        let params;
+        try {
+            params = JSON.parse(raw);
+        } catch (e) {
+            errorEl.textContent = 'Invalid JSON: ' + e.message;
+            errorEl.style.display = 'block';
+            return;
+        }
+
+        try {
+            await api.put(`/api/strategies/${encodeURIComponent(this._configStrategyId)}/config`, params);
+            this.closeStrategyConfig();
+            this.log(`Config updated for ${this._configStrategyId}`, 'success');
+        } catch (err) {
+            errorEl.textContent = err.message || 'Save failed';
+            errorEl.style.display = 'block';
         }
     }
 
@@ -419,11 +486,44 @@ class Dashboard {
      */
     handleOrderUpdate(data) {
         console.log('[Dashboard] Order update received:', data);
-        this.log(`Order ${data.order_id}: ${data.event}`, 'info');
+        const level = data.event === 'reject' ? 'error'
+                    : data.event === 'cancel'  ? 'warning'
+                    : data.event === 'fill'    ? 'success'
+                    : 'info';
+        this.log(this._formatOrderLog(data), level);
         if (typeof ladderManager !== 'undefined') {
             ladderManager.onOrderUpdate(data);
         }
         this.loadOrders();
+    }
+
+    _formatOrderLog(data) {
+        const sym   = data.instrument || '';
+        const oid   = data.order_id   || '';
+        const side  = data.side ? data.side.toUpperCase() : '';
+        const price = data.price  != null ? data.price  : '';
+        const qty   = data.qty    != null ? data.qty    : '';
+        const prefix = `${sym} Order ${oid}:`;
+
+        switch (data.event) {
+            case 'ack':
+                return `${prefix} ${side} ${data.status || 'ACK'} ${qty}@${price}`;
+            case 'fill': {
+                const fp  = data.fill_price    != null ? data.fill_price    : '';
+                const fq  = data.fill_qty      != null ? data.fill_qty      : '';
+                const rem = data.remaining_qty != null ? data.remaining_qty : 0;
+                const st  = rem > 0 ? 'PARTIALLY_FILLED' : 'FILLED';
+                return `${prefix} ${side} ${st} ${fq}@${fp}` + (rem > 0 ? ` (${rem} remaining)` : '');
+            }
+            case 'cancel':
+                return `${prefix} ${side} CANCELLED ${qty}@${price}`;
+            case 'reject': {
+                const reason = data.reason ? ` - ${data.reason}` : '';
+                return `${prefix} ${side} REJECTED ${qty}@${price}${reason}`;
+            }
+            default:
+                return `${prefix} ${data.event}`;
+        }
     }
 
     /**

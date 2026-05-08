@@ -212,6 +212,23 @@ void WebServer::setup_routes(uWS::App &app) {
         res->onAborted([]() {});
     });
 
+    // GET: Current strategy parameters
+    app.get("/api/strategies/:strategy_id/config", [this](auto* res, auto* req) {
+        std::string strategy_id(req->getParameter(0));
+        handle_get_strategy_config(res, req, strategy_id);
+    });
+
+    // PUT: Update strategy parameters at runtime and persist to config.json
+    app.put("/api/strategies/:strategy_id/config", [this](auto* res, auto* req) {
+        std::string strategy_id(req->getParameter(0));
+        res->onData([this, res, strategy_id](std::string_view data, bool last) {
+            if (last) {
+                handle_put_strategy_config(res, nullptr, strategy_id, data);
+            }
+        });
+        res->onAborted([]() {});
+    });
+
     // POST: Halt strategy
     app.post("/api/strategies/:strategy_id/halt", [this](auto* res, auto* req) {
         std::string strategy_id(req->getParameter(0));
@@ -785,6 +802,86 @@ void WebServer::handle_put_risk_limits(uWS::HttpResponse<false>* res, uWS::HttpR
     }
 }
 
+void WebServer::handle_get_strategy_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                             const std::string& strategy_id) {
+    auto strategy = strategy_manager_.get_strategy(strategy_id);
+    if (!strategy) {
+        send_error_response(res, "Strategy not found: " + strategy_id, 404);
+        return;
+    }
+    auto* base = dynamic_cast<StrategyBase*>(strategy.get());
+    if (!base) {
+        send_error_response(res, "Strategy does not support config", 400);
+        return;
+    }
+    send_json_response(res, base->get_config().dump(2));
+}
+
+void WebServer::handle_put_strategy_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                                            const std::string& strategy_id, std::string_view body) {
+    try {
+        auto params = json::parse(body);
+        if (!params.is_object()) {
+            send_error_response(res, "Parameters must be a JSON object", 400);
+            return;
+        }
+
+        auto strategy = strategy_manager_.get_strategy(strategy_id);
+        if (!strategy) {
+            send_error_response(res, "Strategy not found: " + strategy_id, 404);
+            return;
+        }
+        auto* base = dynamic_cast<StrategyBase*>(strategy.get());
+        if (!base) {
+            send_error_response(res, "Strategy does not support config", 400);
+            return;
+        }
+
+        base->set_config(params);
+        save_strategy_parameters(strategy_id, params);
+
+        LOG_INFO("WebServer: Updated config for strategy {}", strategy_id);
+
+        json response = {
+            {"success", true},
+            {"message", "Config updated successfully"},
+            {"strategy_id", strategy_id}
+        };
+        send_json_response(res, response.dump());
+    } catch (const json::exception& e) {
+        send_error_response(res, std::string("Invalid JSON: ") + e.what(), 400);
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
+void WebServer::save_strategy_parameters(const std::string& strategy_id, const nlohmann::json& params) {
+    if (config_path_.empty()) {
+        LOG_WARN("WebServer: config_path not set — cannot persist strategy config");
+        return;
+    }
+    try {
+        std::ifstream in(config_path_);
+        auto config = json::parse(in);
+        in.close();
+
+        if (config.contains("strategies") && config["strategies"].is_array()) {
+            for (auto& s : config["strategies"]) {
+                if (s.value("name", "") == strategy_id) {
+                    s["parameters"] = params;
+                    break;
+                }
+            }
+        }
+
+        std::ofstream out(config_path_);
+        out << config.dump(2);
+        LOG_INFO("WebServer: Persisted config for strategy {} to {}", strategy_id, config_path_);
+    } catch (const std::exception& e) {
+        LOG_ERROR("WebServer: Failed to save config for strategy {}: {}", strategy_id, e.what());
+    }
+}
+
 void WebServer::handle_post_halt_strategy(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                             const std::string& strategy_id, std::string_view body) {
     try {
@@ -1005,11 +1102,6 @@ void WebServer::process_market_data_events() {
         for (int i = 0; i < 100; ++i) {
             auto [tob_data, tob_size] = tob_queue_->read(ws_tob_cursor_);
             if (!tob_data) break;
-            const auto* quote = reinterpret_cast<const QuoteEvent*>(tob_data);
-            if (quote->bid_price > 0 && quote->ask_price > 0) {
-                const price_t mid = (quote->bid_price / 2) + (quote->ask_price / 2);
-                pnl_calculator_.update_mark_price(quote->instrument, mid, quote->event_time_ns);
-            }
             broadcast_pnl_update();
         }
     }
@@ -1227,6 +1319,8 @@ void WebServer::process_order_events() {
                 msg["instrument"] = std::string(ack->instrument);
                 msg["side"]       = (ack->side == Side::BUY) ? "buy" : "sell";
                 msg["price"]      = from_price_t(ack->price);
+                msg["qty"]        = from_qty_t(ack->quantity);
+                msg["status"]     = std::string(to_string(ack->status));
                 broadcast_order_update(msg.dump());
                 events_processed++;
             }
@@ -1234,21 +1328,30 @@ void WebServer::process_order_events() {
             const auto* fill = reinterpret_cast<const OrderFillEvent*>(data);
             std::string oid(fill->order_id);
 
-            // Update WebServer-side tracking
+            // Capture tracked order fields before potential erasure
+            std::string instrument, side, fill_status;
+            double price = 0.0, qty = 0.0;
+
             auto cid_it = oid_to_cid_.find(oid);
             if (cid_it != oid_to_cid_.end()) {
                 auto it = open_orders_.find(cid_it->second);
                 if (it != open_orders_.end()) {
+                    instrument = it->second.instrument;
+                    side       = it->second.side;
+                    price      = it->second.price;
+                    qty        = it->second.qty;
+
                     double rem = from_qty_t(fill->remaining_quantity);
                     it->second.remaining_qty    = rem;
                     it->second.filled_qty       = it->second.qty - rem;
                     it->second.last_update_time = fill->timestamp_ns;
                     if (rem <= 0.0) {
-                        // Fully filled — remove from open orders
+                        fill_status = "FILLED";
                         open_orders_.erase(it);
                         oid_to_cid_.erase(cid_it);
                     } else {
-                        it->second.status = "PARTIALLY_FILLED";
+                        fill_status = "PARTIALLY_FILLED";
+                        it->second.status = fill_status;
                     }
                 }
             }
@@ -1257,6 +1360,11 @@ void WebServer::process_order_events() {
             msg["type"]          = "order_update";
             msg["event"]         = "fill";
             msg["order_id"]      = oid;
+            msg["instrument"]    = instrument;
+            msg["side"]          = side;
+            msg["price"]         = price;
+            msg["qty"]           = qty;
+            msg["status"]        = fill_status;
             msg["fill_price"]    = from_price_t(fill->fill_price);
             msg["fill_qty"]      = from_qty_t(fill->fill_quantity);
             msg["remaining_qty"] = from_qty_t(fill->remaining_quantity);
@@ -1266,31 +1374,65 @@ void WebServer::process_order_events() {
             const auto* cancel = reinterpret_cast<const OrderCancelEvent*>(data);
             std::string oid(cancel->order_id);
 
-            // Remove from WebServer-side tracking
+            // Capture tracked order fields before erasure
+            std::string instrument, side;
+            double price = 0.0, qty = 0.0;
+
             auto cid_it = oid_to_cid_.find(oid);
             if (cid_it != oid_to_cid_.end()) {
-                open_orders_.erase(cid_it->second);
+                auto it = open_orders_.find(cid_it->second);
+                if (it != open_orders_.end()) {
+                    instrument = it->second.instrument;
+                    side       = it->second.side;
+                    price      = it->second.price;
+                    qty        = it->second.qty;
+                    open_orders_.erase(it);
+                }
                 oid_to_cid_.erase(cid_it);
             }
 
             json msg;
-            msg["type"]     = "order_update";
-            msg["event"]    = "cancel";
-            msg["order_id"] = oid;
+            msg["type"]       = "order_update";
+            msg["event"]      = "cancel";
+            msg["order_id"]   = oid;
+            msg["instrument"] = instrument;
+            msg["side"]       = side;
+            msg["price"]      = price;
+            msg["qty"]        = qty;
             broadcast_order_update(msg.dump());
             events_processed++;
         } else if (event->type == EventType::ORDER_REJECT) {
             const auto* reject = reinterpret_cast<const OrderRejectEvent*>(data);
             std::string cid(reject->client_order_id);
 
-            // Remove rejected orders from WebServer-side tracking
+            // Capture tracked order fields before erasure
+            std::string instrument, side, order_id;
+            double price = 0.0, qty = 0.0;
+
             if (!cid.empty()) {
                 auto it = open_orders_.find(cid);
                 if (it != open_orders_.end()) {
-                    if (!it->second.order_id.empty()) oid_to_cid_.erase(it->second.order_id);
+                    instrument = it->second.instrument;
+                    side       = it->second.side;
+                    price      = it->second.price;
+                    qty        = it->second.qty;
+                    order_id   = it->second.order_id;
+                    if (!order_id.empty()) oid_to_cid_.erase(order_id);
                     open_orders_.erase(it);
                 }
             }
+
+            json msg;
+            msg["type"]       = "order_update";
+            msg["event"]      = "reject";
+            msg["order_id"]   = order_id;
+            msg["instrument"] = instrument;
+            msg["side"]       = side;
+            msg["price"]      = price;
+            msg["qty"]        = qty;
+            msg["reason"]     = std::string(reject->reason);
+            broadcast_order_update(msg.dump());
+            events_processed++;
         }
     }
 

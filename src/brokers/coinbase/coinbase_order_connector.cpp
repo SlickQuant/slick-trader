@@ -50,7 +50,6 @@ inline coinbase::TimeInForce to_coinbase_time_in_force(TimeInForce tif) {
 
 CoinbaseOrderConnector::CoinbaseOrderConnector()
     : running_(false)
-    , connected_(false)
     , callbacks_(std::make_unique<CoinbaseOrderCallbacks>(*this))
     , order_cursor_(0)
     , rest_url_("https://api.coinbase.com")

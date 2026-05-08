@@ -18,7 +18,11 @@ constexpr int64_t QTY_SCALE = 100'000'000;   // 1e8
 
 // Conversion functions
 inline price_t to_price_t(double value) {
-    return std::isnan(value) ? NULL_PRICE : static_cast<price_t>(std::round(value * PRICE_SCALE));
+    if (std::isnan(value)) return NULL_PRICE;
+    constexpr double MAX_SAFE = static_cast<double>(std::numeric_limits<price_t>::max()) / PRICE_SCALE;
+    constexpr double MIN_SAFE = static_cast<double>(std::numeric_limits<price_t>::min()) / PRICE_SCALE;
+    if (value > MAX_SAFE || value < MIN_SAFE) return NULL_PRICE;
+    return static_cast<price_t>(std::round(value * PRICE_SCALE));
 }
 
 inline qty_t to_qty_t(double value) {

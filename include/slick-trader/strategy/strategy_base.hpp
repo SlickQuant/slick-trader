@@ -76,13 +76,20 @@ public:
     // Default implementations - strategies can override if needed
     void on_trade(const TradeEvent& event) override {}
     void on_quote(const QuoteEvent& event) override {}
-    void on_order_book(const OrderBookEvent& event, const slick::orderbook::OrderBookL2& book) override {}
+    void on_order_book(const slick::orderbook::OrderBookL2& book) override {}
 
     // Maintains order tracking state, then calls on_ack() hook for derived classes
     void on_order_ack(const OrderAckEvent& event) override {
         const std::string client_id(event.client_order_id);
         const std::string order_id(event.order_id);
         LOG_INFO("Strategy {}: on_order_ack client_order_id={} order_id={}", name_, client_id, order_id);
+        // Coinbase sends a second OPEN-status ACK with empty client_order_id; ignore it to
+        // prevent a phantom "" entry from overwriting order_id_to_client_id_ mappings.
+        if (client_id.empty()) {
+            LOG_DEBUG("Strategy {}: ignoring ACK with empty client_order_id for order_id={}", name_, order_id);
+            on_ack(event);
+            return;
+        }
         auto it = orders_by_client_id_.find(client_id);
         if (it == orders_by_client_id_.end()) {
             // Order not previously seen (e.g. arrived from reconnect snapshot)

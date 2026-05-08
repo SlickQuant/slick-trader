@@ -32,8 +32,13 @@ public:
 
     ~PnLCalculator() = default;
 
-    // Update mark price for an instrument
+    // Update mark price from a single-price source (fills, trades).
+    // Stores the same price as both bid and ask.
     void update_mark_price(const std::string& instrument, price_t price, uint64_t timestamp_ns);
+
+    // Update bid and ask from a top-of-book event.
+    // Used by calculate_pnl for directional pricing (long→bid, short→ask).
+    void update_top_of_book(const std::string& instrument, price_t bid, price_t ask, uint64_t timestamp_ns);
 
     // Calculate PnL for a specific strategy
     PnLSnapshot calculate_pnl(const std::string& strategy_id, uint64_t timestamp_ns) const;
@@ -41,7 +46,7 @@ public:
     // Calculate PnL for all strategies
     std::unordered_map<std::string, PnLSnapshot> calculate_all_pnl(uint64_t timestamp_ns) const;
 
-    // Get current mark price
+    // Get current mark price (mid of bid/ask if available, else last single price)
     price_t get_mark_price(const std::string& instrument) const;
 
     // Check if mark price exists
@@ -54,7 +59,8 @@ private:
     };
 
     PositionTracker& position_tracker_;
-    std::unordered_map<std::string, MarkPrice> mark_prices_;
+    std::unordered_map<std::string, MarkPrice> bid_prices_;
+    std::unordered_map<std::string, MarkPrice> ask_prices_;
 };
 
 } // namespace slick::trader

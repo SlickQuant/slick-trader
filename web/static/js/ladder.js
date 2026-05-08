@@ -381,6 +381,9 @@ class LadderManager {
                     numOrders: data.seq_num     // use seq_num as numOrders for debuging
                 }));
                 ladder.processBatch(levelUpdates);
+                // Re-apply own order flags: if a level was removed (qty→0) and later
+                // re-added by a new update, its hasOwnOrders resets to false.
+                this._restoreOwnOrders(instrument, ladder);
             }
         } catch (error) {
             console.error(`[LadderManager] Error updating ladder for ${instrument}:`, error);
@@ -678,19 +681,49 @@ class LadderManager {
                 price: data.price,
                 sideEnum
             });
+            this.setOwnOrder(data.instrument, data.price, sideEnum, true);
         } else if (data.event === 'fill' && data.order_id) {
             if (data.remaining_qty === 0) {
                 const order = this.pendingOrders.get(data.order_id);
                 if (order) {
-                    this.setOwnOrder(order.instrument, order.price, order.sideEnum, false);
                     this.pendingOrders.delete(data.order_id);
+                    // Only clear the flag if no other orders remain at this price level
+                    if (!this._hasOrdersAtLevel(order.instrument, order.price, order.sideEnum)) {
+                        this.setOwnOrder(order.instrument, order.price, order.sideEnum, false);
+                    }
                 }
             }
         } else if (data.event === 'cancel' && data.order_id) {
             const order = this.pendingOrders.get(data.order_id);
             if (order) {
-                this.setOwnOrder(order.instrument, order.price, order.sideEnum, false);
                 this.pendingOrders.delete(data.order_id);
+                // Only clear the flag if no other orders remain at this price level
+                if (!this._hasOrdersAtLevel(order.instrument, order.price, order.sideEnum)) {
+                    this.setOwnOrder(order.instrument, order.price, order.sideEnum, false);
+                }
+            }
+        }
+    }
+
+    /** Returns true if pendingOrders still has any order at the given instrument+price+side. */
+    _hasOrdersAtLevel(instrument, price, sideEnum) {
+        for (const o of this.pendingOrders.values()) {
+            if (o.instrument === instrument && o.price === price && o.sideEnum === sideEnum) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Re-apply hasOwnOrders flags for all pending orders on this instrument.
+     * Called after processBatch because a level removed at qty=0 and later re-added
+     * will have its flag reset to false by the ladder internals.
+     */
+    _restoreOwnOrders(instrument, ladder) {
+        for (const o of this.pendingOrders.values()) {
+            if (o.instrument === instrument) {
+                ladder.setHasOwnOrders(o.price, o.sideEnum, true);
             }
         }
     }

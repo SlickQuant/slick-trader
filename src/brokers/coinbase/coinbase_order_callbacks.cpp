@@ -209,7 +209,20 @@ void CoinbaseOrderCallbacks::publish_order_fill(const coinbase::Order& order) {
         last_price = cum_avg_price;
     }
 
-    // Update state before publishing (captures this fill as baseline for the next one)
+    // Sanity check: skip publishing if no new quantity was filled or price is invalid.
+    // Do NOT update state in this case — a bogus cum_avg_price (e.g. NULL_PRICE sentinel
+    // sent by the exchange) must not corrupt prev_avg_price for subsequent fills.
+    // Coinbase sends INT64_MAX/1e8 (~9.22e10) as a null sentinel when avg_price is unavailable;
+    // cap at 1e9 ($1 billion per unit) to reject it while allowing any realistic asset price.
+    constexpr double MAX_CREDIBLE_PRICE = 1.0e9;
+    if (last_qty <= 0.0 || last_price <= 0.0 || last_price > MAX_CREDIBLE_PRICE) {
+        LOG_WARN("{} Order {} skipping fill event: invalid last_qty={} or last_price={} (cum_qty={}, cum_avg={}, prev_filled_value={})",
+                 order.product_id, order.order_id, last_qty, last_price,
+                 order.cumulative_quantity, cum_avg_price, prev_filled_value);
+        return;
+    }
+
+    // Update state (captures this fill as the baseline for the next incremental fill)
     state.prev_cumulative_qty  = order.cumulative_quantity;
     state.prev_avg_price       = cum_avg_price;
     state.prev_number_of_fills = order.number_of_fills;

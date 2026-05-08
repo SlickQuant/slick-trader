@@ -23,6 +23,22 @@ namespace slick::trader {
 class PositionTracker;
 class PnLCalculator;
 class RiskManager;
+class StrategyManager;
+
+struct OrderBookObserverImpl : public OrderBookObserver {
+    OrderBookObserverImpl(StrategyManager* manager, slick::orderbook::OrderBookL2& order_book, const std::string& instrument) 
+        : manager_(manager), order_book_(order_book), instrument_(instrument)
+    {}
+    ~OrderBookObserverImpl() override = default;
+    
+    void onPriceLevelUpdate(const slick::orderbook::PriceLevelUpdate& update) override;
+    void onTopOfBookUpdate(const slick::orderbook::TopOfBook& tob) override;
+
+private:
+    StrategyManager* manager_;
+    slick::orderbook::OrderBookL2& order_book_;
+    std::string instrument_;
+};
 
 // Strategy Manager
 // Manages multiple strategies, dispatches events to them
@@ -182,7 +198,17 @@ public:
         return nullptr;
     }
 
+    void subscribe_book_update(std::vector<std::string>& instruments) {
+        for (const auto& instrument : instruments) {
+            auto *book = book_manager_.getOrCreateOrderBook(get_or_create_symbol_id(instrument));
+            auto observer = std::make_shared<OrderBookObserverImpl>(this, *book, instrument);
+            book->addObserver(observer);
+        }
+    }
+
 private:
+    friend struct OrderBookObserverImpl;
+
     void run() {
         LOG_INFO("StrategyManager: Worker thread started");
 
@@ -319,11 +345,19 @@ private:
     }
 
     void dispatch_quote(const QuoteEvent& event) {
-        if (pnl_calculator_ && event.bid_price > 0 && event.ask_price > 0) {
-            const price_t mid = (event.bid_price / 2) + (event.ask_price / 2);
-            pnl_calculator_->update_mark_price(std::string(event.instrument),
-                                               mid,
-                                               event.timestamp_ns);
+        if (pnl_calculator_) {
+            const bool bid_valid = event.bid_price != NULL_PRICE;
+            const bool ask_valid = event.ask_price != NULL_PRICE;
+            if (bid_valid && ask_valid) {
+                pnl_calculator_->update_top_of_book(std::string(event.instrument),
+                                                    event.bid_price,
+                                                    event.ask_price,
+                                                    event.timestamp_ns);
+            } else {
+                LOG_DEBUG("dispatch_quote: skipping mark price update for {} — bid={} ask={} (NULL_PRICE={})",
+                          event.instrument,
+                          event.bid_price, event.ask_price, NULL_PRICE);
+            }
         }
         for (auto& strategy : strategies_) {
             strategy->on_quote(event);
@@ -337,6 +371,7 @@ private:
 
         if (event.is_snapshot) {
             book->clear();
+            LOG_DEBUG("StrategyManager: dispatch snapshot {}", instrument);
         }
 
         auto last = event.num_levels - 1;
@@ -358,31 +393,39 @@ private:
                                   i == last);
             }
         }
+    }
 
-        // Check if top-of-book changed; if so update mark price and notify WebServer
-        const auto tob = book->getTopOfBook();
-        const price_t new_bid = static_cast<price_t>(tob.best_bid);
-        const price_t new_ask = static_cast<price_t>(tob.best_ask);
+    void on_top_of_book_update(const std::string &instrument, const slick::orderbook::TopOfBook& tob) {
+        if (pnl_calculator_ && tob.best_bid != NULL_PRICE && tob.best_ask != NULL_PRICE) {
+            pnl_calculator_->update_top_of_book(instrument, tob.best_bid, tob.best_ask, tob.timestamp);
+        }
 
-        auto& cached = tob_cache_[instrument];
-        if (new_bid != cached.first || new_ask != cached.second) {
-            cached = {new_bid, new_ask};
+        if (tob_queue_) {
+            EventSerializer::publish<QuoteEvent>(*tob_queue_, [&](QuoteEvent& q) {
+                q.set_instrument(instrument);
+                q.bid_price = tob.best_bid;
+                q.bid_quantity = static_cast<qty_t>(tob.bid_quantity);
+                q.ask_price = tob.best_ask;
+                q.ask_quantity = static_cast<qty_t>(tob.ask_quantity);
+                q.event_time_ns = tob.timestamp;
+            });
+        }
 
-            if (pnl_calculator_ && new_bid > 0 && new_ask > 0) {
-                const price_t mid = (new_bid / 2) + (new_ask / 2);
-                pnl_calculator_->update_mark_price(instrument, mid, event.event_time_ns);
-            }
+        QuoteEvent event;
+        event.set_instrument(instrument);
+        event.bid_price = tob.best_bid;
+        event.bid_quantity = static_cast<qty_t>(tob.bid_quantity);
+        event.ask_price = tob.best_ask;
+        event.ask_quantity = static_cast<qty_t>(tob.ask_quantity);
+        event.event_time_ns = tob.timestamp;
+        for (auto& strategy : strategies_) {
+            strategy->on_quote(event);
+        }
+    }
 
-            if (tob_queue_ && new_bid > 0 && new_ask > 0) {
-                EventSerializer::publish<QuoteEvent>(*tob_queue_, [&](QuoteEvent& q) {
-                    q.set_instrument(instrument);
-                    q.bid_price = new_bid;
-                    q.bid_quantity = static_cast<qty_t>(tob.bid_quantity);
-                    q.ask_price = new_ask;
-                    q.ask_quantity = static_cast<qty_t>(tob.ask_quantity);
-                    q.event_time_ns = event.event_time_ns;
-                });
-            }
+    void on_order_book_update(const slick::orderbook::OrderBookL2& book) {
+        for (auto& strategy : strategies_) {
+            strategy->on_order_book(book);
         }
     }
 
@@ -412,10 +455,6 @@ private:
                               event.sequence_num,
                               i == event.num_asks - 1);
         }
-
-        for (auto& strategy : strategies_) {
-            strategy->on_order_book(event, *book);
-        }
     }
 
     slick::orderbook::SymbolId get_or_create_symbol_id(const std::string& instrument) {
@@ -423,6 +462,7 @@ private:
         if (it == symbol_ids_.end()) {
             slick::orderbook::SymbolId sid = next_symbol_id_++;
             symbol_ids_.emplace(instrument, sid);
+            symbol_names_.emplace(sid, instrument);
             LOG_INFO("StrategyManager: Assigned symbol_id={} for {}", sid, instrument);
             return sid;
         }
@@ -467,12 +507,12 @@ private:
     std::unordered_map<std::string, std::shared_ptr<IStrategy>> strategy_map_;
     slick::orderbook::OrderBookManager<slick::orderbook::OrderBookL2> book_manager_;
     std::unordered_map<std::string, slick::orderbook::SymbolId> symbol_ids_;
+    std::unordered_map<slick::orderbook::SymbolId, std::string> symbol_names_;
     slick::orderbook::SymbolId next_symbol_id_{0};
     std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> order_submission_queue_;
     std::shared_ptr<slick::SlickQueue<uint8_t>> tob_queue_;
-    std::unordered_map<std::string, std::pair<price_t, price_t>> tob_cache_; // instrument -> {best_bid, best_ask}
 
     // Position & PnL tracking (non-owning pointers)
     PositionTracker* position_tracker_;
@@ -484,5 +524,13 @@ private:
     uint64_t md_cursor_;
     uint64_t order_cursor_;
 };
+
+inline void OrderBookObserverImpl::onPriceLevelUpdate(const slick::orderbook::PriceLevelUpdate& update) {
+    manager_->on_order_book_update(order_book_);
+}
+
+inline void OrderBookObserverImpl::onTopOfBookUpdate(const slick::orderbook::TopOfBook& tob) {
+    manager_->on_top_of_book_update(instrument_, tob);
+}
 
 } // namespace slick::trader

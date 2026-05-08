@@ -38,7 +38,7 @@ public:
     // Market data event handlers
     virtual void on_trade(const TradeEvent& event) = 0;
     virtual void on_quote(const QuoteEvent& event) = 0;
-    virtual void on_order_book(const OrderBookEvent& event, const slick::orderbook::OrderBookL2& book) = 0;
+    virtual void on_order_book(const slick::orderbook::OrderBookL2& book) = 0;
 
     // Order event handlers
     virtual void on_order_ack(const OrderAckEvent& event) = 0;

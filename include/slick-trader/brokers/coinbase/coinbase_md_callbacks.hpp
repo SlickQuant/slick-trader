@@ -18,7 +18,7 @@ class CoinbaseMDConnector;
 
 class CoinbaseMDCallbacks : public coinbase::WebsocketCallbacks {
 public:
-    CoinbaseMDCallbacks(CoinbaseMDConnector &connector): connector_(connector) {};
+    CoinbaseMDCallbacks(CoinbaseMDConnector &connector): connector_(connector) {}
     ~CoinbaseMDCallbacks() override = default;
 
     void set_md_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue);
