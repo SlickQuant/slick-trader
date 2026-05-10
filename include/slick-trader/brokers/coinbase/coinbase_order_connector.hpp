@@ -46,6 +46,9 @@ public:
     void set_api_key(const std::string& key) { api_key_ = key; }
     void set_api_secret(const std::string& secret) { api_secret_ = secret; }
 
+    // Fetch taker fee rate from Coinbase REST API (e.g. 0.006 = 0.6%)
+    double get_taker_rate() const;
+
 private:
     void run();
     void process_order_requests();

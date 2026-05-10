@@ -54,6 +54,7 @@ private:
         double prev_cumulative_qty{0.0};
         double prev_avg_price{0.0};
         uint32_t prev_number_of_fills{0};
+        double prev_total_fees{0.0};
     };
 
     void process_order_update(const coinbase::Order& order);

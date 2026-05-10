@@ -1,6 +1,7 @@
 #include <slick/logger.hpp>
 #include <slick-trader/core/trading_engine.hpp>
 #include <slick-trader/core/position_tracker.hpp>
+#include <slick-trader/utils/fee_structure.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/risk_manager.hpp>
 #include <slick-trader/web/web_server.hpp>
@@ -134,6 +135,18 @@ void TradingEngine::start() {
     }
 
     LOG_INFO("Starting TradingEngine...");
+
+    // Fetch and wire fee structures before strategies begin trading
+    for (auto& [broker_id, broker] : brokers_) {
+        FeeStructure fs = broker->get_fees("");
+        if (fs.rate > 0.0) {
+            position_tracker_->set_fee_structure(fs);
+            LOG_INFO("TradingEngine: {} fee structure — type={} rate={:.4f}",
+                     broker->get_broker_name(),
+                     fs.type == FeeType::PERCENTAGE ? "percentage" : "fixed",
+                     fs.rate);
+        }
+    }
 
     // Start web server (if initialized)
     if (web_server_) {

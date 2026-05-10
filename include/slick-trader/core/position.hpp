@@ -12,7 +12,9 @@ struct Position {
     std::string instrument;
     qty_t quantity{0};           // Current position size (positive = long, negative = short)
     price_t avg_price{0};        // Average entry price
-    price_t realized_pnl{0};     // Realized PnL (from closed trades)
+    price_t realized_pnl{0};     // Gross realized PnL from closed trades
+    price_t realized_fees{0};   // Fees on closed trades (entry fees of closed lots + their exit fees)
+    price_t open_fees{0};       // Entry fees paid for currently held lots (not yet realized)
     uint64_t last_update_time{0}; // Last update timestamp
 
     Position() = default;

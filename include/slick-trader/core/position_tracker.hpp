@@ -2,6 +2,7 @@
 
 #include <slick-trader/core/position.hpp>
 #include <slick-trader/events/order_event.hpp>
+#include <slick-trader/utils/fee_structure.hpp>
 #include <slick/logger.hpp>
 #include <unordered_map>
 #include <string>
@@ -36,6 +37,9 @@ public:
     // Clear all positions
     void clear_all();
 
+    // Set fallback fee structure for brokers that don't report fees in fill events
+    void set_fee_structure(FeeStructure fee_structure) { fee_structure_ = fee_structure; }
+
 private:
     // FIFO lot for position tracking
     struct Lot {
@@ -57,11 +61,13 @@ private:
     };
 
     // Apply fill to position using FIFO accounting
-    void apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_qty, price_t fill_price, uint64_t timestamp);
+    void apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_qty, price_t fill_price, uint64_t timestamp, price_t fee_amount);
 
     // Calculate new average price when adding to position
     price_t calculate_new_avg_price(price_t current_avg, qty_t current_qty,
                                      price_t fill_price, qty_t fill_qty) const;
+
+    FeeStructure fee_structure_;  // fallback for brokers without per-fill fee data
 
     // Positions: strategy_id -> instrument -> PositionWithLots
     std::unordered_map<std::string, std::unordered_map<std::string, PositionWithLots>> positions_;

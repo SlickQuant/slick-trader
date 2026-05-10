@@ -25,9 +25,14 @@ public:
         return order_connector_;
     }
 
+    FeeStructure get_fees(std::string_view symbol) const override;
+
 private:
     std::shared_ptr<IMarketDataConnector> md_connector_;
     std::shared_ptr<IOrderConnector> order_connector_;
+
+    mutable FeeStructure cached_fees_;
+    mutable bool fees_fetched_{false};
 };
 
 } // namespace slick::trader

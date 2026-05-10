@@ -418,6 +418,7 @@ void WebServer::handle_get_pnl(uWS::HttpResponse<false>* res, uWS::HttpRequest* 
             response[strategy_id] = {
                 {"realized_pnl", pnl.get_realized()},
                 {"unrealized_pnl", pnl.get_unrealized()},
+                {"total_fees", pnl.get_fees()},
                 {"total_pnl", pnl.get_total()},
                 {"timestamp_ns", pnl.timestamp_ns}
             };
@@ -463,6 +464,7 @@ void WebServer::handle_get_strategy_pnl(uWS::HttpResponse<false>* res, uWS::Http
             {"strategy_id", pnl.strategy_id},
             {"realized_pnl", pnl.get_realized()},
             {"unrealized_pnl", pnl.get_unrealized()},
+            {"total_fees", pnl.get_fees()},
             {"total_pnl", pnl.get_total()},
             {"timestamp_ns", pnl.timestamp_ns}
         };
@@ -1456,6 +1458,7 @@ void WebServer::broadcast_pnl_update() {
         pnl_obj[strategy_id] = {
             {"realized_pnl", pnl.get_realized()},
             {"unrealized_pnl", pnl.get_unrealized()},
+            {"total_fees", pnl.get_fees()},
             {"total_pnl", pnl.get_total()}
         };
     }

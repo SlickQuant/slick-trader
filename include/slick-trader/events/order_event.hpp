@@ -117,6 +117,7 @@ struct OrderFillEvent : public OrderEvent {
     qty_t fill_quantity;
     qty_t cumulative_filled;
     qty_t remaining_quantity;
+    price_t fee_amount{0};  // actual fee for this fill (0 if broker doesn't report it)
 
     OrderFillEvent()
         : OrderEvent(EventType::ORDER_FILL)
@@ -125,6 +126,7 @@ struct OrderFillEvent : public OrderEvent {
         , fill_quantity(0)
         , cumulative_filled(0)
         , remaining_quantity(0)
+        , fee_amount(0)
     {}
 
     void set_fill_id(std::string_view id) {

@@ -53,6 +53,19 @@ bool CoinbaseBroker::initialize(const std::string& config_json) {
     }
 }
 
+FeeStructure CoinbaseBroker::get_fees(std::string_view) const {
+    if (!fees_fetched_) {
+        auto connector = std::dynamic_pointer_cast<CoinbaseOrderConnector>(order_connector_);
+        if (connector) {
+            double rate = connector->get_taker_rate();
+            cached_fees_ = FeeStructure{FeeType::PERCENTAGE, rate};
+            LOG_INFO("CoinbaseBroker: taker fee rate = {:.4f}", rate);
+        }
+        fees_fetched_ = true;
+    }
+    return cached_fees_;
+}
+
 void CoinbaseBroker::shutdown() {
     LOG_INFO("Shutting down Coinbase broker");
 

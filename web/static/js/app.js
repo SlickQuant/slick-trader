@@ -257,7 +257,7 @@ class Dashboard {
         let totalRealized = 0;
         let totalUnrealized = 0;
 
-        // Aggregate P&L from all strategies
+        // Aggregate P&L from all strategies (realized and unrealized are already net of fees)
         Object.values(pnlData).forEach(strategyPnl => {
             totalPnL += strategyPnl.total_pnl || 0;
             totalRealized += strategyPnl.realized_pnl || 0;
@@ -287,16 +287,6 @@ class Dashboard {
         // Update chart
         const timestamp = Date.now();
         chartManager.addPnLDataPoint(timestamp, totalPnL, totalRealized, totalUnrealized);
-
-        // Track P&L change
-        if (this.lastPnLUpdate !== null) {
-            const change = totalPnL - this.lastPnLUpdate;
-            const changeEl = document.getElementById('pnlChange');
-            if (changeEl) {
-                changeEl.textContent = change >= 0 ? `+${api.formatCurrency(change)}` : api.formatCurrency(change);
-                changeEl.className = 'metric-change ' + api.getColorClass(change);
-            }
-        }
         this.lastPnLUpdate = totalPnL;
     }
 

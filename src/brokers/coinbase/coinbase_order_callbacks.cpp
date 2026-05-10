@@ -222,14 +222,18 @@ void CoinbaseOrderCallbacks::publish_order_fill(const coinbase::Order& order) {
         return;
     }
 
+    // Compute incremental fee for this fill (Coinbase total_fees is cumulative per order)
+    const double incremental_fee = order.total_fees - state.prev_total_fees;
+
     // Update state (captures this fill as the baseline for the next incremental fill)
     state.prev_cumulative_qty  = order.cumulative_quantity;
     state.prev_avg_price       = cum_avg_price;
     state.prev_number_of_fills = order.number_of_fills;
+    state.prev_total_fees      = order.total_fees;
 
-    LOG_INFO("{} Order {} filled: {}@{}, cum_qty={}, avg_price={}({})", order.product_id, order.order_id, last_qty, last_price, order.cumulative_quantity, cum_avg_price, order.avg_price);
+    LOG_INFO("{} Order {} filled: {}@{}, cum_qty={}, avg_price={}({}), fee={}", order.product_id, order.order_id, last_qty, last_price, order.cumulative_quantity, cum_avg_price, order.avg_price, incremental_fee);
 
-    EventSerializer::publish<OrderFillEvent>(*order_event_queue_, [&order, last_qty, last_price](OrderFillEvent& event) {
+    EventSerializer::publish<OrderFillEvent>(*order_event_queue_, [&order, last_qty, last_price, incremental_fee](OrderFillEvent& event) {
         event.type = EventType::ORDER_FILL;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();
@@ -243,6 +247,7 @@ void CoinbaseOrderCallbacks::publish_order_fill(const coinbase::Order& order) {
         event.fill_quantity      = to_qty_t(last_qty);                      // incremental fill qty
         event.cumulative_filled  = to_qty_t(order.cumulative_quantity);
         event.remaining_quantity = to_qty_t(order.leaves_quantity);
+        event.fee_amount         = incremental_fee > 0.0 ? to_price_t(incremental_fee) : 0;
     });
 }
 

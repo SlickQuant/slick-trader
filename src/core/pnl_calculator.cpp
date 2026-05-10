@@ -61,14 +61,16 @@ PnLSnapshot PnLCalculator::calculate_pnl(const std::string& strategy_id, uint64_
 
     price_t total_realized = 0;
     price_t total_unrealized = 0;
+    price_t total_realized_fees = 0;
+    price_t total_open_fees = 0;
 
     for (const auto& [instrument, position] : positions) {
-        // Add realized PnL
-        total_realized += position.realized_pnl;
+        // Net realized = gross realized minus fees on closed trades
+        total_realized       += position.realized_pnl - position.realized_fees;
+        total_realized_fees  += position.realized_fees;
+        total_open_fees      += position.open_fees;
 
-        // Calculate unrealized PnL using directional pricing:
-        // long (qty > 0) → best bid (liquidation sell price)
-        // short (qty < 0) → best ask (liquidation buy-back price)
+        // Net unrealized = mark-to-market minus entry fees paid for currently held lots
         if (!position.is_flat()) {
             const bool is_long = position.quantity > 0;
             const auto& price_map = is_long ? bid_prices_ : ask_prices_;
@@ -78,16 +80,17 @@ PnLSnapshot PnLCalculator::calculate_pnl(const std::string& strategy_id, uint64_
                 if (mark_price == NULL_PRICE || mark_price <= 0) {
                     LOG_WARN("PnLCalculator::calculate_pnl: skipping unrealized PnL for {} — invalid mark price {}", instrument, mark_price);
                 } else {
-                    const double unrealized = position.get_unrealized_pnl(mark_price);
-                    total_unrealized += to_price_t(unrealized);
+                    total_unrealized += to_price_t(position.get_unrealized_pnl(mark_price))
+                                        - position.open_fees;
                 }
             }
         }
     }
 
-    snapshot.realized_pnl = total_realized;
+    snapshot.realized_pnl  = total_realized;
     snapshot.unrealized_pnl = total_unrealized;
-    snapshot.total_pnl = total_realized + total_unrealized;
+    snapshot.total_fees     = total_realized_fees + total_open_fees;  // informational
+    snapshot.total_pnl      = total_realized + total_unrealized;
 
     return snapshot;
 }

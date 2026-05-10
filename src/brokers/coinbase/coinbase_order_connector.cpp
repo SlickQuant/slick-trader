@@ -102,6 +102,11 @@ void CoinbaseOrderConnector::set_rest_url(const std::string& url) {
     rest_client_ = std::make_unique<coinbase::CoinbaseRestClient>(rest_url_);
 }
 
+double CoinbaseOrderConnector::get_taker_rate() const {
+    if (!rest_client_) return 0.0;
+    return rest_client_->get_taker_fee_rate();
+}
+
 void CoinbaseOrderConnector::start() {
     if (running_.load(std::memory_order_relaxed)) {
         LOG_WARN("Coinbase Order: Already running");

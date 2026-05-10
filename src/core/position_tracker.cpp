@@ -20,20 +20,27 @@ void PositionTracker::on_fill(const std::string& strategy_id, const OrderFillEve
     const price_t fill_price = fill.fill_price;
     const uint64_t timestamp = fill.timestamp_ns;
 
-    apply_fill(pos_with_lots, is_buy, fill_qty, fill_price, timestamp);
+    // Use fee from event if provided (e.g. Coinbase), else compute from fallback FeeStructure
+    const price_t fee = (fill.fee_amount > 0)
+        ? fill.fee_amount
+        : compute_fee(fill_price, fill_qty, fee_structure_);
+
+    apply_fill(pos_with_lots, is_buy, fill_qty, fill_price, timestamp, fee);
     pos_with_lots.position.last_update_time = timestamp;
 
-    LOG_INFO("PositionTracker: {} {} fill: {} {}@{} | pos: {} avg: {} realized_pnl: {}",
+    LOG_INFO("PositionTracker: {} {} fill: {} {}@{} fee:{} | pos: {} avg: {} realized_pnl: {} realized_fees: {} open_fees: {}",
              strategy_id, instrument,
              is_buy ? "BUY" : "SELL",
-             from_qty_t(fill_qty), from_price_t(fill_price),
+             from_qty_t(fill_qty), from_price_t(fill_price), from_price_t(fee),
              from_qty_t(pos_with_lots.position.quantity),
              from_price_t(pos_with_lots.position.avg_price),
-             from_price_t(pos_with_lots.position.realized_pnl));
+             from_price_t(pos_with_lots.position.realized_pnl),
+             from_price_t(pos_with_lots.position.realized_fees),
+             from_price_t(pos_with_lots.position.open_fees));
 }
 
 void PositionTracker::apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_qty,
-                                   price_t fill_price, uint64_t timestamp) {
+                                   price_t fill_price, uint64_t timestamp, price_t fee_amount) {
     if (fill_price == NULL_PRICE || fill_price <= 0) {
         LOG_ERROR("PositionTracker: fill has invalid fill_price={} — skipping P&L update", fill_price);
         return;
@@ -46,8 +53,8 @@ void PositionTracker::apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_
     const bool position_is_flat = p.is_flat();
 
     // Case 1: Opening new position or adding to existing position in same direction
+    // Entry fee goes into open_fees (deducted from unrealized until the lot is closed)
     if (position_is_flat || (is_buy && position_is_long) || (!is_buy && position_is_short)) {
-        // Add to position
         const qty_t signed_fill = is_buy ? fill_qty : -fill_qty;
 
         if (!position_is_flat) {
@@ -57,24 +64,40 @@ void PositionTracker::apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_
         }
 
         p.quantity += signed_fill;
+        p.open_fees += fee_amount;  // entry fee reduces unrealized until position is closed
         lots.emplace_back(fill_qty, fill_price, timestamp);
         return;
     }
 
     // Case 2: Reducing or reversing position (FIFO accounting for realized PnL)
+    // For each lot closed: transfer its proportional entry fee + exit fee to realized_fees
     qty_t remaining_qty = fill_qty;
 
     while (remaining_qty > 0 && !lots.empty()) {
         Lot& oldest_lot = lots.front();
         const qty_t close_qty = std::min(remaining_qty, oldest_lot.quantity);
 
+        // Transfer proportional entry fee from open_fees to realized_fees
+        // (must use p.quantity BEFORE updating it this iteration)
+        const qty_t current_qty = std::abs(p.quantity);
+        const price_t entry_fee_transfer = (current_qty > 0)
+            ? to_price_t(from_price_t(p.open_fees) * from_qty_t(close_qty) / from_qty_t(current_qty))
+            : p.open_fees;
+
+        // Proportional share of exit fee for this lot's portion of the fill
+        const price_t exit_fee_portion = (fill_qty > 0)
+            ? to_price_t(from_price_t(fee_amount) * from_qty_t(close_qty) / from_qty_t(fill_qty))
+            : 0;
+
+        p.realized_fees += entry_fee_transfer + exit_fee_portion;
+        p.open_fees     -= entry_fee_transfer;
+
         // Calculate realized PnL for this lot closure
         const double pnl_per_unit = is_buy
             ? from_price_t(oldest_lot.price) - from_price_t(fill_price)  // Closing short
             : from_price_t(fill_price) - from_price_t(oldest_lot.price); // Closing long
 
-        const double realized = pnl_per_unit * from_qty_t(close_qty);
-        p.realized_pnl += to_price_t(realized);
+        p.realized_pnl += to_price_t(pnl_per_unit * from_qty_t(close_qty));
 
         // Update position quantity
         const qty_t signed_close = is_buy ? close_qty : -close_qty;
@@ -90,14 +113,19 @@ void PositionTracker::apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_
     }
 
     // If we still have remaining quantity, we're reversing the position
+    // All old lots consumed → old open_fees fully moved to realized; new position starts fresh
     if (remaining_qty > 0) {
         const qty_t signed_remaining = is_buy ? remaining_qty : -remaining_qty;
         p.quantity += signed_remaining;
         p.avg_price = fill_price;
         lots.emplace_back(remaining_qty, fill_price, timestamp);
+
+        // Entry fee for the reversed position portion
+        p.open_fees = (fill_qty > 0)
+            ? to_price_t(from_price_t(fee_amount) * from_qty_t(remaining_qty) / from_qty_t(fill_qty))
+            : 0;
     }
 
-    // Update avg_price if position is now flat
     if (p.is_flat()) {
         p.avg_price = 0;
     }

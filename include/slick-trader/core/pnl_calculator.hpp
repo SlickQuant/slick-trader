@@ -12,13 +12,15 @@ namespace slick::trader {
 // PnL snapshot for a strategy
 struct PnLSnapshot {
     std::string strategy_id;
-    price_t realized_pnl{0};    // Total realized PnL
-    price_t unrealized_pnl{0};  // Total unrealized PnL
-    price_t total_pnl{0};       // realized + unrealized
+    price_t realized_pnl{0};    // Net realized PnL (gross realized minus fees on closed trades)
+    price_t unrealized_pnl{0};  // Net unrealized PnL (mark-to-market minus open entry fees)
+    price_t total_fees{0};      // Total fees paid (realized_fees + open_fees, for reference)
+    price_t total_pnl{0};       // realized_pnl + unrealized_pnl
     uint64_t timestamp_ns{0};   // Snapshot timestamp
 
     double get_realized() const { return from_price_t(realized_pnl); }
     double get_unrealized() const { return from_price_t(unrealized_pnl); }
+    double get_fees() const { return from_price_t(total_fees); }
     double get_total() const { return from_price_t(total_pnl); }
 };
 

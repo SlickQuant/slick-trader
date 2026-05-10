@@ -68,18 +68,18 @@
         "ema_fast_periods": 3000,
         "ema_slow_periods": 18000,
         "fair_value_mode": "WEIGHTED_MID",
-        "imbalance_sensitivity": 0.3,
+        "imbalance_sensitivity": 0.5,
         "instrument": "BTC-USD",
-        "inventory_skew_factor": 0.5,
+        "inventory_skew_factor": 0.3,
         "max_inventory": 0.01,
         "nlevel_depth": 20,
-        "order_size": 0.0001,
+        "order_size": 0.0005,
         "refresh_threshold_bps": 0.001,
-        "spread_bps": 2,
+        "spread_bps": 1,
         "trend_sensitivity": 0.5
       },
       "risk_limits": {
-        "max_loss_per_strategy": -500.0,
+        "max_loss_per_strategy": -200.0,
         "max_order_value": 10000.0,
         "max_orders_per_second": 10,
         "max_position_size": 0.05
