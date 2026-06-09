@@ -304,6 +304,8 @@ protected:
         EventSerializer::publish<ModifyOrderEvent>(*order_submission_queue_, [&order, new_price, new_quantity, new_stop_price](ModifyOrderEvent& ev) {
             ev.set_order_id(order.order_id);
             ev.set_client_order_id(order.client_order_id);
+            ev.set_instrument(order.instrument);
+            ev.side               = order.side;
             ev.new_price          = new_price;
             ev.new_quantity       = new_quantity;
             ev.new_stop_price     = new_stop_price;

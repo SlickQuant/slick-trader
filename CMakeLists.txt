@@ -97,13 +97,13 @@ else()
     message(STATUS "Found coinbase-advanced-cpp: ${coinbase-advanced-cpp_VERSION}")
 endif()
 
-find_package(slick-net 2.0.3 CONFIG QUIET)
+find_package(slick-net 2.1.0 CONFIG QUIET)
 if (NOT slick-net_FOUND)
     message(STATUS "Fetching slick-net...")
     FetchContent_Declare(
         slick-net
         GIT_REPOSITORY https://github.com/SlickQuant/slick-net.git
-        GIT_TAG v2.0.3
+        GIT_TAG v2.1.0
     )
     FetchContent_MakeAvailable(slick-net)
 endif()

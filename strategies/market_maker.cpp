@@ -12,7 +12,8 @@
 // Config parameters (all under "parameters" in strategy JSON):
 //   instrument             (default: "BTC-USD")
 //   broker                 (default: "SIMULATED") — "COINBASE", "ALPACA", "SIMULATED"
-//   spread_bps             (default: 5.0)  — target quoted spread in basis points
+//   min_profit_usd         (default: 1.0)  — minimum dollar profit per round trip after fees;
+//                                             actual half_spread = min_profit/(2*qty) + mid*broker_rate
 //   order_size             (default: 0.001) — order size per side
 //   max_inventory          (default: 0.01)  — absolute position limit; skips a side at limit
 //   refresh_threshold_bps  (default: 0.5)  — reprice if target moves more than this many bps
@@ -89,9 +90,9 @@ protected:
 
     bool on_initialize() override {
         LOG_INFO("MarketMaker: Initialized instrument={} broker={} "
-                 "spread={}bps size={} max_inv={} fv_mode={}",
-                 instrument_, broker_str_, spread_bps_, order_size_,
-                 max_inventory_, fair_value_mode_str_);
+                 "min_profit_usd={} taker_fee_rate={:.4f} size={} max_inv={} fv_mode={}",
+                 instrument_, broker_str_, min_profit_usd_, taker_fee_rate_,
+                 order_size_, max_inventory_, fair_value_mode_str_);
         return true;
     }
 
@@ -120,9 +121,9 @@ protected:
     }
 
     void on_config(const nlohmann::json& /*params*/) override {
-        instrument_   = get_parameter<std::string>("instrument", "BTC-USD");
-        spread_bps_   = get_parameter<double>("spread_bps", 5.0) / 10000.0;
-        order_size_   = get_parameter<double>("order_size", 0.001);
+        instrument_    = get_parameter<std::string>("instrument", "BTC-USD");
+        min_profit_usd_ = get_parameter<double>("min_profit_usd", 1.0);
+        order_size_    = get_parameter<double>("order_size", 0.001);
         max_inventory_ = get_parameter<double>("max_inventory", 0.01);
         refresh_threshold_bps_ = get_parameter<double>("refresh_threshold_bps", 0.5) / 10000.0;
         inventory_skew_factor_ = get_parameter<double>("inventory_skew_factor", 0.3);
@@ -146,6 +147,11 @@ protected:
         else {
             fair_value_mode_str_ = "WEIGHTED_MID";
             fair_value_mode_ = FairValueMode::WEIGHTED_MID;
+        }
+
+        // Pull taker fee rate from broker (set in PositionTracker by TradingEngine at startup)
+        if (auto* pt = get_position_tracker()) {
+            taker_fee_rate_ = pt->get_fee_structure().rate;
         }
 
         // Derive EMA smoothing factors
@@ -392,7 +398,7 @@ private:
             ask_slot_.reset();
         }
 
-        const double half_spread  = fair_value_ * spread_bps_ / 2;
+        const double half_spread = min_profit_usd_ / (2.0 * order_size_) + fair_value_ * taker_fee_rate_;
         const double inventory    = current_inventory();
         const double inv_ratio    = std::clamp(inventory / max_inventory_, -1.0, 1.0);
 
@@ -503,7 +509,8 @@ private:
     FairValueMode fair_value_mode_{FairValueMode::WEIGHTED_MID};
     std::string   fair_value_mode_str_{"WEIGHTED_MID"};
 
-    double spread_bps_{5.0 / 10000.0};
+    double min_profit_usd_{1.0};
+    double taker_fee_rate_{0.0};
     double order_size_{0.001};
     double max_inventory_{0.01};
     double refresh_threshold_bps_{0.5 / 10000.0};

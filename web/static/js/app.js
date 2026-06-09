@@ -47,6 +47,7 @@ class Dashboard {
         });
 
         document.getElementById('refreshStrategies')?.addEventListener('click', () => {
+            this.loadStrategies();
             this.loadPnL();
         });
 
@@ -309,7 +310,7 @@ class Dashboard {
 
         // If no strategies at all, show empty state
         if (!this.strategies || this.strategies.length === 0) {
-            tbody.innerHTML = '<tr class="empty-state"><td colspan="5">No strategies loaded</td></tr>';
+            tbody.innerHTML = '<tr class="empty-state"><td colspan="6">No strategies loaded</td></tr>';
             return;
         }
 
@@ -321,16 +322,23 @@ class Dashboard {
                 unrealized_pnl: 0,
                 total_pnl: 0
             };
+            const isRunning = strategy.status === 'running';
+            const isHalted = strategy.status === 'halted';
+            const statusLabel = isHalted
+                ? (strategy.halt_reason || 'Halted').split(':')[0].trim()
+                : (strategy.status || 'unknown');
+            const statusTitle = isHalted ? (strategy.halt_reason || '') : '';
 
             return `
                 <tr>
                     <td>${strategyId}</td>
+                    <td><span class="status-badge status-${strategy.status || 'unknown'}" title="${statusTitle}">${statusLabel}</span></td>
                     <td class="${api.getColorClass(pnl.realized_pnl)}">${api.formatCurrency(pnl.realized_pnl)}</td>
                     <td class="${api.getColorClass(pnl.unrealized_pnl)}">${api.formatCurrency(pnl.unrealized_pnl)}</td>
                     <td class="${api.getColorClass(pnl.total_pnl)}">${api.formatCurrency(pnl.total_pnl)}</td>
                     <td>
                         <div class="action-buttons">
-                            <button class="btn btn-sm btn-success" onclick="window.dashboard.controlStrategy('${strategyId}', 'start')" title="Start">▶</button>
+                            <button class="btn btn-sm btn-success" onclick="window.dashboard.controlStrategy('${strategyId}', 'start')" title="Start" ${isRunning ? 'disabled' : ''}>▶</button>
                             <button class="btn btn-sm btn-danger" onclick="window.dashboard.controlStrategy('${strategyId}', 'stop')" title="Stop">⏹</button>
                             <button class="btn btn-sm" onclick="modalManager.showOrderModal('${strategyId}', 'BTC-USD')" title="New Order">📝</button>
                         </div>
@@ -388,15 +396,20 @@ class Dashboard {
             listEl.innerHTML = '<div class="strategy-item-empty">No strategies</div>';
             return;
         }
-        listEl.innerHTML = items.map(s =>
-            `<div class="strategy-item">` +
-            `<span class="strategy-name">${s.name}</span>` +
-            `<div class="strategy-item-actions">` +
-            `<span class="status-badge status-${s.status}">${s.status}</span>` +
-            `<button class="btn-icon" title="Configure" data-strategy="${s.name}">&#9881;</button>` +
-            `</div>` +
-            `</div>`
-        ).join('');
+        listEl.innerHTML = items.map(s => {
+            const isHalted = s.status === 'halted';
+            const statusLabel = isHalted
+                ? (s.halt_reason || 'Halted').split(':')[0].trim()
+                : (s.status || 'unknown');
+            const statusTitle = isHalted ? (s.halt_reason || '') : '';
+            return `<div class="strategy-item">` +
+                `<span class="strategy-name">${s.name}</span>` +
+                `<div class="strategy-item-actions">` +
+                `<span class="status-badge status-${s.status}" title="${statusTitle}">${statusLabel}</span>` +
+                `<button class="btn-icon" title="Configure" data-strategy="${s.name}">&#9881;</button>` +
+                `</div>` +
+                `</div>`;
+        }).join('');
 
         // Wire gear button clicks via event delegation (re-registered each render)
         listEl.onclick = (e) => {

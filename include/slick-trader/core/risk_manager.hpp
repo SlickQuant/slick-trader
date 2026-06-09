@@ -63,6 +63,7 @@ public:
 
     // Check if strategy is halted due to risk breach
     bool is_halted(const std::string& strategy_id) const;
+    std::string get_halt_reason(const std::string& strategy_id) const;
 
     // Manually halt/resume a strategy
     void halt_strategy(const std::string& strategy_id, const std::string& reason);

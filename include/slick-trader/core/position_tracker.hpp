@@ -39,6 +39,7 @@ public:
 
     // Set fallback fee structure for brokers that don't report fees in fill events
     void set_fee_structure(FeeStructure fee_structure) { fee_structure_ = fee_structure; }
+    const FeeStructure& get_fee_structure() const { return fee_structure_; }
 
 private:
     // FIFO lot for position tracking

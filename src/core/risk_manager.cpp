@@ -79,7 +79,8 @@ bool RiskManager::check_position_limit(const std::string& strategy_id, std::stri
     const auto inst_limits = limits_it->second.get_instrument_limits(instrument);
     const qty_t max_pos = inst_limits.max_position_size;
 
-    if (std::abs(from_qty_t(new_position)) > from_qty_t(max_pos)) {
+    const bool is_reducing = std::abs(from_qty_t(new_position)) < std::abs(from_qty_t(pos.quantity));
+    if (!is_reducing && std::abs(from_qty_t(new_position)) > from_qty_t(max_pos)) {
         if (reason) {
             *reason = "Position limit exceeded for " + std::string(instrument) +
                       ": current=" + std::to_string(from_qty_t(pos.quantity)) +
@@ -147,8 +148,13 @@ bool RiskManager::check_rate_limit(const std::string& strategy_id, const RiskLim
 }
 
 bool RiskManager::is_halted(const std::string& strategy_id) const {
-    
+
     return halted_strategies_.find(strategy_id) != halted_strategies_.end();
+}
+
+std::string RiskManager::get_halt_reason(const std::string& strategy_id) const {
+    auto it = halted_strategies_.find(strategy_id);
+    return it != halted_strategies_.end() ? it->second : "";
 }
 
 void RiskManager::halt_strategy(const std::string& strategy_id, const std::string& reason) {
