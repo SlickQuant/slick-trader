@@ -6,6 +6,10 @@
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/utils/fee_structure.hpp>
 
+namespace slick {
+    class stream_buffer_multiplexer;
+}
+
 namespace slick::trader {
 
 // Forward declarations
@@ -21,13 +25,15 @@ public:
     virtual BrokerId get_broker_id() const = 0;
     virtual const char* get_broker_name() const = 0;
 
+    virtual void register_broker() = 0;
+
     // Lifecycle
-    virtual bool initialize(const std::string& config_json) = 0;
-    virtual void shutdown() = 0;
+    virtual bool start() = 0;
+    virtual void stop() = 0;
 
     // Connector access
-    virtual std::shared_ptr<IMarketDataConnector> get_market_data_connector() = 0;
-    virtual std::shared_ptr<IOrderConnector> get_order_connector() = 0;
+    // virtual std::shared_ptr<IMarketDataConnector> get_market_data_connector() = 0;
+    // virtual std::shared_ptr<IOrderConnector> get_order_connector() = 0;
 
     // Fee structure for this broker (symbol ignored for exchanges with uniform rates)
     // Returns zero-rate by default for brokers that report fees directly in fill events

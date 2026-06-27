@@ -4,7 +4,6 @@
 #include <slick/logger.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/strategy/strategy_export.hpp>
-#include <slick-trader/strategy/subscription_request.hpp>
 #include <slick-trader/core/position.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/utils/types.hpp>

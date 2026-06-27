@@ -2,6 +2,7 @@
 #include <slick-trader/brokers/coinbase/coinbase_order_callbacks.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/order_event.hpp>
+#include <slick-trader/events/register_event.hpp>
 #include <slick/logger.hpp>
 #include <coinbase/websocket.hpp>
 #include <coinbase/rest.hpp>
@@ -48,31 +49,64 @@ inline coinbase::TimeInForce to_coinbase_time_in_force(TimeInForce tif) {
     // return coinbase::TimeInForce::UNKNOWN_TIME_IN_FORCE;
 }
 
-CoinbaseOrderConnector::CoinbaseOrderConnector()
-    : running_(false)
-    , callbacks_(std::make_unique<CoinbaseOrderCallbacks>(*this))
-    , order_cursor_(0)
-    , rest_url_("https://api.coinbase.com")
-    , ws_url_("wss://advanced-trade-ws-user.coinbase.com") {
-    // Create REST client for order submission
-    LOG_INFO("Coinbase Order REST: {}", ws_url_);
-    rest_client_ = std::make_unique<coinbase::CoinbaseRestClient>(rest_url_);
+CoinbaseOrderConnector::CoinbaseOrderConnector(
+    const json& config,
+    slick::stream_buffer_multiplexer &mux,
+    slick::queue<uint8_t>& control_queue,
+    slick::queue<uint8_t>& request_queue
+)
+    : enabled_(config.empty() ? false : config.value("enabled", true))
+    , shm_name_(config.value("callback_shm_name", ""))
+    , event_buffer_(mux.add_producer(
+        mux.producer_count(),
+        config.value("queue_size", 1u << 24),
+        config.value("control_size", 1u << 18),
+        shm_name_.empty() ? nullptr : shm_name_.c_str()))
+    , control_queue_(control_queue)
+    , request_queue_(request_queue)
+    , request_cursor_(request_queue.initial_reading_index())
+{
+    if (!enabled_) {
+        LOG_INFO("Coinbase Order Connector disabled");
+    } else {
+        auto rest_url = config.value("rest_url", "https://api.coinbase.com");
+        LOG_INFO("Coinbase Order REST: {}", rest_url);
+        rest_client_ = std::make_unique<coinbase::CoinbaseRestClient>(rest_url);
+        callbacks_ = std::make_unique<CoinbaseOrderCallbacks>(*this);
+        ws_client_ = std::make_unique<coinbase::WebSocketClient>(
+            callbacks_.get(),
+            "",
+            config.value("websocket_url", "wss://advanced-trade-ws-user.coinbase.com"),
+            nullptr, // not using shm
+            config.value("queue_size", 1u << 24),
+            config.value("control_size", 32)
+        );
+    }
 }
 
 CoinbaseOrderConnector::~CoinbaseOrderConnector() {
     stop();
 }
 
-bool CoinbaseOrderConnector::connect() {
-    LOG_INFO("Coinbase Order: Connecting to WS: {}", ws_url_);
+void CoinbaseOrderConnector::register_order_connector() {
+    if (enabled_) {
+        auto taker_rate = get_taker_rate();
+        EventSerializer::publish<OrderConnectorRegisterEvent>(control_queue_, [=](OrderConnectorRegisterEvent& event) {
+            event.broker_id = BrokerId::COINBASE;
+            event.producer_id = event_buffer_->producer_id();
+            event.fee_structure.type = FeeType::PERCENTAGE;
+            event.fee_structure.rate = taker_rate;
+            std::memcpy(event.shm_name, shm_name_.data(), sizeof(event.shm_name));
+        });
+    }
+}
 
-    if (!order_submission_queue_ || !order_event_queue_) {
-        LOG_ERROR("Coinbase Order: Queues not set");
+bool CoinbaseOrderConnector::connect() {
+    if (!enabled_ || !ws_client_) {
         return false;
     }
 
-    // Only user_data_url is needed for order updates
-    ws_client_ = std::make_unique<coinbase::WebSocketClient>(callbacks_.get(), "", ws_url_);
+    LOG_INFO("Coinbase Order: Connecting to WS: {}", ws_client_->userDataUrl());
 
     // Subscribe to USER channel for order updates
     ws_client_->subscribe({}, {coinbase::WebSocketChannel::USER});
@@ -81,25 +115,13 @@ bool CoinbaseOrderConnector::connect() {
 
 void CoinbaseOrderConnector::disconnect() {
     if (ws_client_) {
-        LOG_INFO("Coinbase Order: Disconnecting");
-        ws_client_.reset();
-        LOG_INFO("Coinbase Order: Disconnected");
+        ws_client_->stop();
     }
+    LOG_INFO("Coinbase Order: Disconnecting");
 }
 
 bool CoinbaseOrderConnector::is_connected() const { 
     return ws_client_ ? ws_client_->isUserDataConnected() : false;
-}
-
-void CoinbaseOrderConnector::set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
-    order_event_queue_ = std::move(queue);
-    callbacks_->set_order_event_queue(order_event_queue_);
-}
-
-void CoinbaseOrderConnector::set_rest_url(const std::string& url) {
-    rest_url_ = url;
-    LOG_INFO("Coinbase Order REST URL set to {}", rest_url_);
-    rest_client_ = std::make_unique<coinbase::CoinbaseRestClient>(rest_url_);
 }
 
 double CoinbaseOrderConnector::get_taker_rate() const {
@@ -108,19 +130,24 @@ double CoinbaseOrderConnector::get_taker_rate() const {
 }
 
 void CoinbaseOrderConnector::start() {
-    if (running_.load(std::memory_order_relaxed)) {
+    if (!enabled_) {
+        return;
+    }
+
+    if (running_.load(std::memory_order_relaxed)) [[unlikely]] {
         LOG_WARN("Coinbase Order: Already running");
         return;
     }
 
     LOG_INFO("Coinbase Order: Starting");
     running_.store(true, std::memory_order_release);
+    connect();
     worker_thread_ = std::thread(&CoinbaseOrderConnector::run, this);
     LOG_INFO("Coinbase Order: Started");
 }
 
 void CoinbaseOrderConnector::stop() {
-    if (!running_.load(std::memory_order_acquire)) {
+    if (!running_.load(std::memory_order_relaxed)) {
         return;
     }
 
@@ -141,9 +168,9 @@ void CoinbaseOrderConnector::stop() {
 }
 
 void CoinbaseOrderConnector::run() {
-    LOG_INFO("Coinbase Order: Worker thread started");
+    assert(enabled_);
 
-    connect();
+    LOG_INFO("Coinbase Order: Worker thread started");
 
     while (running_.load(std::memory_order_acquire)) {
         callbacks_->processData();
@@ -154,10 +181,9 @@ void CoinbaseOrderConnector::run() {
 }
 
 void CoinbaseOrderConnector::process_order_requests() {
-    assert(order_submission_queue_ && "Order submission queue not set");
     assert(rest_client_ && "REST client not initialized");
 
-    auto [data, size] = order_submission_queue_->read(order_cursor_);
+    auto [data, size] = request_queue_.read(request_cursor_);
 
     if (!data) {
         std::this_thread::yield();
@@ -212,7 +238,7 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
             LOG_INFO("Order submitted successfully: order_id={}, client_order_id={}",
                         response.success_response.order_id,
                         response.success_response.client_order_id);
-            EventSerializer::publish<OrderAckEvent>(*order_event_queue_, [&request, &response](OrderAckEvent &event) {
+            EventSerializer::publish<OrderAckEvent>(*event_buffer_, [&request, &response](OrderAckEvent &event) {
                 event.type = EventType::ORDER_ACK;
                 event.broker_id = BrokerId::COINBASE;
                 event.timestamp_ns = get_timestamp_ns();
@@ -230,7 +256,7 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
             });
         } else {
             LOG_ERROR("Order submission failed: {}", response.error_response.message);
-                EventSerializer::publish<OrderRejectEvent>(*order_event_queue_, [&request, &response](OrderRejectEvent &reject_event) {
+                EventSerializer::publish<OrderRejectEvent>(*event_buffer_, [&request, &response](OrderRejectEvent &reject_event) {
                 reject_event.type = EventType::ORDER_REJECT;
                 reject_event.broker_id = BrokerId::COINBASE;
                 reject_event.timestamp_ns = get_timestamp_ns();
@@ -246,7 +272,7 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
     } catch (const std::exception& e) {
         LOG_ERROR("Exception submitting order: {}", e.what());
         // Publish reject event
-        EventSerializer::publish<OrderRejectEvent>(*order_event_queue_, [&request, &e](OrderRejectEvent &reject_event) {
+        EventSerializer::publish<OrderRejectEvent>(*event_buffer_, [&request, &e](OrderRejectEvent &reject_event) {
             reject_event.type = EventType::ORDER_REJECT;
             reject_event.broker_id = BrokerId::COINBASE;
             reject_event.timestamp_ns = get_timestamp_ns();
@@ -267,7 +293,7 @@ void CoinbaseOrderConnector::handle_modify_request(const ModifyOrderEvent& reque
              from_price_t(request.new_price), from_qty_t(request.new_quantity));
 
     auto publish_reject = [&](std::string_view reason) {
-        EventSerializer::publish<OrderRejectEvent>(*order_event_queue_, [&](OrderRejectEvent& ev) {
+        EventSerializer::publish<OrderRejectEvent>(*event_buffer_, [&](OrderRejectEvent& ev) {
             ev.type         = EventType::ORDER_REJECT;
             ev.broker_id    = BrokerId::COINBASE;
             ev.timestamp_ns = get_timestamp_ns();
@@ -297,7 +323,7 @@ void CoinbaseOrderConnector::handle_modify_request(const ModifyOrderEvent& reque
 
         if (response.success) {
             LOG_INFO("Order modified successfully: order_id={}", request.order_id);
-            EventSerializer::publish<OrderAckEvent>(*order_event_queue_, [&](OrderAckEvent& ev) {
+            EventSerializer::publish<OrderAckEvent>(*event_buffer_, [&](OrderAckEvent& ev) {
                 ev.type          = EventType::ORDER_ACK;
                 ev.broker_id     = BrokerId::COINBASE;
                 ev.timestamp_ns  = get_timestamp_ns();
@@ -330,7 +356,7 @@ void CoinbaseOrderConnector::handle_cancel_request(const CancelOrderEvent& reque
              request.order_id, request.client_order_id);
 
     auto publish_cancel = [&](std::string_view reason) {
-        EventSerializer::publish<OrderCancelEvent>(*order_event_queue_, [&](OrderCancelEvent& ev) {
+        EventSerializer::publish<OrderCancelEvent>(*event_buffer_, [&](OrderCancelEvent& ev) {
             ev.broker_id    = BrokerId::COINBASE;
             ev.timestamp_ns = get_timestamp_ns();
             ev.set_order_id(request.order_id);

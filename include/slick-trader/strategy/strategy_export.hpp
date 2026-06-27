@@ -1,7 +1,7 @@
 #pragma once
 
-#include <slick-trader/strategy/istrategy.hpp>
 #include <slick/logger.hpp>
+#include <slick-trader/strategy/istrategy.hpp>
 
 #ifdef _WIN32
     #define SLICK_TRADER_EXPORT __declspec(dllexport)

@@ -1,11 +1,13 @@
 #pragma once
 
 #include <slick-trader/brokers/iorder_connector.hpp>
+#include <slick/stream_buffer_multiplexer.hpp>
 #include <cstdint>
 #include <memory>
 #include <thread>
 #include <atomic>
 #include <string>
+#include <nlohmann/json.hpp>
 
 // Forward declarations
 namespace coinbase {
@@ -20,10 +22,20 @@ struct ModifyOrderEvent;
 struct CancelOrderEvent;
 class CoinbaseOrderCallbacks;
 
+using producer_buffer = slick::stream_buffer_multiplexer::producer_buffer;
+using json = nlohmann::json;
+
 class CoinbaseOrderConnector : public IOrderConnector {
 public:
-    CoinbaseOrderConnector();
+    CoinbaseOrderConnector(
+        const json& config,
+        slick::stream_buffer_multiplexer &mux,
+        slick::queue<uint8_t>& control_queue,
+        slick::queue<uint8_t>& request_queue
+    );
     ~CoinbaseOrderConnector() override;
+
+    void register_order_connector() override;
 
     // IOrderConnector interface
     bool connect() override;
@@ -34,20 +46,12 @@ public:
     void stop() override;
     bool is_running() const override { return running_.load(std::memory_order_relaxed); }
 
-    void set_order_submission_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) override {
-        order_submission_queue_ = queue;
-    }
-
-    void set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) override;
-
-    // Configuration
-    void set_rest_url(const std::string& url);
-    void set_websocket_url(const std::string& url) { ws_url_ = url; }
-    void set_api_key(const std::string& key) { api_key_ = key; }
-    void set_api_secret(const std::string& secret) { api_secret_ = secret; }
-
-    // Fetch taker fee rate from Coinbase REST API (e.g. 0.006 = 0.6%)
+    // Fetch taker fee rate from Coinbase REST API (e.g. 0.006 = 0.6%)?
     double get_taker_rate() const;
+
+    std::shared_ptr<producer_buffer> event_buffer() noexcept {
+        return event_buffer_;
+    }
 
 private:
     void run();
@@ -57,21 +61,20 @@ private:
     void handle_cancel_request(const CancelOrderEvent& request);
 
 private:
-    std::atomic_bool running_;
+    std::atomic_bool running_{false};
+    bool enabled_{true};
     std::thread worker_thread_;
 
     std::unique_ptr<CoinbaseOrderCallbacks> callbacks_;
     std::unique_ptr<coinbase::WebSocketClient> ws_client_;
     std::unique_ptr<coinbase::CoinbaseRestClient> rest_client_;
 
-    std::shared_ptr<slick::SlickQueue<uint8_t>> order_submission_queue_;
-    std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
-    uint64_t order_cursor_;
+    std::string shm_name_;
 
-    std::string rest_url_;
-    std::string ws_url_;
-    std::string api_key_;
-    std::string api_secret_;
+    std::shared_ptr<producer_buffer> event_buffer_;
+    slick::queue<uint8_t>& control_queue_;
+    slick::queue<uint8_t>& request_queue_;
+    uint64_t request_cursor_;
 };
 
 } // namespace slick::trader

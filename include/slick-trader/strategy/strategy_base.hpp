@@ -2,6 +2,7 @@
 
 #include <slick-trader/strategy/istrategy.hpp>
 #include <slick-trader/events/event_serializer.hpp>
+#include <slick-trader/events/md_subscription.hpp>
 #include <slick-trader/core/order.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/position_tracker.hpp>
@@ -22,10 +23,9 @@ class StrategyBase : public IStrategy {
 public:
     StrategyBase(const std::string& name, const std::string& version)
         : name_(name)
-        , version_(version)
-        , running_(false) {}
+        , version_(version) {}
 
-    virtual ~StrategyBase() = default;
+    virtual ~StrategyBase() override = default;
 
     // IStrategy interface
     const char* name() const override { return name_.c_str(); }
@@ -36,38 +36,55 @@ public:
         return {};
     }
 
-    bool initialize() override {
+    bool initialize(
+        const json& config,
+        PositionTracker& position_tracker,
+        PnLCalculator& pnl_calculator,
+        RiskManager& risk_manager,
+        slick::queue<uint8_t>& md_request_queue,
+        slick::queue<uint8_t>& order_request_queue
+    ) override {
         LOG_INFO("Strategy {}: Initializing", name_);
+        position_tracker_ = &position_tracker;
+        pnl_calculator_ = &pnl_calculator;
+        risk_manager_ = &risk_manager;
+        md_request_queue_ = &md_request_queue;
+        order_request_queue_ = &order_request_queue;
+        config_params_ = config;
+        on_config(config);
         return on_initialize();
     }
 
     void start() override {
-        LOG_INFO("Strategy {}: Starting", name_);
-        running_.store(true, std::memory_order_release);
-        on_start();
+        if (!running_.load(std::memory_order_relaxed)) {
+            LOG_INFO("Strategy {}: Starting", name_);
+            running_.store(true, std::memory_order_release);
+            on_start();
+
+            // subscribe MD update
+            auto subscriptions = get_subscriptions();
+            for (const auto &subscription : subscriptions) {
+                subscribe(subscription);
+            }
+        }
     }
 
     void stop() override {
-        LOG_INFO("Strategy {}: Stopping", name_);
-        on_stop();
-        running_.store(false, std::memory_order_release);
+        if(running_.load(std::memory_order_relaxed)) {
+            LOG_INFO("Strategy {}: Stopping", name_);
+            on_stop();
+
+
+            running_.store(false, std::memory_order_release);
+        }
     }
 
     void shutdown() override {
+        stop();
         LOG_INFO("Strategy {}: Shutting down", name_);
         on_shutdown();
     }
 
-    void set_order_submission_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) override {
-        order_submission_queue_ = queue;
-    }
-
-    // Position & PnL tracking (set by TradingEngine)
-    void set_position_tracker(PositionTracker* tracker) { position_tracker_ = tracker; }
-    void set_pnl_calculator(PnLCalculator* calculator) { pnl_calculator_ = calculator; }
-    void set_risk_manager(RiskManager* manager) { risk_manager_ = manager; }
-
-    // Configuration (set by TradingEngine during strategy loading)
     void set_config(const nlohmann::json& params) {
         config_params_ = params;
         on_config(params);  // Call derived class hook
@@ -153,9 +170,7 @@ public:
                                : OrderStatus::PARTIALLY_FILLED;
 
             LOG_INFO("Strategy {}: order {} owned - tracking position", name_, order_id);
-            if (position_tracker_) {
-                position_tracker_->on_fill(name_, event);
-            }
+            position_tracker_->on_fill(name_, event);
             on_fill(event);  // Call derived class hook
         } else {
             LOG_INFO("Strategy {}: fill for order_id={} not owned (map size={})",
@@ -189,6 +204,7 @@ protected:
 
     // Lifecycle hooks for derived classes
     virtual bool on_initialize() { return true; }
+
     virtual void on_start() {}
     virtual void on_stop() {}
     virtual void on_shutdown() {}
@@ -209,37 +225,62 @@ protected:
         return name_ + "_" + std::to_string(get_timestamp_ns());
     }
 
+    void subscribe(const SubscriptionRequest& sub) {
+        uint32_t size = sizeof(MDSubscription) + sub.instruments.size() * sizeof(char [32]);
+        EventSerializer::publish<MDSubscription>(*md_request_queue_, size, [&sub](MDSubscription &event) {
+            event.type = EventType::SUBSCRIBE;
+            event.broker_id = sub.broker_id;
+            event.subscription_type = sub.type;
+            event.depth = sub.depth;
+            event.num_instruments = sub.instruments.size();
+            size_t i = 0;
+            for (const auto& inst : sub.instruments) {
+                assert(inst.size() < sizeof(event.instruments[i]));
+                std::memcpy(event.instruments[i], inst.c_str(), sizeof(event.instruments[i]));
+            }
+        });
+    }
+
+    void unsubscribe(const SubscriptionRequest& sub) {
+        uint32_t size = sizeof(MDSubscription) + sub.instruments.size() * sizeof(char [32]);
+        EventSerializer::publish<MDSubscription>(*md_request_queue_, size, [&sub](MDSubscription &event) {
+            event.type = EventType::UNSUBSCRIBE;
+            event.broker_id = sub.broker_id;
+            event.subscription_type = sub.type;
+            event.depth = sub.depth;
+            event.num_instruments = sub.instruments.size();
+            size_t i = 0;
+            for (const auto& inst : sub.instruments) {
+                assert(inst.size() < sizeof(event.instruments[i]));
+                std::memcpy(event.instruments[i], inst.c_str(), sizeof(event.instruments[i]));
+            }
+        });
+    }
+
     // Helper methods for order submission
     std::string submit_order(std::string_view instrument, BrokerId broker_id, Side side, qty_t quantity, OrderType type, price_t price = NULL_PRICE, TimeInForce tif = TimeInForce::FOK, bool post_only = true) {
-        if (!order_submission_queue_) {
-            LOG_ERROR("Strategy {}: Order submission queue not set", name_);
-            return {};
-        }
-
         auto client_order_id = generate_order_id();
 
         // Track which broker handles each instrument (used by close_all_positions)
         instrument_broker_map_[std::string(instrument)] = broker_id;
 
         // Pre-trade risk validation
-        if (risk_manager_) {
-            std::string reject_reason;
-            if (!risk_manager_->validate_order(name_, instrument, side, quantity, price, &reject_reason)) {
-                LOG_WARN("Strategy {}: Order {} REJECTED by risk: {}",
-                         name_, client_order_id, reject_reason);
+        std::string reject_reason;
+        if (!risk_manager_->validate_order(name_, instrument, side, quantity, price, &reject_reason)) {
+            LOG_WARN("Strategy {}: Order {} REJECTED by risk: {}",
+                        name_, client_order_id, reject_reason);
 
-                // Publish internal reject event back to strategy
-                OrderRejectEvent reject;
-                reject.timestamp_ns = get_timestamp_ns();
-                reject.set_instrument(instrument);
-                reject.set_client_order_id(client_order_id.data());
-                reject.set_reason(reject_reason.c_str());
-                on_order_reject(reject);
-                return {};
-            }
+            // Publish internal reject event back to strategy
+            OrderRejectEvent reject;
+            reject.timestamp_ns = get_timestamp_ns();
+            reject.set_instrument(instrument);
+            reject.set_client_order_id(client_order_id.data());
+            reject.set_reason(reject_reason.c_str());
+            on_order_reject(reject);
+            return {};
         }
 
-        EventSerializer::publish<NewOrderEvent>(*order_submission_queue_, [=](NewOrderEvent& order) {
+        EventSerializer::publish<NewOrderEvent>(*order_request_queue_, [=](NewOrderEvent& order) {
             order.broker_id = broker_id;
             order.set_instrument(instrument.data());
             order.set_client_order_id(client_order_id.data());
@@ -274,12 +315,7 @@ protected:
     }
 
     void cancel_order(const std::string& order_id, const std::string& client_order_id) {
-        if (!order_submission_queue_) {
-            LOG_ERROR("Strategy {}: Order submission queue not set", name_);
-            return;
-        }
-
-        EventSerializer::publish<CancelOrderEvent>(*order_submission_queue_, [&](CancelOrderEvent& ev) {
+        EventSerializer::publish<CancelOrderEvent>(*order_request_queue_, [&](CancelOrderEvent& ev) {
             ev.set_order_id(order_id.c_str());
             ev.set_client_order_id(client_order_id.c_str());
         });
@@ -296,12 +332,7 @@ protected:
     }
 
     void modify_order(Order& order, price_t new_price, qty_t new_quantity, price_t new_stop_price = NULL_PRICE) {
-        if (!order_submission_queue_) {
-            LOG_ERROR("Strategy {}: Order submission queue not set", name_);
-            return;
-        }
-        
-        EventSerializer::publish<ModifyOrderEvent>(*order_submission_queue_, [&order, new_price, new_quantity, new_stop_price](ModifyOrderEvent& ev) {
+        EventSerializer::publish<ModifyOrderEvent>(*order_request_queue_, [&order, new_price, new_quantity, new_stop_price](ModifyOrderEvent& ev) {
             ev.set_order_id(order.order_id);
             ev.set_client_order_id(order.client_order_id);
             ev.set_instrument(order.instrument);
@@ -336,8 +367,6 @@ protected:
     void close_all_positions() {
         cancel_all_orders();
 
-        if (!position_tracker_ || !order_submission_queue_) return;
-
         const auto positions = position_tracker_->get_all_positions(name_);
         for (const auto& [instrument, pos] : positions) {
             if (pos.is_flat()) continue;
@@ -355,7 +384,7 @@ protected:
 
             // Use mark price if available, otherwise fall back to avg entry price
             price_t ref_price = pos.avg_price;
-            if (pnl_calculator_ && pnl_calculator_->has_mark_price(instrument)) {
+            if (pnl_calculator_->has_mark_price(instrument)) {
                 ref_price = pnl_calculator_->get_mark_price(instrument);
             }
 
@@ -373,7 +402,7 @@ protected:
                      from_price_t(close_price), from_price_t(ref_price));
 
             // Submit directly — skip risk manager for safety closure
-            EventSerializer::publish<NewOrderEvent>(*order_submission_queue_,
+            EventSerializer::publish<NewOrderEvent>(*order_request_queue_,
                 [&](NewOrderEvent& order) {
                     order.broker_id     = broker_id;
                     order.set_instrument(instrument.c_str());
@@ -471,8 +500,9 @@ protected:
 private:
     std::string name_;
     std::string version_;
-    std::atomic_bool running_;
-    std::shared_ptr<slick::SlickQueue<uint8_t>> order_submission_queue_;
+    std::atomic_bool running_{false};
+    slick::queue<uint8_t>* md_request_queue_{nullptr};
+    slick::queue<uint8_t>* order_request_queue_{nullptr};
 
     // Configuration parameters
     nlohmann::json config_params_;

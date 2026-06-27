@@ -4,7 +4,7 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
-#include <slick-trader/utils/types.hpp>
+#include <slick-trader/events/md_subscription.hpp>
 
 // Forward declare SlickQueue
 namespace slick {
@@ -20,22 +20,21 @@ class IMarketDataConnector {
 public:
     virtual ~IMarketDataConnector() = default;
 
+    virtual void register_md_connector() = 0;
+
     // Connection lifecycle
     virtual bool connect() = 0;
     virtual void disconnect() = 0;
     virtual bool is_connected() const = 0;
 
     // Subscriptions
-    virtual bool subscribe(SubscriptionType type, const std::vector<std::string>& instruments, int depth = 10) = 0;
-    virtual bool unsubscribe(SubscriptionType type, const std::vector<std::string>& instruments) = 0;
+    virtual bool subscribe(const MDSubscription& request) = 0;
+    virtual bool unsubscribe(const MDSubscription& request) = 0;
 
     // Thread lifecycle
     virtual void start() = 0;
     virtual void stop() = 0;
     virtual bool is_running() const = 0;
-
-    // Queue access for publishing market data events
-    virtual void set_md_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) = 0;
 };
 
 } // namespace slick::trader

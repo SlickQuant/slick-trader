@@ -5,7 +5,7 @@
 
 namespace slick::trader {
 
-enum class FeeType {
+enum class FeeType : uint8_t {
     PERCENTAGE,   // fee = |notional| * rate  (e.g. Coinbase: rate = 0.006)
     FIXED_AMOUNT  // fee = rate per fill (flat amount in quote currency)
 };

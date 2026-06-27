@@ -18,6 +18,8 @@ class IOrderConnector {
 public:
     virtual ~IOrderConnector() = default;
 
+    virtual void register_order_connector() = 0;
+
     // Connection lifecycle
     virtual bool connect() = 0;
     virtual void disconnect() = 0;
@@ -27,13 +29,6 @@ public:
     virtual void start() = 0;
     virtual void stop() = 0;
     virtual bool is_running() const = 0;
-
-    // Queue access
-    // Consume order requests from this queue
-    virtual void set_order_submission_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) = 0;
-
-    // Publish order events to this queue
-    virtual void set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) = 0;
 };
 
 } // namespace slick::trader

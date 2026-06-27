@@ -10,73 +10,26 @@
 
 namespace slick::trader {
 
-void CoinbaseOrderCallbacks::set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue) {
-    order_event_queue_ = std::move(order_event_queue);
-}
 
-void CoinbaseOrderCallbacks::onMarketDataConnected(WebSocketClient* /* client */) {
-}
+CoinbaseOrderCallbacks::CoinbaseOrderCallbacks(CoinbaseOrderConnector &connector)
+    : event_buffer_(connector.event_buffer())
+    , connector_(connector) 
+{}
 
 void CoinbaseOrderCallbacks::onUserDataConnected(WebSocketClient* client) {
-    LOG_INFO("WebSocket {:p} user data connected", static_cast<void*>(client));
-}
-
-void CoinbaseOrderCallbacks::onMarketDataDisconnected(WebSocketClient* /* client */) {
+    LOG_INFO("Coinbase User WebSocket {:p} connected", static_cast<void*>(client));
 }
 
 void CoinbaseOrderCallbacks::onUserDataDisconnected(WebSocketClient* client) {
-    LOG_INFO("WebSocket {:p} user data disconnected", static_cast<void*>(client));
+    LOG_INFO("Coinbase User WebSocket {:p} disconnected", static_cast<void*>(client));
     if (connector_.is_running()) {
-        LOG_WARN("WebSocket {:p} user data disconnected while running - attempting to reconnect", static_cast<void*>(client));
+        LOG_WARN("Coinbase User WebSocket {:p} disconnected while running - reconnecting", static_cast<void*>(client));
         connector_.connect();
     }
 }
 
-void CoinbaseOrderCallbacks::onLevel2Snapshot(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, const coinbase::Level2UpdateBatch& /* snapshot */) {
-}
-
-void CoinbaseOrderCallbacks::onLevel2Updates(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, const coinbase::Level2UpdateBatch& /* updates */) {
-}
-
-void CoinbaseOrderCallbacks::onMarketTradesSnapshot(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, const std::vector<coinbase::MarketTrade>& /* snapshots */) {
-}
-
-void CoinbaseOrderCallbacks::onMarketTrades(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, const std::vector<coinbase::MarketTrade>& /* trades */) {
-}
-
-void CoinbaseOrderCallbacks::onTickerSnapshot(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t /* timestamp */, const std::vector<coinbase::Ticker>& /* tickers */) {
-}
-
-void CoinbaseOrderCallbacks::onTickers(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t /* timestamp */, const std::vector<coinbase::Ticker>& /* tickers */) {
-}
-
-void CoinbaseOrderCallbacks::onCandlesSnapshot(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t /* timestamp */, const std::vector<coinbase::Candle>& /* candles */) {
-}
-
-void CoinbaseOrderCallbacks::onCandles(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t /* timestamp */, const std::vector<coinbase::Candle>& /* candles */) {
-}
-
-void CoinbaseOrderCallbacks::onStatusSnapshot(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t /* timestamp */, const std::vector<coinbase::Status>& /* status */) {
-}
-
-void CoinbaseOrderCallbacks::onStatus(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t /* timestamp */, const std::vector<coinbase::Status>& /* status */) {
-}
-
-void CoinbaseOrderCallbacks::onMarketDataGap(WebSocketClient* /* client */) {
-}
-
 void CoinbaseOrderCallbacks::onUserDataGap(WebSocketClient* client) {
-    LOG_WARN("WebSeocket {:p} user data gap detected - some order updates were lost", static_cast<void*>(client));
+    LOG_WARN("Coinbase User WebSeocket {:p} gap detected - some order updates might be lost", static_cast<void*>(client));
 }
 
 void CoinbaseOrderCallbacks::onUserDataSnapshot(
@@ -100,16 +53,13 @@ void CoinbaseOrderCallbacks::onOrderUpdates(
     }
 }
 
-void CoinbaseOrderCallbacks::onMarketDataError(WebSocketClient* /* client */, std::string&& /* err */) {
-}
-
 void CoinbaseOrderCallbacks::onUserDataError(WebSocketClient* client, std::string&& err) {
     LOG_ERROR("WebSocket {:p} user data error: {}", static_cast<void*>(client), std::move(err));
+    connector_.disconnect();
+    connector_.connect();
 }
 
 void CoinbaseOrderCallbacks::process_order_update(const coinbase::Order& order) {
-    assert(order_event_queue_ && "Order event queue not set in CoinbaseOrderCallbacks");
-
     switch (order.status) {
         case coinbase::OrderStatus::PENDING:
         case coinbase::OrderStatus::QUEUED:
@@ -171,7 +121,7 @@ void CoinbaseOrderCallbacks::publish_order_ack(const coinbase::Order& order) {
         quantity = order.cumulative_quantity + order.leaves_quantity;
     }
 
-    EventSerializer::publish<OrderAckEvent>(*order_event_queue_, [this, &order, price, stop_price, quantity](OrderAckEvent& event) {
+    EventSerializer::publish<OrderAckEvent>(*event_buffer_, [this, &order, price, stop_price, quantity](OrderAckEvent& event) {
         event.type = EventType::ORDER_ACK;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();
@@ -233,7 +183,7 @@ void CoinbaseOrderCallbacks::publish_order_fill(const coinbase::Order& order) {
 
     LOG_INFO("{} Order {} filled: {}@{}, cum_qty={}, avg_price={}({}), fee={}", order.product_id, order.order_id, last_qty, last_price, order.cumulative_quantity, cum_avg_price, order.avg_price, incremental_fee);
 
-    EventSerializer::publish<OrderFillEvent>(*order_event_queue_, [&order, last_qty, last_price, incremental_fee](OrderFillEvent& event) {
+    EventSerializer::publish<OrderFillEvent>(*event_buffer_, [&order, last_qty, last_price, incremental_fee](OrderFillEvent& event) {
         event.type = EventType::ORDER_FILL;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();
@@ -252,7 +202,7 @@ void CoinbaseOrderCallbacks::publish_order_fill(const coinbase::Order& order) {
 }
 
 void CoinbaseOrderCallbacks::publish_order_reject(const coinbase::Order& order) {
-    EventSerializer::publish<OrderRejectEvent>(*order_event_queue_, [&order](OrderRejectEvent& event) {
+    EventSerializer::publish<OrderRejectEvent>(*event_buffer_, [&order](OrderRejectEvent& event) {
         event.type = EventType::ORDER_REJECT;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();
@@ -266,7 +216,7 @@ void CoinbaseOrderCallbacks::publish_order_reject(const coinbase::Order& order) 
 }
 
 void CoinbaseOrderCallbacks::publish_order_cancel(const coinbase::Order& order) {
-    EventSerializer::publish<OrderCancelEvent>(*order_event_queue_, [&order](OrderCancelEvent& event) {
+    EventSerializer::publish<OrderCancelEvent>(*event_buffer_, [&order](OrderCancelEvent& event) {
         event.type = EventType::ORDER_CANCEL;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();

@@ -1,6 +1,5 @@
 # Example Trading System executable
 add_executable(example_trading_system
-    example_trading_system.cpp
 )
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)

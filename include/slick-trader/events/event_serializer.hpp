@@ -6,10 +6,13 @@
 #include <slick-trader/events/order_book_event.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick/queue.h>
+#include <slick/stream_buffer_multiplexer.hpp>
 #include <cstring>
 #include <type_traits>
 
 namespace slick::trader {
+
+using producer_buffer = slick::stream_buffer_multiplexer::producer_buffer;
 
 // Event serialization utilities for SlickQueue<uint8_t>
 class EventSerializer {
@@ -55,6 +58,41 @@ public:
             return reinterpret_cast<T*>(data);
         }
         return nullptr;
+    }
+
+    // Publish event to producer_buffer
+    template<typename T, typename populate_event_fn>
+    static bool publish(producer_buffer& buffer, uint32_t size, populate_event_fn &&populate_event_func) {
+        static_assert(std::is_trivially_copyable_v<T>, "Event must be trivially copyable");
+        auto [ptr, sz] = buffer.prepare(size);
+        auto *e = new (ptr) T(); // Placement new to construct event in-place
+        populate_event_func(*e);
+        buffer.commit(size);
+        buffer.consume(size);
+        return true;
+    }
+
+    template<typename T, typename populate_event_fn>
+    static bool publish(producer_buffer& buffer, populate_event_fn &&populate_event_func) {
+        static_assert(std::is_trivially_copyable_v<T>, "Event must be trivially copyable");
+        auto [ptr, sz] = buffer.prepare(sizeof(T));
+        auto *e = new (ptr) T(); // Placement new to construct event in-place
+        populate_event_func(*e);
+        buffer.commit(sizeof(T));
+        buffer.consume(sizeof(T));
+        return true;
+    }
+
+    // Publish event to queue
+    template<typename T>
+    static bool publish(producer_buffer& buffer, const T& event) {
+        static_assert(std::is_trivially_copyable_v<T>, "Event must be trivially copyable");
+        auto [ptr, sz] = buffer.prepare(sizeof(T));
+        auto *e = reinterpret_cast<T*>(ptr);
+        *e = event;
+        buffer.commit(sizeof(T));
+        buffer.consume(sizeof(T));
+        return true;
     }
 };
 

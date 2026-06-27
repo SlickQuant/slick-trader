@@ -1,14 +1,15 @@
 #pragma once
 
-#include <slick/logger.hpp>
 #include <slick/queue.h>
 #include <uwebsockets/App.h>
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/events/order_book_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
+#include <slick/stream_buffer_multiplexer.hpp>
 #include <atomic>
 #include <thread>
 #include <string>
+#include <string_view>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -22,6 +23,12 @@ class StrategyManager;
 class PositionTracker;
 class PnLCalculator;
 class RiskManager;
+struct OrderAckEvent;
+struct OrderFillEvent;
+struct OrderCancelEvent;
+struct OrderRejectEvent;
+
+using json = nlohmann::json;
 
 // Web server for monitoring and control
 // Provides REST API and WebSocket streaming
@@ -35,23 +42,28 @@ public:
         bool enable_cors{true};
     };
 
-    WebServer(StrategyManager& strategy_manager,
-              PositionTracker& position_tracker,
-              PnLCalculator& pnl_calculator,
-              RiskManager& risk_manager)
+    WebServer(
+        std::string_view config_path,
+        StrategyManager& strategy_manager,
+        PositionTracker& position_tracker,
+        PnLCalculator& pnl_calculator,
+        RiskManager& risk_manager,
+        slick::stream_buffer_multiplexer& mux)
         : strategy_manager_(strategy_manager)
         , position_tracker_(position_tracker)
         , pnl_calculator_(pnl_calculator)
         , risk_manager_(risk_manager)
-        , running_(false) {}
+        , event_mux_(mux)
+        , event_cursor_(event_mux_.initial_reading_index())
+        , config_path_(config_path)
+    {}
 
     ~WebServer() {
         stop();
     }
 
     // Initialize with configuration
-    bool initialize(const Config& config);
-    bool initialize(const Config& config, const nlohmann::json& full_config);
+    bool initialize(const json& config);
 
     // Start web server thread
     void start();
@@ -66,24 +78,6 @@ public:
 
     // Get current port
     uint16_t get_port() const { return config_.port; }
-
-    // Set market data queue for real-time WebSocket streaming
-    void set_market_data_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
-        md_queue_ = queue;
-    }
-
-    // Set order event queue for real-time order update broadcasting
-    void set_order_event_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
-        order_event_queue_ = queue;
-    }
-
-    // Set top-of-book queue (written by StrategyManager, read by WebServer)
-    void set_tob_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> queue) {
-        tob_queue_ = queue;
-    }
-
-    // Set config file path for persisting runtime changes
-    void set_config_path(const std::string& path) { config_path_ = path; }
 
 private:
     void run();
@@ -138,12 +132,15 @@ private:
     void add_cors_headers(uWS::HttpResponse<false>* res);
 
     // Market data streaming
-    void process_market_data_events();
+    void process_events();
+
+    void handle_order_ack(const OrderAckEvent& ack);
+    void handle_order_fill(const OrderFillEvent& fill);
+    void handle_order_cancel(const OrderCancelEvent& cancel);
+    void handle_order_reject(const OrderRejectEvent& reject);
+
     void broadcast_level2_update(const Level2UpdateEvent& event);
     void broadcast_orderbook(const OrderBookEvent& event);
-
-    // Order event streaming
-    void process_order_events();
     void broadcast_order_update(const std::string& message);
 
     // PnL broadcasting
@@ -160,21 +157,24 @@ private:
     RiskManager& risk_manager_;
 
     Config config_;
-    std::atomic_bool running_;
+    std::atomic_bool running_{false};
     std::thread worker_thread_;
     us_listen_socket_t* listen_socket_{nullptr};
 
-    // Market data queue (shared with StrategyManager)
-    std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
-    uint64_t ws_md_cursor_{0};  // Independent cursor for WebServer
+    slick::stream_buffer_multiplexer& event_mux_;
+    uint64_t event_cursor_{0};
 
-    // Order event queue (shared with StrategyManager)
-    std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
-    uint64_t ws_order_cursor_{0};  // Independent cursor for WebServer
+    // // Market data queue (shared with StrategyManager)
+    // std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
+    // uint64_t ws_md_cursor_{0};  // Independent cursor for WebServer
 
-    // Top-of-book queue (written by StrategyManager)
-    std::shared_ptr<slick::SlickQueue<uint8_t>> tob_queue_;
-    uint64_t ws_tob_cursor_{0};
+    // // Order event queue (shared with StrategyManager)
+    // std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
+    // uint64_t ws_order_cursor_{0};  // Independent cursor for WebServer
+
+    // // Top-of-book queue (written by StrategyManager)
+    // std::shared_ptr<slick::SlickQueue<uint8_t>> tob_queue_;
+    // uint64_t ws_tob_cursor_{0};
 
     // All connected WebSocket clients (for broadcasting order updates)
     std::unordered_set<uWS::WebSocket<false, true, void*>*> all_ws_clients_;

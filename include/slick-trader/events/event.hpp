@@ -15,7 +15,9 @@ enum class BrokerId : uint8_t {
     UNKNOWN = 0,
     COINBASE,
     ALPACA,
-    SIMULATED
+    HYPERLIQUID,
+    SIMULATED,
+    _BROKER_ID_COUNT_,
 };
 
 enum class EventType : uint8_t {
@@ -33,6 +35,12 @@ enum class EventType : uint8_t {
     ORDER_CANCEL,
     POSITION_UPDATE,
     PNL_UPDATE,
+    TOB,
+    REGISTER,
+    REGISTER_END,
+    STATUS,
+    SUBSCRIBE,
+    UNSUBSCRIBE,
 };
 
 // Base event header - all events must be POD/trivially copyable for lock-free queue
@@ -58,5 +66,20 @@ struct Event {
     }
 };
 #pragma pack(pop)
+
+inline const char* to_string(BrokerId bid) {
+    switch(bid) {
+        case BrokerId::COINBASE:
+            return "COINBASE";
+        case BrokerId::ALPACA:
+            return "ALPACA";
+        case BrokerId::HYPERLIQUID:
+            return "HYPERLIMIT";
+        case BrokerId::SIMULATED:
+            return "SIMULATED";
+        default:
+            return "UNKNOWN";
+    }
+}
 
 } // namespace slick::trader

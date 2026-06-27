@@ -25,14 +25,13 @@
 //   trend_sensitivity      (default: 0.5)  — [0,1] scaling for trend offset
 //   imbalance_sensitivity  (default: 0.3)  — [0,1] scaling for book imbalance offset
 
+#include <slick/logger.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/strategy/strategy_export.hpp>
-#include <slick-trader/strategy/subscription_request.hpp>
 #include <slick-trader/events/order_book_event.hpp>
 #include <slick-trader/core/position.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/utils/types.hpp>
-#include <slick/logger.hpp>
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -97,12 +96,10 @@ protected:
     }
 
     void on_start() override {
-        is_running_ = true;
         LOG_INFO("MarketMaker: Started");
     }
 
     void on_stop() override {
-        is_running_ = false;
         LOG_INFO("MarketMaker: Stopping — cancelling open quotes");
         // Explicitly cancel ACTIVE and PENDING_MODIFY slots (PENDING_MODIFY may not
         // be covered by cancel_all_orders() if PENDING_MODIFY is not in is_open()).
@@ -161,7 +158,7 @@ protected:
         // If already running with a valid fair value, immediately recalculate quotes so
         // updated parameters (spread, size, etc.) take effect without waiting for the next tick.
         // update_quotes() uses needs_refresh() → modify_slot() for in-place order updates.
-        if (is_running_ && fair_value_ > 0.0) {
+        if (is_running() && fair_value_ > 0.0) {
             LOG_INFO("MarketMaker: Config updated at runtime — recalculating quotes");
             update_quotes();
         }
@@ -294,7 +291,7 @@ protected:
                 ask_slot_.reset();
             }
             // Re-quote immediately on full fill
-            if (is_running_ && fair_value_ > 0.0) {
+            if (is_running() && fair_value_ > 0.0) {
                 update_quotes();
             }
         }
@@ -340,7 +337,7 @@ protected:
         }
 
         // Re-quote if strategy is still running (i.e., this was a refresh cancel)
-        if (is_running_ && fair_value_ > 0.0) {
+        if (is_running() && fair_value_ > 0.0) {
             update_quotes();
         }
     }
@@ -387,7 +384,7 @@ private:
     // -----------------------------------------------------------------------
 
     void update_quotes() {
-        if (!is_running_ || fair_value_ <= 0.0) return;
+        if (!is_running() || fair_value_ <= 0.0) return;
 
         // Recover slots that got stuck in PENDING_NEW because submit_order() was
         // rejected before the order left the process (empty client_id = never sent).
@@ -528,7 +525,6 @@ private:
     // -----------------------------------------------------------------------
     // Runtime state
     // -----------------------------------------------------------------------
-    bool     is_running_{false};
     double   fair_value_{0.0};
     double   book_imbalance_{0.0};
 

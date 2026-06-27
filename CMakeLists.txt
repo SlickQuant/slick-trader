@@ -5,7 +5,7 @@ project(SlickTrader
     LANGUAGES CXX
 )
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -48,7 +48,7 @@ if(SLICK_TRADER_FAST_FETCHCONTENT)
     set(FETCHCONTENT_UPDATES_DISCONNECTED_COINBASE-ADVANCED-CPP ON CACHE BOOL "" FORCE)
 endif()
 
-find_package(slick-logger 1.0.8 CONFIG QUIET)
+find_package(slick-logger 1.0.9 CONFIG QUIET)
 if (NOT slick-logger_FOUND)
     message(STATUS "Fetching slick-logger...")
     # Disable examples, tests, and benchmarks for slick_logger
@@ -58,15 +58,15 @@ if (NOT slick-logger_FOUND)
     FetchContent_Declare(
         slick-logger
         GIT_REPOSITORY https://github.com/SlickQuant/slick-logger.git
-        GIT_TAG v1.0.8
+        GIT_TAG v1.0.9
     )
     FetchContent_MakeAvailable(slick-logger)
 else()
-    message(STATUS "Found slick-logger: ${slick-logger_VERSION}")
+    message(STATUS "Found slick-logger ${slick-logger_VERSION}: ${slick-logger_DIR}")
 endif()
 
 # Add slick-orderbook dependency
-find_package(slick-orderbook 1.0.2 CONFIG QUIET)
+find_package(slick-orderbook 1.0.3 CONFIG QUIET)
 if (NOT slick-orderbook_FOUND)
     message(STATUS "Fetching slick-orderbook...")
     set(BUILD_SLICK_ORDERBOOK_TESTS OFF CACHE BOOL "" FORCE)
@@ -75,15 +75,15 @@ if (NOT slick-orderbook_FOUND)
     FetchContent_Declare(
         slick-orderbook
         GIT_REPOSITORY https://github.com/SlickQuant/slick-orderbook.git
-        GIT_TAG v1.0.2
+        GIT_TAG v1.0.3
     )
     FetchContent_MakeAvailable(slick-orderbook)
 else()
-    message(STATUS "Found slick-orderbook: ${slick-orderbook_VERSION}")
+    message(STATUS "Found slick-orderbook ${slick-orderbook_VERSION}: ${slick-orderbook_DIR}")
 endif()
 
 # Add coinbase-advanced-cpp dependency
-find_package(coinbase-advanced-cpp 0.2.2 CONFIG QUIET)
+find_package(coinbase-advanced-cpp 1.0.0 CONFIG QUIET)
 if (NOT coinbase-advanced-cpp_FOUND)
     message(STATUS "Fetching coinbase-advanced-cpp...")
     set(BUILD_COINBASE_ADVANCED_TESTS OFF CACHE BOOL "" FORCE)
@@ -94,18 +94,51 @@ if (NOT coinbase-advanced-cpp_FOUND)
     )
     FetchContent_MakeAvailable(coinbase-advanced-cpp)
 else()
-    message(STATUS "Found coinbase-advanced-cpp: ${coinbase-advanced-cpp_VERSION}")
+    message(STATUS "Found coinbase-advanced-cpp ${coinbase-advanced-cpp_VERSION}: ${coinbase-advanced-cpp_DIR}")
 endif()
 
-find_package(slick-net 2.1.0 CONFIG QUIET)
-if (NOT slick-net_FOUND)
-    message(STATUS "Fetching slick-net...")
+find_package(hyperliquid-cpp 0.2.1 CONFIG QUIET)
+if (NOT hyperliquid-cpp_FOUND)
+    message(STATUS "Fetching hyperliquid-cpp...")
     FetchContent_Declare(
-        slick-net
-        GIT_REPOSITORY https://github.com/SlickQuant/slick-net.git
-        GIT_TAG v2.1.0
+        hyperliquid-cpp
+        GIT_REPOSITORY https://github.com/SlickQuant/hyperliquid-cpp.git
+        GIT_TAG v0.2.1
     )
-    FetchContent_MakeAvailable(slick-net)
+    FetchContent_MakeAvailable(hyperliquid-cpp)
+else()
+    message(STATUS "Found hyperliquid-cpp ${hyperliquid-cpp_VERSION}: ${hyperliquid-cpp_DIR}")
+endif()
+
+# slick-net should be found or fetched by coinbase/hyperliquid
+find_package(slick-net CONFIG QUIET)
+if (slick-net_FOUND)
+    message(STATUS "Found slick-net ${slick-net_VERSION}: ${slick-net_DIR}")
+endif()
+
+find_package(slick-shm CONFIG QUIET)
+if (slick-shm_FOUND)
+    message(STATUS "Found slick-shm ${slick-shm_VERSION}: ${slick-shm_DIR}")
+endif()
+
+find_package(slick-queue CONFIG QUIET)
+if (slick-queue_FOUND)
+    message(STATUS "Found slick-queue ${slick-queue_VERSION}: ${slick-queue_DIR}")
+endif()
+
+find_package(slick-stream-buffer CONFIG QUIET)
+if (slick-stream-buffer_FOUND)
+    message(STATUS "Found slick-stream-buffer ${slick-stream-buffer_VERSION}: ${slick-stream-buffer_DIR}")
+endif()
+
+find_package(slick-stream-buffer-multiplexer CONFIG QUIET)
+if (slick-stream-buffer-multiplexer_FOUND)
+    message(STATUS "Found slick-stream-buffer-multiplexer ${slick-stream-buffer-multiplexer_VERSION}: ${slick-stream-buffer-multiplexer_DIR}")
+endif()
+
+find_package(slick-dynamic_buffer CONFIG QUIET)
+if (slick-dynamic_buffer_FOUND)
+    message(STATUS "Found slick-dynamic_buffer ${slick-dynamic_buffer_VERSION}: ${slick-dynamic_buffer_DIR}")
 endif()
 
 # Add Alpaca SDK (assuming GitHub repo exists)
@@ -162,7 +195,7 @@ endif()
 add_subdirectory(src)
 add_subdirectory(strategies)
 add_subdirectory(web)
-add_subdirectory(examples)
+# add_subdirectory(examples)
 
 # Tests
 # option(BUILD_EXCH_SIMULATOR_TESTING "Build tests" ON)

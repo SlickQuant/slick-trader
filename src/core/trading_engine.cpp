@@ -1,19 +1,19 @@
 #include <slick/logger.hpp>
 #include <slick-trader/core/trading_engine.hpp>
-#include <slick-trader/core/position_tracker.hpp>
-#include <slick-trader/utils/fee_structure.hpp>
-#include <slick-trader/core/pnl_calculator.hpp>
-#include <slick-trader/core/risk_manager.hpp>
+#include <slick-trader/core/broker_factory.hpp>
 #include <slick-trader/web/web_server.hpp>
-#include <slick-trader/strategy/strategy_manager.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/brokers/imarket_data_connector.hpp>
 #include <slick-trader/brokers/iorder_connector.hpp>
+#include <slick-trader/events/register_event.hpp>
+#include <slick/net/logging.hpp>
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <sstream>
 
 namespace slick::trader {
+
+using Logger = slick::logger::Logger;
 
 // Helper function to join strings
 static std::string join_strings(const std::vector<std::string>& vec, const std::string& delimiter) {
@@ -27,19 +27,9 @@ static std::string join_strings(const std::vector<std::string>& vec, const std::
 }
 
 TradingEngine::TradingEngine()
-    : running_(false)
-    , shutdown_called_(false)
-    , strategy_manager_(std::make_unique<StrategyManager>())
-    , position_tracker_(std::make_unique<PositionTracker>())
-    , md_queue_(nullptr)
-    , order_request_queue_(nullptr)
-    , order_event_queue_(nullptr) {
-    // Create PnLCalculator and RiskManager with position_tracker reference
-    pnl_calculator_ = std::make_unique<PnLCalculator>(*position_tracker_);
-    risk_manager_ = std::make_unique<RiskManager>(*position_tracker_);
-
-    // Create WebServer with strategy manager, position/pnl trackers, and risk manager
-    web_server_ = std::make_unique<WebServer>(*strategy_manager_, *position_tracker_, *pnl_calculator_, *risk_manager_);
+    : pnl_calculator_(position_tracker_)
+    , risk_manager_(position_tracker_)
+{
 }
 
 TradingEngine::~TradingEngine() {
@@ -47,164 +37,314 @@ TradingEngine::~TradingEngine() {
 }
 
 bool TradingEngine::initialize(const std::string& config_path) {
-
-    LOG_INFO("Initializing TradingEngine with config: {}", config_path);
-
-    // Load configuration
     std::ifstream config_file(config_path);
     if (!config_file.is_open()) {
-        LOG_ERROR("Failed to open config file: {}", config_path);
+        std::cerr << "Failed to open config file: " << config_path << std::endl;
         return false;
     }
 
-    nlohmann::json config;
+    json config;
     try {
-        config_file >> config;
+        config = json::parse(config_file);
     } catch (const std::exception& e) {
-        LOG_ERROR("Failed to parse config file: {}", e.what());
+        std::cerr << "Failed to parse config file: " << e.what() << std::endl;
         return false;
     }
 
-    // Store configuration values
-    strategy_plugins_folder_ = config.value("strategy_plugins_folder", "strategies");
+    std::string log_file = config.value<std::string>("log_file_path", "logs/slick_trader.log");
+    slick::logger::LogLevel log_level = config.value<slick::logger::LogLevel>("log_level", slick::logger::LogLevel::L_INFO);
 
-    // Create message queues
-    uint32_t md_queue_size = config.value("md_queue_size", 1<<24);
-    uint32_t order_request_queue_size = config.value("order_request_queue_size", 1<<20);
-    uint32_t order_event_queue_size = config.value("order_reply_queue_size", 1<<20);
+    // Initialize logger with console and file output
+    auto &logger = Logger::instance();
+    logger.clear_sinks();
+#ifdef DEBUG
+    logger.add_console_sink(true, true);
+#endif
+    logger.add_file_sink(log_file);
+    logger.set_level(log_level);
+    logger.init();
 
-    uint32_t tob_queue_size = config.value("tob_queue_size", 1<<20);
+    // Forward Coinbase library logs to slick-logger
+    slick::net::set_log_handler(
+        [&logger](slick::net::LogLevel level, const char* format_text, std::format_args args) {
+            logger.log(static_cast<slick::logger::LogLevel>(level), format_text, std::move(args));
+        },
+        [&logger] {
+            return static_cast<slick::net::LogLevel>(logger.get_level());
+        }
+    );
 
-    md_queue_ = std::make_shared<slick::SlickQueue<uint8_t>>(md_queue_size);
-    order_request_queue_ = std::make_shared<slick::SlickQueue<uint8_t>>(order_request_queue_size);
-    order_event_queue_ = std::make_shared<slick::SlickQueue<uint8_t>>(order_event_queue_size);
-    tob_queue_ = std::make_shared<slick::SlickQueue<uint8_t>>(tob_queue_size);
+    // Create event queue
+    auto event_queue_size = config.value("event_queue_size", 1u << 24 /* 16M */);
+    const char* event_queue_shm_name = config.contains("event_queue_shm_name") ? config["event_queue_shm_name"].get_ref<std::string&>().c_str() : nullptr;
 
-    LOG_INFO("Created message queues - MD: {}, Order: {}, OrderEvent: {}, TOB: {}",
-             md_queue_size, order_request_queue_size, order_event_queue_size, tob_queue_size);
+    LOG_INFO("event queue size: {}", event_queue_size);
+    LOG_INFO("event queue shm name: {}", event_queue_shm_name ? event_queue_shm_name : "");
 
-    // Initialize strategy manager with queues
-    strategy_manager_->set_market_data_queue(md_queue_);
-    strategy_manager_->set_order_event_queue(order_event_queue_);
-    strategy_manager_->set_order_submission_queue(order_request_queue_);
-    strategy_manager_->set_tob_queue(tob_queue_);
+    event_mux_ = std::make_unique<slick::stream_buffer_multiplexer>(event_queue_size, event_queue_shm_name);
 
-    // Set position & PnL tracking
-    strategy_manager_->set_position_tracker(position_tracker_.get());
-    strategy_manager_->set_pnl_calculator(pnl_calculator_.get());
-    strategy_manager_->set_risk_manager(risk_manager_.get());
+    // Create control queue
+    auto control_queue_size = config.value("control_queue_size", 1u << 20 /* 1M */);
+    const char* control_queue_shm_name = config.contains("control_queue_shm_name") ? config["control_queue_shm_name"].get_ref<std::string&>().c_str() : nullptr;
 
-    if (!strategy_manager_->initialize()) {
-        LOG_ERROR("Failed to initialize strategy manager");
-        return false;
+    LOG_INFO("event queue size: {}", control_queue_size);
+    LOG_INFO("event queue shm name: {}", control_queue_shm_name ? control_queue_shm_name : "");
+
+    control_queue_ = std::make_unique<slick::queue<uint8_t>>(control_queue_size, control_queue_shm_name);
+
+    // Create MD request queue
+    auto md_request_queue_size = config.value("md_request_queue_size", 1u << 20 /* 1M */);
+    const char* md_request_queue_shm_name = config.contains("md_request_queue_shm_name") ? config["md_request_queue_shm_name"].get_ref<std::string&>().c_str() : nullptr;
+
+    LOG_INFO("md request queue size: {}", md_request_queue_size);
+    LOG_INFO("md request queue shm name: {}", md_request_queue_shm_name ? md_request_queue_shm_name : "");
+
+    md_request_queue_ = std::make_unique<slick::queue<uint8_t>>(md_request_queue_size, md_request_queue_shm_name);
+
+    // Create order request queue
+    auto order_request_queue_size = config.value("order_request_queue_size", 1u << 24 /* 16M */);
+    const char* order_request_queue_shm_name = config.contains("order_request_queue_shm_name") ? config["order_request_queue_shm_name"].get_ref<std::string&>().c_str() : nullptr;
+
+    LOG_INFO("order request queue size: {}", order_request_queue_size);
+    LOG_INFO("order request queue shm name: {}", order_request_queue_shm_name ? order_request_queue_shm_name : "");
+
+    order_request_queue_ = std::make_unique<slick::queue<uint8_t>>(order_request_queue_size, order_request_queue_shm_name);
+
+    // ========================================================================
+    // Broker Setup from Configuration
+    // ========================================================================
+    if (config.contains("brokers") && config["brokers"].is_array()) {
+        LOG_INFO("");
+        LOG_INFO("==================================================");
+        LOG_INFO("          Initialize Brokers...");
+        LOG_INFO("==================================================");
+
+        for (const auto& broker_json : config["brokers"]) {
+            // Parse broker configuration
+            auto enabled = broker_json.value("enabled", true);
+            auto broker_name = broker_json.value("name", "unknown");
+
+            if (!enabled) {
+                LOG_INFO("Skipping disabled broker: {}", broker_name);
+                continue;
+            }
+
+            // Create broker
+            auto broker = BrokerFactory::create_broker(broker_json, *event_mux_, *control_queue_, *md_request_queue_, *order_request_queue_);
+            if (!broker) {
+                LOG_ERROR("Failed to create broker: {}", broker_name);
+                return false;
+            }
+
+            broker->register_broker();
+            LOG_INFO("✓ Registered broker: {}", broker_name);
+
+            brokers_.push_back(broker);
+        }
+
+        LOG_INFO("✓ Registered {} broker(s)", brokers_.size());
+
+        publish_regiter_end(event_mux_->producer_count());
+    } else {
+        LOG_WARN("⚠ No brokers configured in {}", config_path);
+        LOG_WARN("⚠ Add a 'brokers' array to enable market data and trading");
+    }
+
+    // Market data subscriptions will be applied after engine.start()
+    // (stored in broker configs)
+    if (config.contains("strategies")) {
+        LOG_INFO("");
+        LOG_INFO("==================================================");
+        LOG_INFO("          Initialize Strategies...");
+        LOG_INFO("==================================================");
+
+        strategy_manager_ = std::make_unique<StrategyManager>(position_tracker_, pnl_calculator_, risk_manager_, *event_mux_, *md_request_queue_, *order_request_queue_);
+        strategy_manager_->load_strategies(config["strategies"]);
     }
 
     // Initialize web server (optional, configurable)
-    bool enable_web_server = config.value("enable_web_server", true);
-    if (enable_web_server) {
-        WebServer::Config web_config;
-        web_config.port = config.value("web_server_port", 8080);
-        web_config.enable_cors = config.value("web_server_cors", true);
-        web_config.static_files_path = config.value("web_server_static_path", "web/static");
-
-        if (!web_server_->initialize(web_config, config)) {
-            LOG_ERROR("Failed to initialize web server");
-            return false;
+    if (config.contains("web_service")) {
+        bool enable_web_server = config["web_service"].value("enable", true);
+        if (enable_web_server) {
+            LOG_INFO("");
+            LOG_INFO("==================================================");
+            LOG_INFO("          Initialize Web Service...");
+            LOG_INFO("==================================================");
+            web_server_ = std::make_unique<WebServer>(config_path, *strategy_manager_, position_tracker_, pnl_calculator_, risk_manager_, *event_mux_);
+            if (!web_server_->initialize(config["web_service"])) {
+                LOG_ERROR("Failed to initialize web server");
+                return false;
+            }
         }
-
-        // Set market data queue for WebSocket streaming (shares same queue as StrategyManager)
-        web_server_->set_market_data_queue(md_queue_);
-
-        // Set order event queue for real-time order update broadcasting
-        web_server_->set_order_event_queue(order_event_queue_);
-
-        // Set top-of-book queue for real-time P&L broadcasting
-        web_server_->set_tob_queue(tob_queue_);
-
-        // Allow WebServer to persist runtime config changes back to disk
-        web_server_->set_config_path(config_path);
     }
 
+    LOG_INFO("");
+    LOG_INFO("==================================================");
+    LOG_INFO("          Waiting for Brokers Ready...");
+    LOG_INFO("==================================================");
+
+    auto timed_out = wait_for_brokers_ready(std::chrono::seconds(config.value("waiting_time_out", 30)));
+    if (timed_out) {
+        LOG_WARN("Waiting for Brokers ready timed out");
+    }
     return true;
 }
 
+void TradingEngine::publish_regiter_end(uint32_t num_producers) {
+    EventSerializer::publish<BrokerRegisterEndEvent>(*control_queue_, [=](BrokerRegisterEndEvent &e) {
+        e.num_producers = num_producers;
+    });
+}
+
+bool TradingEngine::wait_for_brokers_ready(std::chrono::seconds timeout_sec) {
+    uint64_t cursor{0};
+    size_t num_producers{0};
+    size_t num_ipc_producers{0};
+    auto start = std::chrono::steady_clock::now();
+    auto end = start + timeout_sec;
+    bool timed_out = false;
+    do {
+        auto [data, size] = control_queue_->read(cursor);
+        if (!data) {
+            std::this_thread::yield();
+        }
+
+        auto *event = reinterpret_cast<Event*>(data);
+        if (event->type == EventType::REGISTER) {
+            ++num_producers;
+            auto &register_event = reinterpret_cast<RegisterEvent&>(*event);
+            if (register_event.shm_name[0] != '\0') {
+                event_mux_->add_producer(register_event.producer_id, register_event.shm_name);
+                LOG_INFO("Register IPC producer {}: borker={} type={}, shm_name={}", register_event.producer_id,
+                    to_string(register_event.broker_id), to_string(register_event.component_type), register_event.shm_name);
+                ++num_ipc_producers;
+            }
+
+        } else if (event->type == EventType::REGISTER_END) {
+            break;
+        }
+    } while (!(timed_out = std::chrono::steady_clock::now() < end));
+    LOG_INFO("{} broker(s) registered, {} ipc producer(s). event_mux.producer_count={}", num_producers, num_ipc_producers, event_mux_->producer_count());
+    return !timed_out;
+}
+
 void TradingEngine::start() {
-    if (running_.load(std::memory_order_relaxed)) {
+    if (running_.load(std::memory_order_relaxed)) [[unlikely]] {
         LOG_WARN("TradingEngine already running");
         return;
     }
 
-    LOG_INFO("Starting TradingEngine...");
-
-    // Fetch and wire fee structures before strategies begin trading
-    for (auto& [broker_id, broker] : brokers_) {
-        FeeStructure fs = broker->get_fees("");
-        if (fs.rate > 0.0) {
-            position_tracker_->set_fee_structure(fs);
-            LOG_INFO("TradingEngine: {} fee structure — type={} rate={:.4f}",
-                     broker->get_broker_name(),
-                     fs.type == FeeType::PERCENTAGE ? "percentage" : "fixed",
-                     fs.rate);
+    if (!brokers_.empty()) {
+        LOG_INFO("");
+        LOG_INFO("==================================================");
+        LOG_INFO("          Start Brokers...");
+        LOG_INFO("==================================================");
+        for (auto &broker : brokers_) {
+            broker->start();
         }
+    }
+
+    if (strategy_manager_) {
+        LOG_INFO("");
+        LOG_INFO("==================================================");
+        LOG_INFO("          Start Strategies...");
+        LOG_INFO("==================================================");
+        strategy_manager_->start();
     }
 
     // Start web server (if initialized)
     if (web_server_) {
+        LOG_INFO("");
+        LOG_INFO("==================================================");
+        LOG_INFO("          Start Web Service...");
+        LOG_INFO("==================================================");
         web_server_->start();
     }
 
-    // Start strategy manager
-    strategy_manager_->start();
+    // // Fetch and wire fee structures before strategies begin trading
+    // for (auto& [broker_id, broker] : brokers_) {
+    //     FeeStructure fs = broker->get_fees("");
+    //     if (fs.rate > 0.0) {
+    //         position_tracker_->set_fee_structure(fs);
+    //         LOG_INFO("TradingEngine: {} fee structure — type={} rate={:.4f}",
+    //                  broker->get_broker_name(),
+    //                  fs.type == FeeType::PERCENTAGE ? "percentage" : "fixed",
+    //                  fs.rate);
+    //     }
+    // }
 
-    // Start all brokers
-    for (auto& [broker_id, broker] : brokers_) {
-        LOG_INFO("Starting broker: {}", broker->get_broker_name());
+    // // Start all brokers
+    // for (auto& [broker_id, broker] : brokers_) {
+    //     LOG_INFO("Starting broker: {}", broker->get_broker_name());
 
-        auto md_connector = broker->get_market_data_connector();
-        if (md_connector) {
-            md_connector->set_md_queue(md_queue_);
-            md_connector->start();
-        }
+    //     auto md_connector = broker->get_market_data_connector();
+    //     if (md_connector) {
+    //         md_connector->set_md_queue(md_queue_);
+    //         md_connector->start();
+    //     }
 
-        auto order_connector = broker->get_order_connector();
-        if (order_connector) {
-            order_connector->set_order_submission_queue(order_request_queue_);
-            order_connector->set_order_event_queue(order_event_queue_);
-            order_connector->start();
-        }
-    }
+    //     auto order_connector = broker->get_order_connector();
+    //     if (order_connector) {
+    //         order_connector->set_order_submission_queue(order_request_queue_);
+    //         order_connector->set_order_event_queue(order_event_queue_);
+    //         order_connector->start();
+    //     }
+    // }
 
     running_.store(true, std::memory_order_release);
-    LOG_INFO("TradingEngine started");
+    LOG_INFO("");
+    LOG_INFO("==================================================");
+    LOG_INFO("          TradingEngine started");
+    LOG_INFO("==================================================");
 }
 
-void TradingEngine::stop() {
+void TradingEngine::shutdown() {
     if (!running_.load(std::memory_order_acquire)) {
         return;
     }
 
     LOG_INFO("Stopping TradingEngine");
 
-    // Stop all brokers
-    for (auto& [broker_id, broker] : brokers_) {
-        LOG_INFO("Stopping broker: {}", broker->get_broker_name());
+    // // Stop all brokers
+    // for (auto& [broker_id, broker] : brokers_) {
+    //     LOG_INFO("Stopping broker: {}", broker->get_broker_name());
 
-        auto md_connector = broker->get_market_data_connector();
-        if (md_connector) {
-            md_connector->stop();
-        }
+    //     auto md_connector = broker->get_market_data_connector();
+    //     if (md_connector) {
+    //         md_connector->stop();
+    //     }
 
-        auto order_connector = broker->get_order_connector();
-        if (order_connector) {
-            order_connector->stop();
+    //     auto order_connector = broker->get_order_connector();
+    //     if (order_connector) {
+    //         order_connector->stop();
+    //     }
+    // }
+
+    // Stop strategy manager
+    if (strategy_manager_) {
+        LOG_INFO("");
+        LOG_INFO("==================================================");
+        LOG_INFO("          Stop Strategies...");
+        LOG_INFO("==================================================");
+        strategy_manager_->stop();
+    }
+
+    if (!brokers_.empty()) {
+        LOG_INFO("");
+        LOG_INFO("==================================================");
+        LOG_INFO("          Stop Brokers...");
+        LOG_INFO("==================================================");
+        for (auto &broker : brokers_) {
+            broker->stop();
         }
     }
 
-    // Stop strategy manager
-    strategy_manager_->stop();
-
     // Stop web server
     if (web_server_) {
+        LOG_INFO("");
+        LOG_INFO("==================================================");
+        LOG_INFO("          Stop Web Service...");
+        LOG_INFO("==================================================");
         web_server_->stop();
     }
 
@@ -212,195 +352,86 @@ void TradingEngine::stop() {
     LOG_INFO("TradingEngine stopped");
 }
 
-void TradingEngine::shutdown() {
-    // Prevent double shutdown
-    bool expected = false;
-    if (!shutdown_called_.compare_exchange_strong(expected, true)) {
-        return; // Already shut down
-    }
+// void TradingEngine::apply_strategy_subscriptions() {
+//     LOG_INFO("Applying strategy-driven market data subscriptions...");
 
-    stop();
+//     // Collect all subscription requests from all strategies
+//     // key: broker_id << 8 | sub.type
+//     std::unordered_map<uint16_t, std::vector<std::string>> subscription_map;
 
-    LOG_INFO("Shutting down TradingEngine");
+//     // Get all strategies from strategy manager
+//     for (const auto& strategy : strategy_manager_.get_all_strategies()) {
+//         auto subscriptions = strategy->get_subscriptions();
 
-    // Shutdown strategy manager
-    if (strategy_manager_) {
-        strategy_manager_->shutdown();
-    }
+//         for (const auto& sub : subscriptions) {
+//             // Add instruments to the subscription map (keyed by broker + type)
+//             auto& instruments = subscription_map[(static_cast<uint16_t>(sub.broker_id) << 8) | static_cast<uint16_t>(sub.type)];
+//             instruments.insert(instruments.end(), sub.instruments.begin(), sub.instruments.end());
 
-    // Shutdown all brokers
-    for (auto& [broker_id, broker] : brokers_) {
-        LOG_INFO("Shutting down broker: {}", broker->get_broker_name());
-        broker->shutdown();
-    }
+//             LOG_DEBUG("Strategy {} requests {} subscription for: {}",
+//                      strategy->name(),
+//                      sub.type == SubscriptionType::TRADE ? "TRADE" :
+//                      sub.type == SubscriptionType::QUOTE ? "QUOTE" : 
+//                      sub.type == SubscriptionType::LEVEL2 ? "LEVEL2" : "ORDERBOOK",
+//                      join_strings(sub.instruments, ", "));
+//         }
+//     }
 
-    brokers_.clear();
-    md_queue_.reset();
-    order_request_queue_.reset();
-    order_event_queue_.reset();
+//     // Apply subscriptions to each broker
+//     int total_subscriptions = 0;
+//     for (const auto& [key, instruments] : subscription_map) {
+//         auto broker_id = static_cast<BrokerId>(key >> 8);
+//         auto broker = get_broker(broker_id);
+//         if (!broker) {
+//             LOG_WARN("Broker ID {} not registered - skipping subscriptions", static_cast<int>(broker_id));
+//             continue;
+//         }
 
-    LOG_INFO("TradingEngine shutdown complete");
-}
+//         auto md_connector = broker->get_market_data_connector();
+//         if (!md_connector) {
+//             LOG_WARN("Broker {} has no market data connector", broker->get_broker_name());
+//             continue;
+//         }
 
-bool TradingEngine::register_broker(std::shared_ptr<IBroker> broker) {
-    if (!broker) {
-        LOG_ERROR("Cannot register null broker");
-        return false;
-    }
+//         // Remove duplicates
+//         std::vector<std::string> unique_instruments = instruments;
+//         std::sort(unique_instruments.begin(), unique_instruments.end());
+//         unique_instruments.erase(
+//             std::unique(unique_instruments.begin(), unique_instruments.end()),
+//             unique_instruments.end()
+//         );
 
-    BrokerId broker_id = broker->get_broker_id();
+//         // Subscribe
+//         auto sub_type = static_cast<SubscriptionType>(key & 0xFF);
+//         md_connector->subscribe(sub_type, unique_instruments);
 
-    if (brokers_.find(broker_id) != brokers_.end()) {
-        LOG_ERROR("Broker already registered: {}", broker->get_broker_name());
-        return false;
-    }
+//         std::string type_str;
+//         switch (sub_type) {
+//             case SubscriptionType::TRADE: type_str = "trades"; break;
+//             case SubscriptionType::QUOTE: type_str = "quotes"; break;
+//             case SubscriptionType::LEVEL2: {
+//                 type_str = "level2";
+//                 strategy_manager_->subscribe_book_update(unique_instruments);
+//                 break;
+//             }
+//             case SubscriptionType::ORDER_BOOK: {
+//                 type_str = "orderbook";
+//                 strategy_manager_->subscribe_book_update(unique_instruments);
+//                 break;
+//             }
+//         }
 
-    brokers_[broker_id] = broker;
-    LOG_INFO("Registered broker: {} (ID: {})", broker->get_broker_name(), static_cast<int>(broker_id));
+//         LOG_INFO("✓ Subscribed {} to {} for: {}",
+//                     broker->get_broker_name(), type_str,
+//                     join_strings(unique_instruments, ", "));
+//         total_subscriptions += unique_instruments.size();
+//     }
 
-    return true;
-}
-
-std::shared_ptr<IBroker> TradingEngine::get_broker(BrokerId broker_id) {
-    auto it = brokers_.find(broker_id);
-    if (it != brokers_.end()) {
-        return it->second;
-    }
-
-    return nullptr;
-}
-
-void TradingEngine::add_strategy(std::shared_ptr<IStrategy> strategy) {
-    if (!strategy) {
-        LOG_ERROR("Cannot add null strategy");
-        return;
-    }
-
-    // Set position & PnL tracking (if strategy is derived from StrategyBase)
-    // This uses dynamic_cast to safely check if the strategy supports these setters
-    auto strategy_base = std::dynamic_pointer_cast<StrategyBase>(strategy);
-    if (strategy_base) {
-        strategy_base->set_position_tracker(position_tracker_.get());
-        strategy_base->set_pnl_calculator(pnl_calculator_.get());
-        strategy_base->set_risk_manager(risk_manager_.get());
-        strategy_base->set_order_submission_queue(order_request_queue_);
-    }
-
-    // Initialize the strategy immediately
-    if (!strategy->initialize()) {
-        LOG_ERROR("Failed to initialize strategy: {}", strategy->name());
-        return;
-    }
-
-    // Add to strategy manager
-    strategy_manager_->add_strategy(strategy);
-
-    // If the engine is already running, start the strategy immediately (hot-loading)
-    // Otherwise, it will be started when engine.start() is called
-    if (strategy_manager_->is_running()) {
-        strategy->start();
-        LOG_INFO("Added and started strategy: {}", strategy->name());
-    } else {
-        LOG_INFO("Added strategy: {}", strategy->name());
-    }
-}
-
-PositionTracker& TradingEngine::get_position_tracker() {
-    return *position_tracker_;
-}
-
-PnLCalculator& TradingEngine::get_pnl_calculator() {
-    return *pnl_calculator_;
-}
-
-RiskManager& TradingEngine::get_risk_manager() {
-    return *risk_manager_;
-}
-
-WebServer& TradingEngine::get_web_server() {
-    return *web_server_;
-}
-
-void TradingEngine::apply_strategy_subscriptions() {
-    LOG_INFO("Applying strategy-driven market data subscriptions...");
-
-    // Collect all subscription requests from all strategies
-    // key: broker_id << 8 | sub.type
-    std::unordered_map<uint16_t, std::vector<std::string>> subscription_map;
-
-    // Get all strategies from strategy manager
-    for (const auto& strategy : strategy_manager_->get_all_strategies()) {
-        auto subscriptions = strategy->get_subscriptions();
-
-        for (const auto& sub : subscriptions) {
-            // Add instruments to the subscription map (keyed by broker + type)
-            auto& instruments = subscription_map[(static_cast<uint16_t>(sub.broker_id) << 8) | static_cast<uint16_t>(sub.type)];
-            instruments.insert(instruments.end(), sub.instruments.begin(), sub.instruments.end());
-
-            LOG_DEBUG("Strategy {} requests {} subscription for: {}",
-                     strategy->name(),
-                     sub.type == SubscriptionType::TRADE ? "TRADE" :
-                     sub.type == SubscriptionType::QUOTE ? "QUOTE" : 
-                     sub.type == SubscriptionType::LEVEL2 ? "LEVEL2" : "ORDERBOOK",
-                     join_strings(sub.instruments, ", "));
-        }
-    }
-
-    // Apply subscriptions to each broker
-    int total_subscriptions = 0;
-    for (const auto& [key, instruments] : subscription_map) {
-        auto broker_id = static_cast<BrokerId>(key >> 8);
-        auto broker = get_broker(broker_id);
-        if (!broker) {
-            LOG_WARN("Broker ID {} not registered - skipping subscriptions", static_cast<int>(broker_id));
-            continue;
-        }
-
-        auto md_connector = broker->get_market_data_connector();
-        if (!md_connector) {
-            LOG_WARN("Broker {} has no market data connector", broker->get_broker_name());
-            continue;
-        }
-
-        // Remove duplicates
-        std::vector<std::string> unique_instruments = instruments;
-        std::sort(unique_instruments.begin(), unique_instruments.end());
-        unique_instruments.erase(
-            std::unique(unique_instruments.begin(), unique_instruments.end()),
-            unique_instruments.end()
-        );
-
-        // Subscribe
-        auto sub_type = static_cast<SubscriptionType>(key & 0xFF);
-        md_connector->subscribe(sub_type, unique_instruments);
-
-        std::string type_str;
-        switch (sub_type) {
-            case SubscriptionType::TRADE: type_str = "trades"; break;
-            case SubscriptionType::QUOTE: type_str = "quotes"; break;
-            case SubscriptionType::LEVEL2: {
-                type_str = "level2";
-                strategy_manager_->subscribe_book_update(unique_instruments);
-                break;
-            }
-            case SubscriptionType::ORDER_BOOK: {
-                type_str = "orderbook";
-                strategy_manager_->subscribe_book_update(unique_instruments);
-                break;
-            }
-        }
-
-        LOG_INFO("✓ Subscribed {} to {} for: {}",
-                    broker->get_broker_name(), type_str,
-                    join_strings(unique_instruments, ", "));
-        total_subscriptions += unique_instruments.size();
-    }
-
-    if (total_subscriptions == 0) {
-        LOG_WARN("⚠ No market data subscriptions from strategies");
-    } else {
-        LOG_INFO("✓ Applied {} strategy-driven subscription(s)", total_subscriptions);
-    }
-}
+//     if (total_subscriptions == 0) {
+//         LOG_WARN("⚠ No market data subscriptions from strategies");
+//     } else {
+//         LOG_INFO("✓ Applied {} strategy-driven subscription(s)", total_subscriptions);
+//     }
+// }
 
 } // namespace slick::trader

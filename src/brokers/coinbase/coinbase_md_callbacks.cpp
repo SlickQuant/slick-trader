@@ -12,27 +12,32 @@
 #include <utility>
 
 namespace slick::trader {
-
-void CoinbaseMDCallbacks::set_md_queue(std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue) {
-    md_queue_ = std::move(md_queue);
+    
+CoinbaseMDCallbacks::CoinbaseMDCallbacks(
+    const json& config,
+    CoinbaseMDConnector &connector,
+    slick::stream_buffer_multiplexer &event_mux
+)
+    : shm_name_(config.value("shm_name", ""))
+    , event_buffer_(event_mux.add_producer(
+        event_mux.producer_count(),
+        config.value("queue_size", 1u << 26),
+        config.value("control_size", 1u << 24),
+        shm_name_.empty() ? nullptr : shm_name_.c_str()))
+    , connector_(connector)
+{
 }
 
 void CoinbaseMDCallbacks::onMarketDataConnected(WebSocketClient* client) {
-    LOG_INFO("WebSocket {:p} market data connected", static_cast<void*>(client));
-}
-
-void CoinbaseMDCallbacks::onUserDataConnected(WebSocketClient* /* client */) {
+    LOG_INFO("Coinbase MD WebSocket {:p} connected", static_cast<void*>(client));
 }
 
 void CoinbaseMDCallbacks::onMarketDataDisconnected(WebSocketClient* client) {
-    LOG_INFO("WebSocket {:p} market data disconnected", static_cast<void*>(client));
+    LOG_INFO("Coinbase MD WebSocket {:p} disconnected", static_cast<void*>(client));
     if (connector_.is_running()) {
-        LOG_WARN("WebSocket {:p} market data disconnected while running - attempting to reconnect", static_cast<void*>(client));
+        LOG_WARN("Coinbase MD WebSocket {:p} disconnected while running - reconnecting...", static_cast<void*>(client));
         connector_.connect();
     }
-}
-
-void CoinbaseMDCallbacks::onUserDataDisconnected(WebSocketClient* /* client */) {
 }
 
 void CoinbaseMDCallbacks::onLevel2Snapshot(WebSocketClient* /* client */, uint64_t seq_num, const coinbase::Level2UpdateBatch& snapshot) {
@@ -90,35 +95,16 @@ void CoinbaseMDCallbacks::onStatus(
 }
 
 void CoinbaseMDCallbacks::onMarketDataGap(WebSocketClient* client) {
-    LOG_WARN("WebSocket {:p} Market data gap detected - some messages were lost", static_cast<void*>(client));
+    LOG_WARN("Coinbase MD WebSocket {:p} gap detected - some messages were lost", static_cast<void*>(client));
 }
 
-void CoinbaseMDCallbacks::onUserDataGap(WebSocketClient* /* client */) {
-    assert(false && "User data error should not occur in market data connector");
-}
-
-void CoinbaseMDCallbacks::onUserDataSnapshot(
-    WebSocketClient* /* client */, uint64_t /* seq_num */, const std::vector<coinbase::Order>& /* orders */,
-    const std::vector<coinbase::PerpetualFuturePosition>& /* perpetual_future_positions */,
-    const std::vector<coinbase::ExpiringFuturePosition>& /* expiring_future_positions */) {
-    assert(false && "User data error should not occur in market data connector");
-}
-
-void CoinbaseMDCallbacks::onOrderUpdates(WebSocketClient* /* client */, uint64_t /* seq_num */, const std::vector<coinbase::Order>& /* orders */) {
-    assert(false && "User data error should not occur in market data connector");
-}
-
-void CoinbaseMDCallbacks::onMarketDataError(WebSocketClient* /* client */, std::string&& err) {
-    LOG_ERROR("Market data error: {}", std::move(err));
-}
-
-void CoinbaseMDCallbacks::onUserDataError(WebSocketClient* /* client */, std::string&& /* err */) {
-    assert(false && "User data error should not occur in market data connector");
+void CoinbaseMDCallbacks::onMarketDataError(WebSocketClient* client, std::string&& err) {
+    LOG_ERROR("Coinbase MD WebSocket {:p} error: ", static_cast<void*>(client), err);
 }
 
 void CoinbaseMDCallbacks::publish_trade(const coinbase::MarketTrade& trade) {
-    assert(md_queue_ && "Market data queue not set");
-    EventSerializer::publish<TradeEvent>(*md_queue_, [&trade](TradeEvent& event) {
+    assert(event_buffer_ && "Market data queue not set");
+    EventSerializer::publish<TradeEvent>(*event_buffer_, [&trade](TradeEvent& event) {
         event.type = EventType::TRADE;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();
@@ -133,8 +119,8 @@ void CoinbaseMDCallbacks::publish_trade(const coinbase::MarketTrade& trade) {
 }
 
 void CoinbaseMDCallbacks::publish_ticker(const coinbase::Ticker& ticker, uint64_t timestamp) {
-    assert(md_queue_ && "Market data queue not set");
-    EventSerializer::publish<QuoteEvent>(*md_queue_, [&ticker, timestamp](QuoteEvent& event) {
+    assert(event_buffer_ && "Market data queue not set");
+    EventSerializer::publish<QuoteEvent>(*event_buffer_, [&ticker, timestamp](QuoteEvent& event) {
         event.type = EventType::QUOTE;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();
@@ -149,12 +135,12 @@ void CoinbaseMDCallbacks::publish_ticker(const coinbase::Ticker& ticker, uint64_
 }
 
 void CoinbaseMDCallbacks::publish_level2_update(const coinbase::Level2UpdateBatch& batch, uint64_t seq_num, bool is_snapshot) {
-    assert(md_queue_ && "Market data queue not set");
+    assert(event_buffer_ && "Market data queue not set");
     if (is_snapshot) {
         LOG_DEBUG("Publish lv2 snapshot. count={}", batch.updates.size());
     }
     uint32_t size = static_cast<uint32_t>(sizeof(Level2UpdateEvent) + batch.updates.size() * sizeof(PriceLevel));
-    EventSerializer::publish<Level2UpdateEvent>(*md_queue_, size, [&batch, seq_num, is_snapshot](Level2UpdateEvent& event) {
+    EventSerializer::publish<Level2UpdateEvent>(*event_buffer_, size, [&batch, seq_num, is_snapshot](Level2UpdateEvent& event) {
         event.type = EventType::LEVEL2_UPDATE;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();
@@ -175,8 +161,8 @@ void CoinbaseMDCallbacks::publish_level2_update(const coinbase::Level2UpdateBatc
 }
 
 void CoinbaseMDCallbacks::publish_order_book(const coinbase::Level2UpdateBatch& batch, uint64_t seq_num, bool is_snapshot) {
-    assert(md_queue_ && "Market data queue not set");
-    EventSerializer::publish<OrderBookEvent>(*md_queue_, [&batch, seq_num, is_snapshot](OrderBookEvent& event) {
+    assert(event_buffer_ && "Market data queue not set");
+    EventSerializer::publish<OrderBookEvent>(*event_buffer_, [&batch, seq_num, is_snapshot](OrderBookEvent& event) {
         event.type = EventType::ORDER_BOOK;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();

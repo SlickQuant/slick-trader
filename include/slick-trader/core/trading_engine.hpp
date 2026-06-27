@@ -1,21 +1,24 @@
 #pragma once
 
+#include <slick-trader/core/position_tracker.hpp>
+#include <slick-trader/core/pnl_calculator.hpp>
+#include <slick-trader/core/risk_manager.hpp>
+#include <slick-trader/core/strategy_manager.hpp>
+#include <slick/stream_buffer_multiplexer.hpp>
 #include <slick-trader/brokers/ibroker.hpp>
 #include <slick-trader/strategy/istrategy.hpp>
-#include <slick/queue.h>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <atomic>
+#include <nlohmann/json.hpp>
 
 namespace slick::trader {
 
-// Forward declarations
-class StrategyManager;
-class PositionTracker;
-class PnLCalculator;
-class RiskManager;
 class WebServer;
+
+using json = nlohmann::json;
 
 class TradingEngine {
 public:
@@ -26,37 +29,11 @@ public:
 
     // Lifecycle
     bool initialize(const std::string& config_path);
+    
+    // Lifecycle
     void start();
-    void stop();
     void shutdown();
-
-    // Broker management
-    bool register_broker(std::shared_ptr<IBroker> broker);
-    std::shared_ptr<IBroker> get_broker(BrokerId broker_id);
-    const std::unordered_map<BrokerId, std::shared_ptr<IBroker>>& get_all_brokers() const { return brokers_; }
-
-    // Strategy management
-    void add_strategy(std::shared_ptr<IStrategy> strategy);
-
-    // Apply strategy subscriptions to brokers
-    void apply_strategy_subscriptions();
-
-    // Position & PnL access
-    PositionTracker& get_position_tracker();
-    PnLCalculator& get_pnl_calculator();
-    RiskManager& get_risk_manager();
-
-    // Web server access
-    WebServer& get_web_server();
-
-    // Queue access
-    std::shared_ptr<slick::SlickQueue<uint8_t>> get_md_queue() { return md_queue_; }
-    std::shared_ptr<slick::SlickQueue<uint8_t>> get_order_request_queue() { return order_request_queue_; }
-    std::shared_ptr<slick::SlickQueue<uint8_t>> get_order_event_queue() { return order_event_queue_; }
-
-    // Config access
-    const std::string& get_strategy_plugins_folder() const { return strategy_plugins_folder_; }
-
+    
     bool is_running() const { return running_.load(std::memory_order_relaxed); }
 
 private:
@@ -68,31 +45,25 @@ private:
     TradingEngine& operator=(const TradingEngine&) = delete;
     TradingEngine& operator=(TradingEngine&&) = delete;
 
-    std::atomic_bool running_;
-    std::atomic_bool shutdown_called_;
+    void publish_regiter_end(uint32_t num_producers);
+    bool wait_for_brokers_ready(std::chrono::seconds timeout = std::chrono::seconds(30));
 
-    // Configuration
-    std::string strategy_plugins_folder_;
-
-    // Brokers
-    std::unordered_map<BrokerId, std::shared_ptr<IBroker>> brokers_;
-
-    // Strategy manager
-    std::unique_ptr<StrategyManager> strategy_manager_;
-
-    // Position & PnL tracking
-    std::unique_ptr<PositionTracker> position_tracker_;
-    std::unique_ptr<PnLCalculator> pnl_calculator_;
-    std::unique_ptr<RiskManager> risk_manager_;
-
-    // Web server
-    std::unique_ptr<WebServer> web_server_;
+    std::atomic_bool running_{false};
 
     // Message queues
-    std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;
-    std::shared_ptr<slick::SlickQueue<uint8_t>> order_request_queue_;
-    std::shared_ptr<slick::SlickQueue<uint8_t>> order_event_queue_;
-    std::shared_ptr<slick::SlickQueue<uint8_t>> tob_queue_;
+    std::unique_ptr<slick::stream_buffer_multiplexer> event_mux_;
+    std::unique_ptr<slick::queue<uint8_t>> control_queue_;
+    std::unique_ptr<slick::queue<uint8_t>> md_request_queue_;
+    std::unique_ptr<slick::queue<uint8_t>> order_request_queue_;
+
+    std::vector<std::shared_ptr<IBroker>> brokers_;
+
+    PositionTracker position_tracker_;
+    PnLCalculator pnl_calculator_;
+    RiskManager risk_manager_;
+
+    std::unique_ptr<StrategyManager> strategy_manager_;
+    std::unique_ptr<WebServer> web_server_;
 };
 
 } // namespace slick::trader

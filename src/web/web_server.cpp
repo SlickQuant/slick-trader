@@ -2,33 +2,26 @@
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/risk_manager.hpp>
-#include <slick-trader/strategy/strategy_manager.hpp>
+#include <slick-trader/core/strategy_manager.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
-#include <nlohmann/json.hpp>
 #include <chrono>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
 #include <set>
 
-using json = nlohmann::json;
-
 namespace slick::trader {
 
-bool WebServer::initialize(const Config& config) {
-    config_ = config;
-    LOG_INFO("WebServer: Initialized on {}:{}", config_.host, config_.port);
-    return true;
-}
-
-bool WebServer::initialize(const Config& config, const json& full_config) {
-    config_ = config;
+bool WebServer::initialize(const json& config) {
+    config_.port = config.value("web_server_port", 8080);
+    config_.enable_cors = config.value("web_server_cors", true);
+    config_.static_files_path = config.value("web_server_static_path", "web/static");
 
     // Load ladder config if present
-    if (full_config.contains("ladder_config")) {
-        ladder_config_ = full_config["ladder_config"];
+    if (config.contains("ladder_config")) {
+        ladder_config_ = config["ladder_config"];
         LOG_INFO("WebServer: Loaded ladder config");
     } else {
         // Set defaults if not in config
@@ -45,7 +38,7 @@ bool WebServer::initialize(const Config& config, const json& full_config) {
 }
 
 void WebServer::start() {
-    if (running_.load(std::memory_order_relaxed)) {
+    if (running_.load(std::memory_order_relaxed)) [[unlikely]] {
         LOG_WARN("WebServer: Already running");
         return;
     }
@@ -53,6 +46,15 @@ void WebServer::start() {
     LOG_INFO("WebServer: Starting on port {}", config_.port);
     running_.store(true, std::memory_order_release);
     worker_thread_ = std::thread(&WebServer::run, this);
+
+    LOG_INFO("");
+    LOG_INFO("Available endpoints:");
+    LOG_INFO("  GET /api/health          - Health check");
+    LOG_INFO("  GET /api/positions       - All positions");
+    LOG_INFO("  GET /api/positions/:id   - Strategy positions");
+    LOG_INFO("  GET /api/pnl             - All PnL snapshots");
+    LOG_INFO("  GET /api/pnl/:id         - Strategy PnL");
+    LOG_INFO("  GET /api/strategies      - Strategy list");
 }
 
 void WebServer::stop() {
@@ -89,10 +91,7 @@ void WebServer::run() {
 
                 // Start polling market data and order events after listen succeeds
                 uWS::Loop::get()->defer([this]() {
-                    process_market_data_events();
-                });
-                uWS::Loop::get()->defer([this]() {
-                    process_order_events();
+                    process_events();
                 });
             } else {
                 LOG_ERROR("WebServer: Failed to listen on port {}", config_.port);
@@ -360,7 +359,8 @@ void WebServer::handle_get_strategies(uWS::HttpResponse<false>* res, uWS::HttpRe
             response.push_back({
                 {"name", strategy->name()},
                 {"id", strategy->name()},  // Use name as ID for now
-                {"status", "running"},      // TODO: Add proper status tracking
+                {"status", risk_manager_.is_halted(strategy->name()) ? "halted" : "running"},
+                {"halt_reason", risk_manager_.get_halt_reason(strategy->name())},
                 {"type", "plugin"},         // TODO: Add strategy type
                 {"instruments", instruments_array}
             });
@@ -1069,47 +1069,53 @@ void WebServer::handle_delete_all_orders(uWS::HttpResponse<false>* res, uWS::Htt
     }
 }
 
-void WebServer::process_market_data_events() {
+void WebServer::process_events() {
     if (!running_.load(std::memory_order_acquire)) {
         return;  // Stop polling if server is shutting down
     }
 
-    if (!md_queue_) {
-        // Re-schedule even if no queue yet
-        uWS::Loop::get()->defer([this]() { process_market_data_events(); });
-        return;
-    }
-
-    // Process up to 100 events per tick (avoid blocking WebSocket I/O)
-    int events_processed = 0;
     for (int i = 0; i < 100; ++i) {
-        auto [data, size] = md_queue_->read(ws_md_cursor_);
-        if (!data) break;  // No more data available
+        auto record = event_mux_.read(event_cursor_);
+        if (!record) {
+            // no event available
+            break;
+        }
 
-        const Event* event = reinterpret_cast<const Event*>(data);
+        const Event* event = reinterpret_cast<const Event*>(record.data);
+        switch(event->type) {
+            case EventType::LEVEL2_UPDATE: {
+                const auto* level2_event = reinterpret_cast<const Level2UpdateEvent*>(event);
+                broadcast_level2_update(*level2_event);
+                break;
+            }
+            case EventType::TOB:
+                broadcast_pnl_update();
+                break;
+            case EventType::ORDER_ACK: {
+                const auto* ack = reinterpret_cast<const OrderAckEvent*>(event);
+                handle_order_ack(*ack);
+                break;
+            }
+            case EventType::ORDER_FILL: {
+                const auto* fill = reinterpret_cast<const OrderFillEvent*>(event);
+                handle_order_fill(*fill);
+                break;
+            }
+            case EventType::ORDER_CANCEL: {
+                const auto* cancel = reinterpret_cast<const OrderCancelEvent*>(event);
+                handle_order_cancel(*cancel);
+                break;
+            }
+            case EventType::ORDER_REJECT: {
+                const auto* reject = reinterpret_cast<const OrderRejectEvent*>(event);
+                handle_order_reject(*reject);
+                break;
+            }
 
-        if (event->type == EventType::LEVEL2_UPDATE) {
-            const auto* level2_event = reinterpret_cast<const Level2UpdateEvent*>(data);
-            broadcast_level2_update(*level2_event);
-            events_processed++;
         }
     }
 
-    // if (events_processed > 5) {
-    //     LOG_DEBUG("WebServer: Processed {} level2 events", events_processed);
-    // }
-
-    // Drain top-of-book events published by StrategyManager
-    if (tob_queue_) {
-        for (int i = 0; i < 100; ++i) {
-            auto [tob_data, tob_size] = tob_queue_->read(ws_tob_cursor_);
-            if (!tob_data) break;
-            broadcast_pnl_update();
-        }
-    }
-
-    // Re-schedule for next tick (~10ms interval via uWS event loop)
-    uWS::Loop::get()->defer([this]() { process_market_data_events(); });
+    uWS::Loop::get()->defer([this]() { process_events(); });
 }
 
 void WebServer::broadcast_level2_update(const Level2UpdateEvent& event) {
@@ -1243,202 +1249,179 @@ void WebServer::handle_put_ladder_config(uWS::HttpResponse<false>* res, uWS::Htt
     }
 }
 
-void WebServer::process_order_events() {
-    if (!running_.load(std::memory_order_acquire)) {
-        return;
-    }
+void WebServer::handle_order_ack(const OrderAckEvent& ack) {
+    std::string cid(ack.client_order_id);
+    std::string oid(ack.order_id);
 
-    if (!order_event_queue_) {
-        uWS::Loop::get()->defer([this]() { process_order_events(); });
-        return;
-    }
-
-    int events_processed = 0;
-    for (int i = 0; i < 100; ++i) {
-        auto [data, size] = order_event_queue_->read(ws_order_cursor_);
-        if (!data) break;
-
-        const Event* event = reinterpret_cast<const Event*>(data);
-
-        if (event->type == EventType::ORDER_ACK) {
-            const auto* ack = reinterpret_cast<const OrderAckEvent*>(data);
-            std::string cid(ack->client_order_id);
-            std::string oid(ack->order_id);
-
-            // Update WebServer-side tracking.
-            // Only use ACKs with a valid client_order_id to avoid the empty-cid
-            // second ACK from the Coinbase WebSocket callback overwriting our map.
-            if (!cid.empty()) {
-                auto it = open_orders_.find(cid);
-                if (it != open_orders_.end()) {
-                    // Update existing entry — covers both initial new-order ACK and modify-ack
-                    if (!oid.empty()) {
-                        it->second.order_id = oid;
-                        oid_to_cid_[oid]    = cid;
-                    }
-                    it->second.status           = "ACKNOWLEDGED";
-                    it->second.last_update_time = ack->timestamp_ns;
-                    if (ack->price != NULL_PRICE && ack->price != 0) {
-                        it->second.price = from_price_t(ack->price);
-                    }
-                    if (ack->quantity != 0) {
-                        it->second.qty           = from_qty_t(ack->quantity);
-                        it->second.remaining_qty = from_qty_t(ack->quantity);
-                    }
-                } else if (!oid.empty()) {
-                    // Algo-submitted order: not yet in open_orders_ — create entry now.
-                    // We can derive strategy from client_order_id prefix (name_<timestamp>)
-                    std::string strategy_id;
-                    auto sep = cid.rfind('_');
-                    if (sep != std::string::npos) strategy_id = cid.substr(0, sep);
-
-                    TrackedOrder t;
-                    t.strategy_id      = strategy_id;
-                    t.client_order_id  = cid;
-                    t.order_id         = oid;
-                    t.instrument       = std::string(ack->instrument);
-                    t.side             = (ack->side == Side::BUY) ? "buy" : "sell";
-                    t.type             = static_cast<int>(ack->order_type);
-                    t.price            = (ack->price != NULL_PRICE) ? from_price_t(ack->price) : 0.0;
-                    t.qty              = from_qty_t(ack->quantity);
-                    t.remaining_qty    = from_qty_t(ack->quantity);
-                    t.status           = "ACKNOWLEDGED";
-                    t.created_time     = ack->timestamp_ns;
-                    t.last_update_time = ack->timestamp_ns;
-                    open_orders_[cid]  = std::move(t);
-                    oid_to_cid_[oid]   = cid;
-                }
+    // Update WebServer-side tracking.
+    // Only use ACKs with a valid client_order_id to avoid the empty-cid
+    // second ACK from the Coinbase WebSocket callback overwriting our map.
+    if (!cid.empty()) {
+        auto it = open_orders_.find(cid);
+        if (it != open_orders_.end()) {
+            // Update existing entry — covers both initial new-order ACK and modify-ack
+            if (!oid.empty()) {
+                it->second.order_id = oid;
+                oid_to_cid_[oid]    = cid;
             }
-
-            // Only broadcast ACKs with a valid client_order_id.
-            // The Coinbase WebSocket sends a second ACK (OPEN status) with empty client_order_id
-            // and price=0 — that's exchange noise and should not be forwarded to the UI.
-            if (!cid.empty()) {
-                json msg;
-                msg["type"]       = "order_update";
-                msg["event"]      = "ack";
-                msg["order_id"]   = oid;
-                msg["instrument"] = std::string(ack->instrument);
-                msg["side"]       = (ack->side == Side::BUY) ? "buy" : "sell";
-                msg["price"]      = from_price_t(ack->price);
-                msg["qty"]        = from_qty_t(ack->quantity);
-                msg["status"]     = std::string(to_string(ack->status));
-                broadcast_order_update(msg.dump());
-                events_processed++;
+            it->second.status           = "ACKNOWLEDGED";
+            it->second.last_update_time = ack.timestamp_ns;
+            if (ack.price != NULL_PRICE && ack.price != 0) {
+                it->second.price = from_price_t(ack.price);
             }
-        } else if (event->type == EventType::ORDER_FILL) {
-            const auto* fill = reinterpret_cast<const OrderFillEvent*>(data);
-            std::string oid(fill->order_id);
-
-            // Capture tracked order fields before potential erasure
-            std::string instrument, side, fill_status;
-            double price = 0.0, qty = 0.0;
-
-            auto cid_it = oid_to_cid_.find(oid);
-            if (cid_it != oid_to_cid_.end()) {
-                auto it = open_orders_.find(cid_it->second);
-                if (it != open_orders_.end()) {
-                    instrument = it->second.instrument;
-                    side       = it->second.side;
-                    price      = it->second.price;
-                    qty        = it->second.qty;
-
-                    double rem = from_qty_t(fill->remaining_quantity);
-                    it->second.remaining_qty    = rem;
-                    it->second.filled_qty       = it->second.qty - rem;
-                    it->second.last_update_time = fill->timestamp_ns;
-                    if (rem <= 0.0) {
-                        fill_status = "FILLED";
-                        open_orders_.erase(it);
-                        oid_to_cid_.erase(cid_it);
-                    } else {
-                        fill_status = "PARTIALLY_FILLED";
-                        it->second.status = fill_status;
-                    }
-                }
+            if (ack.quantity != 0) {
+                it->second.qty           = from_qty_t(ack.quantity);
+                it->second.remaining_qty = from_qty_t(ack.quantity);
             }
+        } else if (!oid.empty()) {
+            // Algo-submitted order: not yet in open_orders_ — create entry now.
+            // We can derive strategy from client_order_id prefix (name_<timestamp>)
+            std::string strategy_id;
+            auto sep = cid.rfind('_');
+            if (sep != std::string::npos) strategy_id = cid.substr(0, sep);
 
-            json msg;
-            msg["type"]          = "order_update";
-            msg["event"]         = "fill";
-            msg["order_id"]      = oid;
-            msg["instrument"]    = instrument;
-            msg["side"]          = side;
-            msg["price"]         = price;
-            msg["qty"]           = qty;
-            msg["status"]        = fill_status;
-            msg["fill_price"]    = from_price_t(fill->fill_price);
-            msg["fill_qty"]      = from_qty_t(fill->fill_quantity);
-            msg["remaining_qty"] = from_qty_t(fill->remaining_quantity);
-            broadcast_order_update(msg.dump());
-            events_processed++;
-        } else if (event->type == EventType::ORDER_CANCEL) {
-            const auto* cancel = reinterpret_cast<const OrderCancelEvent*>(data);
-            std::string oid(cancel->order_id);
-
-            // Capture tracked order fields before erasure
-            std::string instrument, side;
-            double price = 0.0, qty = 0.0;
-
-            auto cid_it = oid_to_cid_.find(oid);
-            if (cid_it != oid_to_cid_.end()) {
-                auto it = open_orders_.find(cid_it->second);
-                if (it != open_orders_.end()) {
-                    instrument = it->second.instrument;
-                    side       = it->second.side;
-                    price      = it->second.price;
-                    qty        = it->second.qty;
-                    open_orders_.erase(it);
-                }
-                oid_to_cid_.erase(cid_it);
-            }
-
-            json msg;
-            msg["type"]       = "order_update";
-            msg["event"]      = "cancel";
-            msg["order_id"]   = oid;
-            msg["instrument"] = instrument;
-            msg["side"]       = side;
-            msg["price"]      = price;
-            msg["qty"]        = qty;
-            broadcast_order_update(msg.dump());
-            events_processed++;
-        } else if (event->type == EventType::ORDER_REJECT) {
-            const auto* reject = reinterpret_cast<const OrderRejectEvent*>(data);
-            std::string cid(reject->client_order_id);
-
-            // Capture tracked order fields before erasure
-            std::string instrument, side, order_id;
-            double price = 0.0, qty = 0.0;
-
-            if (!cid.empty()) {
-                auto it = open_orders_.find(cid);
-                if (it != open_orders_.end()) {
-                    instrument = it->second.instrument;
-                    side       = it->second.side;
-                    price      = it->second.price;
-                    qty        = it->second.qty;
-                    order_id   = it->second.order_id;
-                    if (!order_id.empty()) oid_to_cid_.erase(order_id);
-                    open_orders_.erase(it);
-                }
-            }
-
-            json msg;
-            msg["type"]       = "order_update";
-            msg["event"]      = "reject";
-            msg["order_id"]   = order_id;
-            msg["instrument"] = instrument;
-            msg["side"]       = side;
-            msg["price"]      = price;
-            msg["qty"]        = qty;
-            msg["reason"]     = std::string(reject->reason);
-            broadcast_order_update(msg.dump());
-            events_processed++;
+            TrackedOrder t;
+            t.strategy_id      = strategy_id;
+            t.client_order_id  = cid;
+            t.order_id         = oid;
+            t.instrument       = std::string(ack.instrument);
+            t.side             = (ack.side == Side::BUY) ? "buy" : "sell";
+            t.type             = static_cast<int>(ack.order_type);
+            t.price            = (ack.price != NULL_PRICE) ? from_price_t(ack.price) : 0.0;
+            t.qty              = from_qty_t(ack.quantity);
+            t.remaining_qty    = from_qty_t(ack.quantity);
+            t.status           = "ACKNOWLEDGED";
+            t.created_time     = ack.timestamp_ns;
+            t.last_update_time = ack.timestamp_ns;
+            open_orders_[cid]  = std::move(t);
+            oid_to_cid_[oid]   = cid;
         }
     }
 
-    uWS::Loop::get()->defer([this]() { process_order_events(); });
+    // Only broadcast ACKs with a valid client_order_id.
+    // The Coinbase WebSocket sends a second ACK (OPEN status) with empty client_order_id
+    // and price=0 — that's exchange noise and should not be forwarded to the UI.
+    if (!cid.empty()) {
+        json msg;
+        msg["type"]       = "order_update";
+        msg["event"]      = "ack";
+        msg["order_id"]   = oid;
+        msg["instrument"] = std::string(ack.instrument);
+        msg["side"]       = (ack.side == Side::BUY) ? "buy" : "sell";
+        msg["price"]      = from_price_t(ack.price);
+        msg["qty"]        = from_qty_t(ack.quantity);
+        msg["status"]     = std::string(to_string(ack.status));
+        broadcast_order_update(msg.dump());
+    }
+}
+
+void WebServer::handle_order_fill(const OrderFillEvent& fill) {
+    std::string oid(fill.order_id);
+
+    // Capture tracked order fields before potential erasure
+    std::string instrument, side, fill_status;
+    double price = 0.0, qty = 0.0;
+
+    auto cid_it = oid_to_cid_.find(oid);
+    if (cid_it != oid_to_cid_.end()) {
+        auto it = open_orders_.find(cid_it->second);
+        if (it != open_orders_.end()) {
+            instrument = it->second.instrument;
+            side       = it->second.side;
+            price      = it->second.price;
+            qty        = it->second.qty;
+
+            double rem = from_qty_t(fill.remaining_quantity);
+            it->second.remaining_qty    = rem;
+            it->second.filled_qty       = it->second.qty - rem;
+            it->second.last_update_time = fill.timestamp_ns;
+            if (rem <= 0.0) {
+                fill_status = "FILLED";
+                open_orders_.erase(it);
+                oid_to_cid_.erase(cid_it);
+            } else {
+                fill_status = "PARTIALLY_FILLED";
+                it->second.status = fill_status;
+            }
+        }
+    }
+
+    json msg;
+    msg["type"]          = "order_update";
+    msg["event"]         = "fill";
+    msg["order_id"]      = oid;
+    msg["instrument"]    = instrument;
+    msg["side"]          = side;
+    msg["price"]         = price;
+    msg["qty"]           = qty;
+    msg["status"]        = fill_status;
+    msg["fill_price"]    = from_price_t(fill.fill_price);
+    msg["fill_qty"]      = from_qty_t(fill.fill_quantity);
+    msg["remaining_qty"] = from_qty_t(fill.remaining_quantity);
+    broadcast_order_update(msg.dump());
+}
+
+void WebServer::handle_order_cancel(const OrderCancelEvent& cancel) {
+    std::string oid(cancel.order_id);
+
+    // Capture tracked order fields before erasure
+    std::string instrument, side;
+    double price = 0.0, qty = 0.0;
+
+    auto cid_it = oid_to_cid_.find(oid);
+    if (cid_it != oid_to_cid_.end()) {
+        auto it = open_orders_.find(cid_it->second);
+        if (it != open_orders_.end()) {
+            instrument = it->second.instrument;
+            side       = it->second.side;
+            price      = it->second.price;
+            qty        = it->second.qty;
+            open_orders_.erase(it);
+        }
+        oid_to_cid_.erase(cid_it);
+    }
+
+    json msg;
+    msg["type"]       = "order_update";
+    msg["event"]      = "cancel";
+    msg["order_id"]   = oid;
+    msg["instrument"] = instrument;
+    msg["side"]       = side;
+    msg["price"]      = price;
+    msg["qty"]        = qty;
+    broadcast_order_update(msg.dump());
+}
+
+void WebServer::handle_order_reject(const OrderRejectEvent& reject) {
+    std::string cid(reject.client_order_id);
+
+    // Capture tracked order fields before erasure
+    std::string instrument, side, order_id;
+    double price = 0.0, qty = 0.0;
+
+    if (!cid.empty()) {
+        auto it = open_orders_.find(cid);
+        if (it != open_orders_.end()) {
+            instrument = it->second.instrument;
+            side       = it->second.side;
+            price      = it->second.price;
+            qty        = it->second.qty;
+            order_id   = it->second.order_id;
+            if (!order_id.empty()) oid_to_cid_.erase(order_id);
+            open_orders_.erase(it);
+        }
+    }
+
+    json msg;
+    msg["type"]       = "order_update";
+    msg["event"]      = "reject";
+    msg["order_id"]   = order_id;
+    msg["instrument"] = instrument;
+    msg["side"]       = side;
+    msg["price"]      = price;
+    msg["qty"]        = qty;
+    msg["reason"]     = std::string(reject.reason);
+    broadcast_order_update(msg.dump());
 }
 
 void WebServer::broadcast_order_update(const std::string& message) {

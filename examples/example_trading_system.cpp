@@ -14,7 +14,7 @@
 #include <slick/logger.hpp>
 #include <slick-trader/core/trading_engine.hpp>
 #include <slick-trader/web/web_server.hpp>
-#include <slick-trader/strategy/strategy_loader.hpp>
+#include <slick-trader/core/strategy_loader.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_broker.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_order_connector.hpp>
@@ -22,7 +22,7 @@
 // Include example strategies (compiled directly into executable)
 #include "../strategies/simple_logger_strategy.hpp"
 #include "../strategies/simple_market_maker.hpp"
-#include <coinbase/logging.hpp>
+#include <slick/net/logging.hpp>
 
 #include <iostream>
 #include <csignal>
@@ -54,9 +54,14 @@ int main(int argc, char* argv[]) {
     logger.set_level(slick::logger::LogLevel::L_DEBUG);
     logger.init();
 
-    coinbase::logging::set_log_handler([&logger](coinbase::logging::LogLevel level, const char* format_text, std::format_args args) {
-        logger.log(static_cast<slick::logger::LogLevel>(level), format_text, std::move(args));
-    });
+    slick::net::set_log_handler(
+        [&logger](slick::net::LogLevel level, const char* format_text, std::format_args args) {
+            logger.log(static_cast<slick::logger::LogLevel>(level), format_text, std::move(args));
+        },
+        [&logger]() {
+            return static_cast<slick::net::LogLevel>(logger.get_level());
+        }
+    );
 
     LOG_INFO("=== SlickTrader Example System v0.1.0 ===");
 
@@ -76,39 +81,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Create and configure Coinbase broker
-    LOG_INFO("Setting up Coinbase broker...");
-
-    auto coinbase_broker = std::make_shared<CoinbaseBroker>();
-
-    // Create MD connector
-    auto md_connector = static_pointer_cast<CoinbaseMDConnector>(coinbase_broker->get_market_data_connector());
-    md_connector->set_websocket_url("wss://advanced-trade-ws.coinbase.com");
-
-    // Create order connector
-    auto order_connector = static_pointer_cast<CoinbaseOrderConnector>(coinbase_broker->get_order_connector());
-    order_connector->set_rest_url("https://api.coinbase.com");
-    order_connector->set_websocket_url("wss://advanced-trade-ws-user.coinbase.com");
-
-    // Get API credentials from environment
-    const char* api_key = std::getenv("COINBASE_API_KEY");
-    const char* api_secret = std::getenv("COINBASE_API_SECRET");
-
-    if (api_key && api_secret) {
-        order_connector->set_api_key(api_key);
-        order_connector->set_api_secret(api_secret);
-        LOG_INFO("Configured Coinbase API credentials");
-    } else {
-        LOG_WARN("COINBASE_API_KEY or COINBASE_API_SECRET not set - order submission will not work");
-    }
-
-    // Register broker with engine
-    if (!engine.register_broker(coinbase_broker)) {
-        LOG_ERROR("Failed to register Coinbase broker");
-        return 1;
-    }
-
-    // Add strategies
     LOG_INFO("Registering strategies...");
 
     // Strategy 1: Simple logger (logs all market data and order events)

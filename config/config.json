@@ -1,0 +1,63 @@
+{
+  "log_file_path": "logs/slick_trader.log",
+  "log_level": 1,
+  "event_queue_size": 16777216,
+  "order_request_queue_size": 1048576,
+  "md_request_queue_size": 32768,
+  "brokers": [
+    {
+      "name": "coinbase",
+      "enabled": true,
+      "market_data": {
+        "enabled": true,
+        "//websocket_url": "wss://advanced-trade-ws.coinbase.com",
+        "websocket_url": "ws://localhost:5000"
+      },
+      "order": {
+        "enabled": true,
+        "rest_url": "http://localhost:4000",
+        "//websocket_url": "wss://advanced-trade-ws-user.coinbase.com",
+        "websocket_url": "ws://localhost:4001"
+      }
+    },
+    {
+      "name": "hyperliquid",
+      "enabled": false,
+      "market_data": {
+        "enabled": true,
+        "websocket_url": "https://api.hyperliquid-testnet.xyz",
+        "subscriptions": [
+          {"type": "trade",     "instruments": ["ETH"]},
+          {"type": "quote",     "instruments": ["ETH"]},
+          {"type": "orderbook", "instruments": ["ETH"], "depth": 20}
+        ]
+      },
+      "order": {
+        "enabled": true,
+        "rest_url": "https://api.hyperliquid-testnet.xyz"
+      }
+    }
+  ],
+  "strategies": {
+    "strategy_plugins_folder": "build/strategies/Debug",
+    "strategy_configs_folder": "config"
+  },
+  "web_service": {
+    "enabled": true,
+    "web_server_cors": true,
+    "web_server_port": 3000,
+    "web_server_static_path": "web/static",
+    "ladder_config": {
+      "default_qty": 0.01,
+      "default_strategy_id": "SimpleStrategyPlugin",
+      "per_instrument": {
+        "BTC-USD": {
+          "default_qty": 0.001
+        },
+        "ETH-USD": {
+          "default_qty": 0.01
+        }
+      }
+    }
+  }
+}
