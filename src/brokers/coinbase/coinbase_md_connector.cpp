@@ -1,8 +1,12 @@
 #include <slick/logger.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
-#include <slick-trader/brokers/coinbase/coinbase_md_callbacks.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/register_event.hpp>
+#include <slick-trader/events/event_serializer.hpp>
+#include <slick-trader/events/order_book_event.hpp>
+#include <slick-trader/events/level2_update_event.hpp>
+#include <slick-trader/events/quote_event.hpp>
+#include <slick-trader/events/trade_event.hpp>
 #include <coinbase/websocket.hpp>
 #include <algorithm>
 #include <chrono>
@@ -19,15 +23,20 @@ CoinbaseMDConnector::CoinbaseMDConnector(
     slick::queue<uint8_t>& request_queue
 )
     : enabled_(config.empty() ? false : config.value("enabled", true))
+    , shm_name_(config.value("shm_name", ""))
+    , event_buffer_(mux.add_producer(
+        mux.producer_count(),
+        config.value("queue_size", 1u << 26),
+        config.value("control_size", 1u << 24),
+        shm_name_.empty() ? nullptr : shm_name_.c_str()))
     , control_queue_(control_queue)
     , request_queue_(request_queue)
     , request_cursor_(request_queue.initial_reading_index())
     , ws_url_(config.value("websocket_url", "wss://advanced-trade-ws.coinbase.com"))
     , orderbook_depth_(10) {
     if (enabled_) {
-        callbacks_ = std::make_unique<CoinbaseMDCallbacks>(config, *this, mux);
         ws_client_ = std::make_unique<coinbase::WebSocketClient>(
-            callbacks_.get(),
+            this,
             ws_url_,
             "",
             nullptr,
@@ -49,8 +58,8 @@ void CoinbaseMDConnector::register_md_connector() {
         EventSerializer::publish<RegisterEvent>(control_queue_, [=](RegisterEvent& event) {
             event.broker_id = BrokerId::COINBASE;
             event.component_type = ComponentType::MARKET_DATA;
-            event.producer_id = callbacks_->producer_id();
-            std::memcpy(event.shm_name, callbacks_->shm_name().data(), sizeof(event.shm_name));
+            event.producer_id = event_buffer_->producer_id();
+            std::memcpy(event.shm_name, shm_name_.c_str(), sizeof(event.shm_name));
         });
     }
 }
@@ -159,7 +168,6 @@ void CoinbaseMDConnector::start() {
         return;
     }
     running_.store(true, std::memory_order_release);
-    connect();
     worker_thread_ = std::thread(&CoinbaseMDConnector::run, this);
 }
 
@@ -183,6 +191,16 @@ void CoinbaseMDConnector::run() {
 }
 
 void CoinbaseMDConnector::process_md_requests() {
+    if (reconnecting_.load(std::memory_order_relaxed)) {
+        // resubscribe
+        if (ws_client_) [[likely]] {
+            ws_client_->subscribe(trade_instruments_, {coinbase::WebSocketChannel::MARKET_TRADES});
+            ws_client_->subscribe(quote_instruments_, {coinbase::WebSocketChannel::TICKER});
+            ws_client_->subscribe(orderbook_instruments_, {coinbase::WebSocketChannel::LEVEL2});
+        }
+        reconnecting_.store(false, std::memory_order_release);
+    }
+
     auto [data, size] = request_queue_.read(request_cursor_);
 
     if (!data) {
@@ -212,6 +230,169 @@ void CoinbaseMDConnector::process_md_requests() {
             LOG_ERROR("Coinbase MD: Unknown event type: {}", static_cast<int>(event->type));
             break;
     }
+}
+
+void CoinbaseMDConnector::onMarketDataConnected(WebSocketClient* client) {
+    LOG_INFO("Coinbase MD WebSocket {:p} connected", static_cast<void*>(client));
+}
+
+void CoinbaseMDConnector::onMarketDataDisconnected(WebSocketClient* client) {
+    LOG_INFO("Coinbase MD WebSocket {:p} disconnected", static_cast<void*>(client));
+    if (is_running()) {
+        LOG_WARN("Coinbase MD WebSocket {:p} disconnected while running - reconnecting...", static_cast<void*>(client));
+        reconnecting_.store(true, std::memory_order_release);
+    }
+}
+
+void CoinbaseMDConnector::onLevel2Snapshot(WebSocketClient* /* client */, uint64_t seq_num, const coinbase::Level2UpdateBatch& snapshot) {
+    publish_level2_update(snapshot, seq_num, true);
+}
+
+void CoinbaseMDConnector::onLevel2Updates(WebSocketClient* /* client */, uint64_t seq_num, const coinbase::Level2UpdateBatch& updates) {
+    publish_level2_update(updates, seq_num, false);
+}
+
+void CoinbaseMDConnector::onMarketTradesSnapshot(WebSocketClient* /* client */, uint64_t /* seq_num */, const std::vector<coinbase::MarketTrade>& snapshots) {
+    for (const auto& trade : snapshots) {
+        publish_trade(trade);
+    }
+}
+
+void CoinbaseMDConnector::onMarketTrades(WebSocketClient* /* client */, uint64_t /* seq_num */, const std::vector<coinbase::MarketTrade>& trades) {
+    for (const auto& trade : trades) {
+        publish_trade(trade);
+    }
+}
+
+void CoinbaseMDConnector::onTickerSnapshot(
+    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t timestamp, const std::vector<coinbase::Ticker>& tickers) {
+    for (const auto& ticker : tickers) {
+        publish_ticker(ticker, timestamp);
+    }
+}
+
+void CoinbaseMDConnector::onTickers(
+    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t timestamp, const std::vector<coinbase::Ticker>& tickers) {
+    for (const auto& ticker : tickers) {
+        publish_ticker(ticker, timestamp);
+    }
+}
+
+void CoinbaseMDConnector::onCandlesSnapshot(
+    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t /* timestamp */, const std::vector<coinbase::Candle>& /* candles */) {
+    // TODO: Implement candle handling
+}
+
+void CoinbaseMDConnector::onCandles(
+    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t /* timestamp */, const std::vector<coinbase::Candle>& /* candles */) {
+    // TODO: Implement candle handling
+}
+
+void CoinbaseMDConnector::onStatusSnapshot(
+    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t /* timestamp */, const std::vector<coinbase::Status>& /* status */) {
+    // TODO: Implement status handling
+}
+
+void CoinbaseMDConnector::onStatus(
+    WebSocketClient* /* client */, uint64_t /* seq_num */, uint64_t /* timestamp */, const std::vector<coinbase::Status>& /* status */) {
+    // TODO: Implement status handling
+}
+
+void CoinbaseMDConnector::onMarketDataGap(WebSocketClient* client) {
+    LOG_WARN("Coinbase MD WebSocket {:p} gap detected - some messages were lost", static_cast<void*>(client));
+}
+
+void CoinbaseMDConnector::onMarketDataError(WebSocketClient* client, std::string&& err) {
+    LOG_ERROR("Coinbase MD WebSocket {:p} error: {}", static_cast<void*>(client), std::move(err));
+}
+
+void CoinbaseMDConnector::publish_trade(const coinbase::MarketTrade& trade) {
+    assert(event_buffer_ && "Market data queue not set");
+    EventSerializer::publish<TradeEvent>(*event_buffer_, [&trade](TradeEvent& event) {
+        event.type = EventType::TRADE;
+        event.broker_id = BrokerId::COINBASE;
+        event.timestamp_ns = get_timestamp_ns();
+        event.event_time_ns = trade.time;
+        event.set_instrument(trade.product_id);
+
+        event.price = to_price_t(trade.price);
+        event.quantity = to_qty_t(trade.size);
+        event.is_buyer_maker = (trade.side == coinbase::Side::SELL);
+        event.trade_id = std::stoull(trade.trade_id);
+    });
+}
+
+void CoinbaseMDConnector::publish_ticker(const coinbase::Ticker& ticker, uint64_t timestamp) {
+    assert(event_buffer_ && "Market data queue not set");
+    EventSerializer::publish<QuoteEvent>(*event_buffer_, [&ticker, timestamp](QuoteEvent& event) {
+        event.type = EventType::QUOTE;
+        event.broker_id = BrokerId::COINBASE;
+        event.timestamp_ns = get_timestamp_ns();
+        event.event_time_ns = timestamp;
+        event.set_instrument(ticker.product_id);
+
+        event.bid_price = to_price_t(ticker.best_bid);
+        event.bid_quantity = to_qty_t(ticker.best_bid_quantity);
+        event.ask_price = to_price_t(ticker.best_ask);
+        event.ask_quantity = to_qty_t(ticker.best_ask_quantity);
+    });
+}
+
+void CoinbaseMDConnector::publish_level2_update(const coinbase::Level2UpdateBatch& batch, uint64_t seq_num, bool is_snapshot) {
+    assert(event_buffer_ && "Market data queue not set");
+    if (is_snapshot) {
+        LOG_DEBUG("Publish lv2 snapshot. count={}", batch.updates.size());
+    }
+    uint32_t size = static_cast<uint32_t>(sizeof(Level2UpdateEvent) + batch.updates.size() * sizeof(PriceLevel));
+    EventSerializer::publish<Level2UpdateEvent>(*event_buffer_, size, [&batch, seq_num, is_snapshot](Level2UpdateEvent& event) {
+        event.type = EventType::LEVEL2_UPDATE;
+        event.broker_id = BrokerId::COINBASE;
+        event.timestamp_ns = get_timestamp_ns();
+        event.set_instrument(batch.product_id);
+        event.is_snapshot = is_snapshot;
+        event.event_time_ns = batch.updates.empty() ?  get_timestamp_ns() : batch.updates[0].event_time;
+        event.sequence_num = seq_num;
+        event.num_levels = static_cast<uint32_t>(batch.updates.size());
+
+        size_t level_count = 0;
+        for (const auto& update : batch.updates) {
+            event.levels[level_count].price = to_price_t(update.price_level);
+            event.levels[level_count].quantity = to_qty_t(update.new_quantity);
+            event.levels[level_count].side = static_cast<Side>(update.side);
+            ++level_count;
+        }
+    });
+}
+
+void CoinbaseMDConnector::publish_order_book(const coinbase::Level2UpdateBatch& batch, uint64_t seq_num, bool is_snapshot) {
+    assert(event_buffer_ && "Market data queue not set");
+    EventSerializer::publish<OrderBookEvent>(*event_buffer_, [&batch, seq_num, is_snapshot](OrderBookEvent& event) {
+        event.type = EventType::ORDER_BOOK;
+        event.broker_id = BrokerId::COINBASE;
+        event.timestamp_ns = get_timestamp_ns();
+        event.set_instrument(batch.product_id);
+        event.is_snapshot = is_snapshot;
+
+        size_t bid_count = 0;
+        size_t ask_count = 0;
+        for (const auto& update : batch.updates) {
+            event.event_time_ns = update.event_time;
+            event.sequence_num = seq_num;
+
+            if (update.side == coinbase::Side::BUY && bid_count < MAX_ORDER_BOOK_LEVELS) {
+                event.bids[bid_count].price = to_price_t(update.price_level);
+                event.bids[bid_count].quantity = to_qty_t(update.new_quantity);
+                ++bid_count;
+            } else if (update.side == coinbase::Side::SELL && ask_count < MAX_ORDER_BOOK_LEVELS) {
+                event.asks[ask_count].price = to_price_t(update.price_level);
+                event.asks[ask_count].quantity = to_qty_t(update.new_quantity);
+                ++ask_count;
+            }
+        }
+
+        event.num_bids = static_cast<uint16_t>(bid_count);
+        event.num_asks = static_cast<uint16_t>(ask_count);
+    });
 }
 
 } // namespace slick::trader

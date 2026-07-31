@@ -82,4 +82,12 @@ inline const char* to_string(BrokerId bid) {
     }
 }
 
+inline BrokerId to_broker_id(const std::string& broker) {
+    if (broker == "COINBASE")           return BrokerId::COINBASE;
+    else if (broker == "ALPACA")        return BrokerId::ALPACA;
+    else if (broker == "HYPERLIQUID")   return BrokerId::HYPERLIQUID;
+    else if (broker == "SIMULATED")     return BrokerId::SIMULATED;
+    else                                return BrokerId::UNKNOWN;
+}
+
 } // namespace slick::trader

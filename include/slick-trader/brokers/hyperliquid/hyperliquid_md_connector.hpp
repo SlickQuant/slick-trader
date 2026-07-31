@@ -41,10 +41,9 @@ public:
     void stop() override;
     bool is_running() const override { return running_.load(std::memory_order_relaxed); }
 
-    void set_api_url(const std::string& url) { api_url_ = url; }
-
 private:
     void run();
+    void process_md_requests();
     void subscribe_all();
     void on_trades(const nlohmann::json& msg);
     void on_bbo(const nlohmann::json& msg);
@@ -55,6 +54,7 @@ private:
     std::thread worker_thread_;
 
     bool enabled_{true};
+    std::string shm_name_;
 
     std::unique_ptr<hyperliquid::Info> info_;
 
@@ -72,6 +72,8 @@ private:
 
     // subscription_ids returned by info_->subscribe(), for cleanup on reconnect
     std::vector<std::pair<std::string, int>> sub_ids_;  // channel_json_str → id
+
+    std::unordered_map<std::string, std::string> coin_to_name_;
 };
 
 } // namespace slick::trader

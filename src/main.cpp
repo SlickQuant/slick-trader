@@ -3,7 +3,7 @@
 // This is the main executable for the SlickTrader algorithmic trading framework.
 // It demonstrates the complete system including:
 // - TradingEngine initialization and lifecycle management
-// - Multi-broker support (Coinbase)
+// - Multi-broker support
 // - Strategy registration and execution
 // - Position tracking and PnL calculation
 // - Risk management
@@ -50,13 +50,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    engine.start();
 
     // Register signal handlers after libraries have initialized
     // (Some libraries may override signal handlers during initialization)
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
-
-    engine.start();
 
     // ========================================================================
     // System Ready

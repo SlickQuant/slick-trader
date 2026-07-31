@@ -133,9 +133,7 @@ protected:
 
         // Broker
         broker_str_ = get_parameter<std::string>("broker", "SIMULATED");
-        if (broker_str_ == "COINBASE")      broker_id_ = BrokerId::COINBASE;
-        else if (broker_str_ == "ALPACA")   broker_id_ = BrokerId::ALPACA;
-        else                                broker_id_ = BrokerId::SIMULATED;
+        broker_id_ = to_broker_id(broker_str_);
 
         // Fair value mode
         fair_value_mode_str_ = get_parameter<std::string>("fair_value_mode", "WEIGHTED_MID");

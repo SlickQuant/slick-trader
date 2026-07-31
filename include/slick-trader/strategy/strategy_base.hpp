@@ -60,12 +60,6 @@ public:
             LOG_INFO("Strategy {}: Starting", name_);
             running_.store(true, std::memory_order_release);
             on_start();
-
-            // subscribe MD update
-            auto subscriptions = get_subscriptions();
-            for (const auto &subscription : subscriptions) {
-                subscribe(subscription);
-            }
         }
     }
 
@@ -73,8 +67,6 @@ public:
         if(running_.load(std::memory_order_relaxed)) {
             LOG_INFO("Strategy {}: Stopping", name_);
             on_stop();
-
-
             running_.store(false, std::memory_order_release);
         }
     }
@@ -223,38 +215,6 @@ protected:
 
     virtual std::string generate_order_id() {
         return name_ + "_" + std::to_string(get_timestamp_ns());
-    }
-
-    void subscribe(const SubscriptionRequest& sub) {
-        uint32_t size = sizeof(MDSubscription) + sub.instruments.size() * sizeof(char [32]);
-        EventSerializer::publish<MDSubscription>(*md_request_queue_, size, [&sub](MDSubscription &event) {
-            event.type = EventType::SUBSCRIBE;
-            event.broker_id = sub.broker_id;
-            event.subscription_type = sub.type;
-            event.depth = sub.depth;
-            event.num_instruments = sub.instruments.size();
-            size_t i = 0;
-            for (const auto& inst : sub.instruments) {
-                assert(inst.size() < sizeof(event.instruments[i]));
-                std::memcpy(event.instruments[i], inst.c_str(), sizeof(event.instruments[i]));
-            }
-        });
-    }
-
-    void unsubscribe(const SubscriptionRequest& sub) {
-        uint32_t size = sizeof(MDSubscription) + sub.instruments.size() * sizeof(char [32]);
-        EventSerializer::publish<MDSubscription>(*md_request_queue_, size, [&sub](MDSubscription &event) {
-            event.type = EventType::UNSUBSCRIBE;
-            event.broker_id = sub.broker_id;
-            event.subscription_type = sub.type;
-            event.depth = sub.depth;
-            event.num_instruments = sub.instruments.size();
-            size_t i = 0;
-            for (const auto& inst : sub.instruments) {
-                assert(inst.size() < sizeof(event.instruments[i]));
-                std::memcpy(event.instruments[i], inst.c_str(), sizeof(event.instruments[i]));
-            }
-        });
     }
 
     // Helper methods for order submission

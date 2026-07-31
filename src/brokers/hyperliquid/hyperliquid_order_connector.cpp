@@ -34,7 +34,7 @@ HyperliquidOrderConnector::HyperliquidOrderConnector(
     slick::queue<uint8_t>& request_queue
 )
     : enabled_(config.empty() ? false : config.value("enabled", true))
-    ,shm_name_(config.value("callback_shm_name", ""))
+    , shm_name_(config.value("callback_shm_name", ""))
     , event_buffer_(mux.add_producer(
         mux.producer_count(),
         config.value("queue_size", 1u << 26),
@@ -42,7 +42,12 @@ HyperliquidOrderConnector::HyperliquidOrderConnector(
         shm_name_.empty() ? nullptr : shm_name_.c_str()))
     , control_queue_(control_queue)
     , request_queue_(request_queue)
+    , request_cursor_(request_queue.initial_reading_index())
+    , api_url_(config.value("api_url", hyperliquid::MAINNET_API_URL))
 {
+    if (!enabled_) {
+        LOG_INFO("Hyperliquid order connector is disabled");
+    }
 }
 
 HyperliquidOrderConnector::~HyperliquidOrderConnector() {
@@ -61,6 +66,10 @@ void HyperliquidOrderConnector::register_order_connector() {
 }
 
 bool HyperliquidOrderConnector::connect() {
+    if (!enabled_) {
+        return false;
+    }
+
     LOG_INFO("Hyperliquid Order: Connecting to {}", api_url_);
 
     if (private_key_.empty()) {
@@ -161,7 +170,7 @@ void HyperliquidOrderConnector::run() {
 
 void HyperliquidOrderConnector::process_order_requests() {
 
-    auto [data, size] = request_queue_.read(order_cursor_);
+    auto [data, size] = request_queue_.read(request_cursor_);
     if (!data) {
         std::this_thread::yield();
         return;

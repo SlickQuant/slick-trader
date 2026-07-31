@@ -5,7 +5,9 @@
 #include <slick-trader/events/level2_update_event.hpp>
 #include <slick-trader/events/register_event.hpp>
 #include <slick-trader/utils/time.hpp>
+#include <slick/net/http.hpp>
 #include <hyperliquid/info.hpp>
+#include <hyperliquid/utils/constants.hpp>
 #include <slick/logger.hpp>
 #include <algorithm>
 #include <chrono>
@@ -23,18 +25,21 @@ HyperliquidMDConnector::HyperliquidMDConnector(
     slick::queue<uint8_t>& request_queue
 )
     : enabled_(config.empty() ? false : config.value("enabled", true))
+    , shm_name_(config.value("shm_name", ""))
     , control_queue_(control_queue)
     , request_queue_(request_queue)
     , request_cursor_(request_queue.initial_reading_index())
-    , api_url_(config.value("api_url", "https://api.hyperliquid.xyz"))
+    , api_url_(config.value("api_url", hyperliquid::MAINNET_API_URL))
 {
     if (enabled_) {
         event_buffer_ = mux.add_producer(
             producer_id,
             config.value("queue_size", 1u << 26),
             config.value("control_size", 1u << 24),
-            config.contains("shm_name") ? config["shm_name"].get_ref<const std::string&>().c_str() : nullptr
+            shm_name_.empty() ? nullptr : shm_name_.c_str()
         );
+    } else {
+        LOG_INFO("Hyperliquid MD connector is disabled");
     }
 }
 
@@ -48,6 +53,7 @@ void HyperliquidMDConnector::register_md_connector() {
             event.broker_id = BrokerId::HYPERLIQUID;
             event.component_type = ComponentType::MARKET_DATA;
             event.producer_id = producer_id;
+            std::memcpy(event.shm_name, shm_name_.c_str(), sizeof(event.shm_name));
         });
     }
 }
@@ -61,7 +67,7 @@ bool HyperliquidMDConnector::connect() {
 
     try {
         info_ = std::make_unique<hyperliquid::Info>(api_url_, false, true);
-        subscribe_all();
+        info_->load_meta();
         connected_.store(true, std::memory_order_release);
         LOG_INFO("Hyperliquid MD: Connected");
         return true;
@@ -93,46 +99,39 @@ bool HyperliquidMDConnector::subscribe(const MDSubscription& request) {
     LOG_INFO("Hyperliquid MD: Subscribing to {} instruments (type: {})",
              request.num_instruments, static_cast<int>(request.subscription_type));
 
-    switch (request.subscription_type) {
-        case SubscriptionType::TRADE:
-            for (auto i = 0u; i < request.num_instruments; ++i) {
-                trade_instruments_.emplace_back(request.instruments[i]);
-            }
-            break;
-        case SubscriptionType::QUOTE:
-            for (auto i = 0u; i < request.num_instruments; ++i) {
-                quote_instruments_.emplace_back(request.instruments[i]);
-            }
-            break;
-        case SubscriptionType::LEVEL2:
-        case SubscriptionType::ORDER_BOOK:
-            for (auto i = 0u; i < request.num_instruments; ++i) {
-                level2_instruments_.emplace_back(request.instruments[i]);
-            }
-            level2_depth_ = request.depth;
-            break;
-    }
-
     // If already connected, subscribe immediately
     if (info_) {
         for (auto i = 0u; i < request.num_instruments; ++i) {
-            const auto& coin = request.instruments[i];
+            const auto& instr = request.instruments[i];
+
+            auto iter = info_->name_to_coin.find(instr);
+            if (iter == info_->name_to_coin.end()) {
+                LOG_ERROR("HYPERLIQUID skip subscription of an invalid coin {}", instr);
+                continue;
+            }
+
+            coin_to_name_.emplace(std::make_pair(iter->second, instr));
+
             nlohmann::json sub;
             std::string ch_type;
 
             switch (request.subscription_type) {
                 case SubscriptionType::TRADE:
+                    trade_instruments_.push_back(instr);
                     ch_type = "trades";
-                    sub = {{"type", "trades"}, {"coin", coin}};
+                    sub = {{"type", "trades"}, {"coin", instr}};
                     break;
                 case SubscriptionType::QUOTE:
+                    quote_instruments_.push_back(instr);
                     ch_type = "bbo";
-                    sub = {{"type", "bbo"}, {"coin", coin}};
+                    sub = {{"type", "bbo"}, {"coin", instr}};
                     break;
                 case SubscriptionType::LEVEL2:
                 case SubscriptionType::ORDER_BOOK:
-                    ch_type = "l2Book";
-                    sub = {{"type", "l2Book"}, {"coin", coin}};
+                    level2_instruments_.push_back(instr);
+                    level2_depth_ = request.depth;
+                    ch_type = "l2";
+                    sub = {{"type", "l2"}, {"coin", "@142"}, {"fast", true}};
                     break;
             }
 
@@ -189,9 +188,42 @@ void HyperliquidMDConnector::run() {
 
     while (running_.load(std::memory_order_acquire)) {
         info_->dispatch();
+        process_md_requests();
     }
 
     LOG_INFO("Hyperliquid MD: Worker thread stopped");
+}
+
+void HyperliquidMDConnector::process_md_requests() {
+    auto [data, size] = request_queue_.read(request_cursor_);
+
+    if (!data) {
+        std::this_thread::yield();
+        return;
+    }
+
+    const auto *event = reinterpret_cast<const Event*>(data);
+    switch (event->type) {
+        case EventType::SUBSCRIBE: {
+            auto *sub = reinterpret_cast<const MDSubscription*>(event);
+            if (sub->broker_id == BrokerId::HYPERLIQUID && enabled_) {
+                subscribe(*sub);
+            } else if (sub->broker_id == BrokerId::HYPERLIQUID) {
+                LOG_WARN("Coinbase MD skip subscription, not enabled");
+            }
+            break;
+        }
+        case EventType::UNSUBSCRIBE: {
+            auto *sub = reinterpret_cast<const MDSubscription*>(event);
+            if (sub->broker_id == BrokerId::HYPERLIQUID && enabled_) {
+                unsubscribe(*sub);
+            }
+            break;
+        }
+        default:
+            LOG_ERROR("HYPERLIQUID MD: Unknown event type: {}", static_cast<int>(event->type));
+            break;
+    }
 }
 
 void HyperliquidMDConnector::subscribe_all() {
@@ -227,12 +259,17 @@ void HyperliquidMDConnector::on_trades(const nlohmann::json& msg) {
             const std::string side_str = trade.value("side", "B");
             const uint64_t tid = trade.value("tid", uint64_t(0));
             const uint64_t time_ms = trade.value("time", uint64_t(0));
+            std::string instr = coin;
+            auto iter = coin_to_name_.find(coin);
+            if (iter != coin_to_name_.end()) {
+                instr = iter->second;
+            }
 
             EventSerializer::publish<TradeEvent>(*event_buffer_, [&](TradeEvent& ev) {
                 ev.broker_id = BrokerId::HYPERLIQUID;
                 ev.timestamp_ns = get_timestamp_ns();
                 ev.event_time_ns = time_ms * 1'000'000ULL;
-                ev.set_instrument(coin);
+                ev.set_instrument(instr);
                 ev.price = to_price_t(px);
                 ev.quantity = to_qty_t(sz);
                 // "B" = taker was buyer → buyer is taker → is_buyer_maker = false
@@ -269,11 +306,17 @@ void HyperliquidMDConnector::on_bbo(const nlohmann::json& msg) {
         const double ask_px = std::stod(asks[0][0].get<std::string>());
         const double ask_sz = std::stod(asks[0][1].get<std::string>());
 
+        std::string instr = coin;
+        auto iter = coin_to_name_.find(coin);
+        if (iter != coin_to_name_.end()) {
+            instr = iter->second;
+        }
+
         EventSerializer::publish<QuoteEvent>(*event_buffer_, [&](QuoteEvent& ev) {
             ev.broker_id = BrokerId::HYPERLIQUID;
             ev.timestamp_ns = get_timestamp_ns();
             ev.event_time_ns = time_ms * 1'000'000ULL;
-            ev.set_instrument(coin);
+            ev.set_instrument(instr);
             ev.bid_price = to_price_t(bid_px);
             ev.bid_quantity = to_qty_t(bid_sz);
             ev.ask_price = to_price_t(ask_px);
@@ -303,6 +346,12 @@ void HyperliquidMDConnector::on_l2book(const nlohmann::json& msg) {
 
         if (total_levels == 0) return;
 
+        std::string instr = coin;
+        auto iter = coin_to_name_.find(coin);
+        if (iter != coin_to_name_.end()) {
+            instr = iter->second;
+        }
+
         const uint32_t event_size = static_cast<uint32_t>(
             sizeof(Level2UpdateEvent) + total_levels * sizeof(PriceLevel));
 
@@ -310,21 +359,23 @@ void HyperliquidMDConnector::on_l2book(const nlohmann::json& msg) {
             ev.broker_id = BrokerId::HYPERLIQUID;
             ev.timestamp_ns = get_timestamp_ns();
             ev.event_time_ns = time_ms * 1'000'000ULL;
-            ev.set_instrument(coin);
+            ev.set_instrument(instr);
             ev.is_snapshot = true;  // Hyperliquid sends full book on each update
             ev.sequence_num = time_ms;
             ev.num_levels = static_cast<uint16_t>(total_levels);
 
             size_t idx = 0;
             for (const auto& level : bids) {
-                ev.levels[idx].price = to_price_t(std::stod(level[0].get<std::string>()));
-                ev.levels[idx].quantity = to_qty_t(std::stod(level[1].get<std::string>()));
+                ev.levels[idx].price = to_price_t(std::stod(level["px"].get<std::string>()));
+                ev.levels[idx].quantity = to_qty_t(std::stod(level["sz"].get<std::string>()));
+                ev.levels[idx].num_orders = level["n"].get<uint32_t>();
                 ev.levels[idx].side = Side::BUY;
                 ++idx;
             }
             for (const auto& level : asks) {
-                ev.levels[idx].price = to_price_t(std::stod(level[0].get<std::string>()));
-                ev.levels[idx].quantity = to_qty_t(std::stod(level[1].get<std::string>()));
+                ev.levels[idx].price = to_price_t(std::stod(level["px"].get<std::string>()));
+                ev.levels[idx].quantity = to_qty_t(std::stod(level["sz"].get<std::string>()));
+                ev.levels[idx].num_orders = level["n"].get<uint32_t>();
                 ev.levels[idx].side = Side::SELL;
                 ++idx;
             }

@@ -50,20 +50,14 @@ private:
 class StrategyManager {
 public:
     StrategyManager(
+        const json& config,
         PositionTracker& position_tracker,
         PnLCalculator& pnl_calculator,
         RiskManager& risk_manager,
         slick::stream_buffer_multiplexer& event_mux,
         slick::queue<uint8_t>& md_request_queue,
         slick::queue<uint8_t>& order_request_queue
-    )
-        : position_tracker_(position_tracker)
-        , pnl_calculator_(pnl_calculator)
-        , risk_manager_(risk_manager)
-        , event_mux_(event_mux)
-        , md_request_queue_(md_request_queue)
-        , order_request_queue_(order_request_queue)
-    {}
+    );
 
     ~StrategyManager() {
         stop();
@@ -117,6 +111,9 @@ private:
 
     void run();
 
+    void subscribe(const SubscriptionRequest& sub);
+    void unsubscribe(const SubscriptionRequest& sub);
+
     void check_loss_limits();
 
     void process_event(const Event* event);
@@ -142,6 +139,7 @@ private:
     slick::orderbook::OrderBookManager<slick::orderbook::OrderBookL2> book_manager_;
     std::unordered_map<std::string, slick::orderbook::SymbolId> symbol_ids_;
     std::unordered_map<slick::orderbook::SymbolId, std::string> symbol_names_;
+    std::unordered_map<std::string, uint8_t> subscriptions_;
     slick::orderbook::SymbolId next_symbol_id_{0};
 
     // Position & PnL tracking (non-owning pointers)

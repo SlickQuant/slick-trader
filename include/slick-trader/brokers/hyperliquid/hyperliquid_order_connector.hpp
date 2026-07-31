@@ -71,7 +71,6 @@ private:
     slick::queue<uint8_t>& request_queue_;
     uint64_t request_cursor_;
 
-    uint64_t order_cursor_{0};
     std::string api_url_{"https://api.hyperliquid.xyz"};
     std::string private_key_;
     std::string wallet_address_;

@@ -5,6 +5,30 @@
 using namespace slick;
 using namespace slick::trader;
 
+StrategyManager::StrategyManager(
+    const json& config,
+    PositionTracker& position_tracker,
+    PnLCalculator& pnl_calculator,
+    RiskManager& risk_manager,
+    slick::stream_buffer_multiplexer& event_mux,
+    slick::queue<uint8_t>& md_request_queue,
+    slick::queue<uint8_t>& order_request_queue
+)
+    : position_tracker_(position_tracker)
+    , pnl_calculator_(pnl_calculator)
+    , risk_manager_(risk_manager)
+    , event_mux_(event_mux)
+    , md_request_queue_(md_request_queue)
+    , order_request_queue_(order_request_queue)
+    , tob_producer_buffer_(
+        event_mux.add_producer(
+            event_mux.producer_count(),
+            config.value("TOB_queue_size", 1048576),
+            config.value("TOB_control_size", 65536),
+            config.contains("TOB_shm_name") ? config["TOB_shm_name"].get_ref<const std::string&>().c_str() : nullptr
+        ))
+{}
+
 // ========================================================================
 // Strategy Loading (Dynamic Discovery)
 // ========================================================================
@@ -203,6 +227,12 @@ void StrategyManager::start() {
     // Start all strategies
     for (auto& strategy : strategies_) {
         strategy->start();
+
+        // subscribe MD update
+        auto subscriptions = strategy->get_subscriptions();
+        for (const auto &subscription : subscriptions) {
+            subscribe(subscription);
+        }
     }
 
     running_.store(true, std::memory_order_release);
@@ -220,16 +250,90 @@ void StrategyManager::stop() {
 
     running_.store(false, std::memory_order_release);
 
+    // Stop all strategies
+    for (auto& strategy : strategies_) {
+        auto subscriptions = strategy->get_subscriptions();
+        for (const auto &subscription : subscriptions) {
+            unsubscribe(subscription);
+        }
+
+        strategy->stop();
+    }
+
     if (worker_thread_.joinable()) {
         worker_thread_.join();
     }
 
-    // Stop all strategies
-    for (auto& strategy : strategies_) {
-        strategy->stop();
+    LOG_INFO("StrategyManager: Stopped");
+}
+
+void StrategyManager::subscribe(const SubscriptionRequest& sub) {
+    std::vector<std::string> instruments;
+    for (auto& inst : sub.instruments) {
+        auto iter = subscriptions_.find(inst);
+        if (iter == subscriptions_.end()) {
+            subscriptions_.emplace(std::make_pair(inst, 1));
+            instruments.push_back(inst);
+        } else {
+            ++iter->second;
+        }
+    }
+    
+    // Remove duplicates
+    std::sort(instruments.begin(), instruments.end());
+    instruments.erase(
+        std::unique(instruments.begin(), instruments.end()),
+        instruments.end()
+    );
+
+    if (!instruments.empty()) {
+        uint32_t size = sizeof(MDSubscription) + instruments.size() * sizeof(char [32]);
+        EventSerializer::publish<MDSubscription>(md_request_queue_, size, [&](MDSubscription &event) {
+            event.type = EventType::SUBSCRIBE;
+            event.broker_id = sub.broker_id;
+            event.subscription_type = sub.type;
+            event.depth = sub.depth;
+            event.num_instruments = instruments.size();
+            size_t i = 0;
+            for (const auto& inst : instruments) {
+                assert(inst.size() < sizeof(event.instruments[i]));
+                std::memcpy(event.instruments[i], inst.c_str(), sizeof(event.instruments[i]));
+            }
+        });
+
+        if (sub.type == SubscriptionType::LEVEL2 || sub.type == SubscriptionType::ORDER_BOOK) {
+            subscribe_book_update(instruments);
+        }
+    }
+}
+
+void StrategyManager::unsubscribe(const SubscriptionRequest& sub) {
+    std::vector<std::string> instruments;
+    for (auto& inst : sub.instruments) {
+        auto iter = subscriptions_.find(inst);
+        if (iter != subscriptions_.end()) {
+            if (--iter->second == 0) {
+                subscriptions_.erase(iter);
+                instruments.push_back(inst);
+            }
+        }
     }
 
-    LOG_INFO("StrategyManager: Stopped");
+    if (instruments.empty()) {
+        uint32_t size = sizeof(MDSubscription) + instruments.size() * sizeof(char [32]);
+        EventSerializer::publish<MDSubscription>(md_request_queue_, size, [&](MDSubscription &event) {
+            event.type = EventType::UNSUBSCRIBE;
+            event.broker_id = sub.broker_id;
+            event.subscription_type = sub.type;
+            event.depth = sub.depth;
+            event.num_instruments = instruments.size();
+            size_t i = 0;
+            for (const auto& inst : instruments) {
+                assert(inst.size() < sizeof(event.instruments[i]));
+                std::memcpy(event.instruments[i], inst.c_str(), sizeof(event.instruments[i]));
+            }
+        });
+    }
 }
 
 void StrategyManager::run() {

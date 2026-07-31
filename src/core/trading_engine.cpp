@@ -52,7 +52,8 @@ bool TradingEngine::initialize(const std::string& config_path) {
     }
 
     std::string log_file = config.value<std::string>("log_file_path", "logs/slick_trader.log");
-    slick::logger::LogLevel log_level = config.value<slick::logger::LogLevel>("log_level", slick::logger::LogLevel::L_INFO);
+    auto str_log_level = config.value<std::string>("log_level", "info");
+    slick::logger::LogLevel log_level = slick::logger::to_log_level(str_log_level);
 
     // Initialize logger with console and file output
     auto &logger = Logger::instance();
@@ -87,8 +88,8 @@ bool TradingEngine::initialize(const std::string& config_path) {
     auto control_queue_size = config.value("control_queue_size", 1u << 20 /* 1M */);
     const char* control_queue_shm_name = config.contains("control_queue_shm_name") ? config["control_queue_shm_name"].get_ref<std::string&>().c_str() : nullptr;
 
-    LOG_INFO("event queue size: {}", control_queue_size);
-    LOG_INFO("event queue shm name: {}", control_queue_shm_name ? control_queue_shm_name : "");
+    LOG_INFO("control queue size: {}", control_queue_size);
+    LOG_INFO("control queue shm name: {}", control_queue_shm_name ? control_queue_shm_name : "");
 
     control_queue_ = std::make_unique<slick::queue<uint8_t>>(control_queue_size, control_queue_shm_name);
 
@@ -150,31 +151,27 @@ bool TradingEngine::initialize(const std::string& config_path) {
         LOG_WARN("⚠ Add a 'brokers' array to enable market data and trading");
     }
 
-    // Market data subscriptions will be applied after engine.start()
-    // (stored in broker configs)
-    if (config.contains("strategies")) {
+    // Load strategies if configured
+    if (config.contains("strategies") && config["strategies"].value("enabled", true)) {
         LOG_INFO("");
         LOG_INFO("==================================================");
         LOG_INFO("          Initialize Strategies...");
         LOG_INFO("==================================================");
 
-        strategy_manager_ = std::make_unique<StrategyManager>(position_tracker_, pnl_calculator_, risk_manager_, *event_mux_, *md_request_queue_, *order_request_queue_);
+        strategy_manager_ = std::make_unique<StrategyManager>(config["strategies"], position_tracker_, pnl_calculator_, risk_manager_, *event_mux_, *md_request_queue_, *order_request_queue_);
         strategy_manager_->load_strategies(config["strategies"]);
     }
 
     // Initialize web server (optional, configurable)
-    if (config.contains("web_service")) {
-        bool enable_web_server = config["web_service"].value("enable", true);
-        if (enable_web_server) {
-            LOG_INFO("");
-            LOG_INFO("==================================================");
-            LOG_INFO("          Initialize Web Service...");
-            LOG_INFO("==================================================");
-            web_server_ = std::make_unique<WebServer>(config_path, *strategy_manager_, position_tracker_, pnl_calculator_, risk_manager_, *event_mux_);
-            if (!web_server_->initialize(config["web_service"])) {
-                LOG_ERROR("Failed to initialize web server");
-                return false;
-            }
+    if (config.contains("web_service") && config["web_service"].value("enable", true)) {
+        LOG_INFO("");
+        LOG_INFO("==================================================");
+        LOG_INFO("          Initialize Web Service...");
+        LOG_INFO("==================================================");
+        web_server_ = std::make_unique<WebServer>(config_path, *strategy_manager_, position_tracker_, pnl_calculator_, risk_manager_, *event_mux_);
+        if (!web_server_->initialize(config["web_service"])) {
+            LOG_ERROR("Failed to initialize web server");
+            return false;
         }
     }
 

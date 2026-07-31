@@ -4,6 +4,7 @@
 #include <slick-trader/utils/types.hpp>
 #include <slick-trader/utils/order_types.hpp>
 #include <type_traits>
+#include <limits>
 
 namespace slick::trader {
 
@@ -12,6 +13,7 @@ namespace slick::trader {
 struct PriceLevel {
     price_t price;
     qty_t quantity;
+    uint32_t num_orders = std::numeric_limits<uint32_t>::max();
     Side side;
 
     PriceLevel() : price(0), quantity(0), side(Side::BUY) {}

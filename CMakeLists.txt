@@ -48,7 +48,8 @@ if(SLICK_TRADER_FAST_FETCHCONTENT)
     set(FETCHCONTENT_UPDATES_DISCONNECTED_COINBASE-ADVANCED-CPP ON CACHE BOOL "" FORCE)
 endif()
 
-find_package(slick-logger 1.0.9 CONFIG QUIET)
+set(SLICK_LOGGER_ENABLE_SOURCE_LOCATION OFF CACHE BOOL "" FORCE)
+find_package(slick-logger 1.1.2 CONFIG QUIET)
 if (NOT slick-logger_FOUND)
     message(STATUS "Fetching slick-logger...")
     # Disable examples, tests, and benchmarks for slick_logger
@@ -58,7 +59,7 @@ if (NOT slick-logger_FOUND)
     FetchContent_Declare(
         slick-logger
         GIT_REPOSITORY https://github.com/SlickQuant/slick-logger.git
-        GIT_TAG v1.0.9
+        GIT_TAG v1.1.2
     )
     FetchContent_MakeAvailable(slick-logger)
 else()
@@ -97,17 +98,17 @@ else()
     message(STATUS "Found coinbase-advanced-cpp ${coinbase-advanced-cpp_VERSION}: ${coinbase-advanced-cpp_DIR}")
 endif()
 
-find_package(hyperliquid-cpp 0.2.1 CONFIG QUIET)
-if (NOT hyperliquid-cpp_FOUND)
+find_package(hyperliquid 0.3.0 CONFIG QUIET)
+if (NOT hyperliquid_FOUND)
     message(STATUS "Fetching hyperliquid-cpp...")
     FetchContent_Declare(
         hyperliquid-cpp
         GIT_REPOSITORY https://github.com/SlickQuant/hyperliquid-cpp.git
-        GIT_TAG v0.2.1
+        GIT_TAG v0.3.0
     )
     FetchContent_MakeAvailable(hyperliquid-cpp)
 else()
-    message(STATUS "Found hyperliquid-cpp ${hyperliquid-cpp_VERSION}: ${hyperliquid-cpp_DIR}")
+    message(STATUS "Found hyperliquid ${hyperliquid_VERSION}: ${hyperliquid_DIR}")
 endif()
 
 # slick-net should be found or fetched by coinbase/hyperliquid

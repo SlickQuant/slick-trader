@@ -27,9 +27,7 @@ target_link_libraries(slick-trader-core PUBLIC
 add_library(slick-trader-brokers STATIC
     core/broker_factory.cpp
     brokers/coinbase/coinbase_broker.cpp
-    brokers/coinbase/coinbase_md_callbacks.cpp
     brokers/coinbase/coinbase_md_connector.cpp
-    brokers/coinbase/coinbase_order_callbacks.cpp
     brokers/coinbase/coinbase_order_connector.cpp
     brokers/hyperliquid/hyperliquid_broker.cpp
     brokers/hyperliquid/hyperliquid_md_connector.cpp
