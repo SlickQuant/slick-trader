@@ -152,14 +152,15 @@ bool TradingEngine::initialize(const std::string& config_path) {
     }
 
     // Load strategies if configured
-    if (config.contains("strategies") && config["strategies"].value("enabled", true)) {
-        LOG_INFO("");
-        LOG_INFO("==================================================");
-        LOG_INFO("          Initialize Strategies...");
-        LOG_INFO("==================================================");
-
+    if (config.contains("strategies")) {
         strategy_manager_ = std::make_unique<StrategyManager>(config["strategies"], position_tracker_, pnl_calculator_, risk_manager_, *event_mux_, *md_request_queue_, *order_request_queue_);
-        strategy_manager_->load_strategies(config["strategies"]);
+        if (config["strategies"].value("enabled", true)) {
+            LOG_INFO("");
+            LOG_INFO("==================================================");
+            LOG_INFO("          Initialize Strategies...");
+            LOG_INFO("==================================================");
+            strategy_manager_->load_strategies(config["strategies"]);
+        }
     }
 
     // Initialize web server (optional, configurable)

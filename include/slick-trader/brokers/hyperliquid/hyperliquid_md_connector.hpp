@@ -11,6 +11,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <set>
 
 namespace hyperliquid { class Info; }
 
@@ -47,6 +48,7 @@ private:
     void subscribe_all();
     void on_trades(const nlohmann::json& msg);
     void on_bbo(const nlohmann::json& msg);
+    void on_l2(const nlohmann::json& msg);
     void on_l2book(const nlohmann::json& msg);
 
     std::atomic_bool running_{false};
@@ -74,6 +76,9 @@ private:
     std::vector<std::pair<std::string, int>> sub_ids_;  // channel_json_str → id
 
     std::unordered_map<std::string, std::string> coin_to_name_;
+
+    std::set<price_t, std::greater<price_t>> bid_prices_;
+    std::set<price_t> ask_prices_;
 };
 
 } // namespace slick::trader

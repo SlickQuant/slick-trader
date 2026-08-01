@@ -474,8 +474,7 @@ void StrategyManager::dispatch_level2_updates(const Level2UpdateEvent& event) {
         LOG_DEBUG("StrategyManager: dispatch snapshot {}", instrument);
     }
 
-    auto last = event.num_levels - 1;
-    for (uint16_t i = 0; i < event.num_levels; ++i) {
+    for (uint16_t i = 0, last = event.num_levels - 1; i < event.num_levels; ++i) {
         if (event.levels[i].side == Side::BUY) {
             book->updateLevel(slick::orderbook::Side::Buy,
                                 static_cast<slick::orderbook::Price>(event.levels[i].price),

@@ -8,6 +8,7 @@
 #include <slick/net/http.hpp>
 #include <hyperliquid/info.hpp>
 #include <hyperliquid/utils/constants.hpp>
+#include <hyperliquid/utils/l2_diff.hpp>
 #include <slick/logger.hpp>
 #include <algorithm>
 #include <chrono>
@@ -127,18 +128,25 @@ bool HyperliquidMDConnector::subscribe(const MDSubscription& request) {
                     sub = {{"type", "bbo"}, {"coin", instr}};
                     break;
                 case SubscriptionType::LEVEL2:
-                case SubscriptionType::ORDER_BOOK:
                     level2_instruments_.push_back(instr);
                     level2_depth_ = request.depth;
                     ch_type = "l2";
-                    sub = {{"type", "l2"}, {"coin", "@142"}, {"fast", true}};
+                    sub = {{"type", "l2"}, {"c", instr}};
+                    break;
+                case SubscriptionType::ORDER_BOOK:
+                    level2_instruments_.push_back(instr);
+                    level2_depth_ = request.depth;
+                    ch_type = "l2Book";
+                    sub = {{"type", "l2Book"}, {"coin", instr}, {"fast", true}};
                     break;
             }
 
             int id = info_->subscribe(sub, [this, ch_type](const nlohmann::json& msg) {
                 if (ch_type == "trades") on_trades(msg);
                 else if (ch_type == "bbo") on_bbo(msg);
-                else on_l2book(msg);
+                else if (ch_type == "l2") on_l2(msg);
+                else if (ch_type == "l2Book") on_l2book(msg);
+                else LOG_WARN("Hyperliquid MD: Unknown channel type: {}", ch_type);
             });
             sub_ids_.emplace_back(sub.dump(), id);
         }
@@ -234,7 +242,9 @@ void HyperliquidMDConnector::subscribe_all() {
             int id = info_->subscribe(sub, [this, ch_type](const nlohmann::json& msg) {
                 if (ch_type == "trades") on_trades(msg);
                 else if (ch_type == "bbo") on_bbo(msg);
-                else on_l2book(msg);
+                else if (ch_type == "l2") on_l2(msg);
+                else if (ch_type == "l2Book") on_l2book(msg);
+                else LOG_WARN("Hyperliquid MD: Unknown channel type: {}", ch_type);
             });
             sub_ids_.emplace_back(sub.dump(), id);
         }
@@ -324,6 +334,128 @@ void HyperliquidMDConnector::on_bbo(const nlohmann::json& msg) {
         });
     } catch (const std::exception& e) {
         LOG_ERROR("Hyperliquid MD: Failed to parse bbo: {}", e.what());
+    }
+}
+
+void HyperliquidMDConnector::on_l2(const nlohmann::json& msg) {
+    const auto data_ptr = msg.find("data");
+    if (data_ptr == msg.end()) return;
+
+    try {
+        const auto& data = *data_ptr;
+        const auto c_ptr = data.find("c");
+        if (c_ptr == data.end() || !c_ptr->is_string()) return;
+
+        const auto diff = hyperliquid::decode_l2_diff(c_ptr->get<std::string>());
+
+        const std::string coin = diff.at("c").get<std::string>();
+        const uint64_t time_ms = diff.value("t", uint64_t(0));
+
+        std::string instr = coin;
+        auto iter = coin_to_name_.find(coin);
+        if (iter != coin_to_name_.end()) {
+            instr = iter->second;
+        }
+
+        const auto& removed_levels = diff.at("r");
+        if (!removed_levels.empty() && removed_levels.is_array() && removed_levels.size() == 2) {
+            const auto& bids = removed_levels[0];
+            const auto& asks = removed_levels[1];
+            const size_t total_levels = bids.size() + asks.size();
+            if (total_levels) {
+                // LOG_TRACE(diff.at("r").dump());
+
+                const uint32_t event_size = static_cast<uint32_t>(
+                    sizeof(Level2UpdateEvent) + total_levels * sizeof(PriceLevel));
+
+                EventSerializer::publish<Level2UpdateEvent>(*event_buffer_, event_size, [&](Level2UpdateEvent& ev) {
+                    ev.broker_id = BrokerId::HYPERLIQUID;
+                    ev.timestamp_ns = get_timestamp_ns();
+                    ev.event_time_ns = time_ms * 1'000'000ULL;
+                    ev.set_instrument(instr);
+                    ev.is_snapshot = false;
+                    ev.sequence_num = time_ms;
+
+                    size_t idx = 0;
+                    // The bid side index is in descending order, so we can iterate through it directly
+                    for (const auto& level_index : bids) {
+                        auto index = level_index.get<int>();
+                        if (index < 0 || index >= static_cast<int>(bid_prices_.size())) {
+                            continue;
+                        }
+
+                        auto price = *std::next(bid_prices_.begin(), index);
+                        // LOG_TRACE("Removing bid level at index {}: price={}", index, price);
+                        bid_prices_.erase(price); // Remove the price from the set
+
+                        ev.levels[idx].price = price;
+                        ev.levels[idx].quantity = 0; // Level removed, quantity is zero
+                        ev.levels[idx].side = Side::BUY;
+                        ++idx;
+                    }
+
+                    // Remove levels from the ask side in reverse order to avoid invalidating indices
+                    for (auto it = asks.rbegin(); it != asks.rend(); ++it) {
+                        auto index = it->get<int>();
+                        if (index < 0 || index >= static_cast<int>(ask_prices_.size())) {
+                            continue;
+                        }
+
+                        auto price = *std::next(ask_prices_.begin(), index);
+                        // LOG_TRACE("Removing ask level at index {}: price={}", index, price);
+                        ask_prices_.erase(price); // Remove the price from the set
+
+                        ev.levels[idx].price = price;
+                        ev.levels[idx].quantity = 0; // Level removed, quantity is zero
+                        ev.levels[idx].side = Side::SELL;
+                        ++idx;
+                    }
+
+                    ev.num_levels = static_cast<uint16_t>(idx);
+                });
+            }
+        }
+
+        const auto& levels = diff.at("l");
+        if (levels.size() < 2) return;
+
+        const auto& bids = levels[0];
+        const auto& asks = levels[1];
+        const size_t total_levels = bids.size() + asks.size();
+        if (total_levels == 0) return;
+
+        const uint32_t event_size = static_cast<uint32_t>(
+            sizeof(Level2UpdateEvent) + total_levels * sizeof(PriceLevel));
+
+        EventSerializer::publish<Level2UpdateEvent>(*event_buffer_, event_size, [&](Level2UpdateEvent& ev) {
+            ev.broker_id = BrokerId::HYPERLIQUID;
+            ev.timestamp_ns = get_timestamp_ns();
+            ev.event_time_ns = time_ms * 1'000'000ULL;
+            ev.set_instrument(instr);
+            ev.is_snapshot = false;
+            ev.sequence_num = time_ms;
+            ev.num_levels = static_cast<uint16_t>(total_levels);
+
+            size_t idx = 0;
+            for (const auto& level : bids) {
+                ev.levels[idx].price = to_price_t(std::stod(level["p"].get<std::string>()));
+                ev.levels[idx].quantity = to_qty_t(std::stod(level["s"].get<std::string>()));
+                ev.levels[idx].side = Side::BUY;
+
+                bid_prices_.insert(ev.levels[idx].price); // Add to bids set
+                ++idx;
+            }
+            for (const auto& level : asks) {
+                ev.levels[idx].price = to_price_t(std::stod(level["p"].get<std::string>()));
+                ev.levels[idx].quantity = to_qty_t(std::stod(level["s"].get<std::string>()));
+                ev.levels[idx].side = Side::SELL;
+                
+                ask_prices_.insert(ev.levels[idx].price); // Add to asks set
+                ++idx;
+            }
+        });
+    } catch (const std::exception& e) {
+        LOG_ERROR("Hyperliquid MD: Failed to parse l2 diff: {}", e.what());
     }
 }
 
