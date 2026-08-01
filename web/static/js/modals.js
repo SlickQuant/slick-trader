@@ -251,7 +251,7 @@ class ModalManager {
      * Show ladder settings modal
      */
     showLadderSettingsModal() {
-        const currentConfig = window.ladderManager?.ladderConfig || { default_qty: 0.01, default_strategy_id: '' };
+        const currentConfig = window.ladderManager?.ladderConfig || { };
 
         const modal = document.createElement('div');
         modal.className = 'modal';
@@ -264,10 +264,6 @@ class ModalManager {
                 <div class="modal-body">
                     <form class="settings-form">
                         <div class="form-group">
-                            <label for="defaultStrategyId">Default Strategy ID</label>
-                            <input type="text" id="defaultStrategyId"
-                                   value="${currentConfig.default_strategy_id}" required placeholder="SimpleLoggerStrategy">
-                            <small>Strategy to use for click-to-trade orders</small>
                         </div>
                     </form>
                 </div>
@@ -306,21 +302,12 @@ class ModalManager {
      * Save ladder settings to server
      */
     async saveLadderSettings(form) {
-        const defaultStrategyId = form.querySelector('#defaultStrategyId').value.trim();
-
-        if (!defaultStrategyId) {
-            this.showNotification('Default strategy ID is required', 'error');
-            return;
-        }
-
         try {
-            const newConfig = {
-                default_qty: window.ladderManager?.ladderConfig?.default_qty ?? 0.01,
-                default_strategy_id: defaultStrategyId,
-                per_instrument: window.ladderManager?.ladderConfig?.per_instrument || {}
-            };
+            // const newConfig = {
+            //     per_instrument: window.ladderManager?.ladderConfig?.per_instrument || {}
+            // };
 
-            await window.ladderManager.saveLadderConfig(newConfig);
+            // await window.ladderManager.saveLadderConfig(newConfig);
             this.showNotification('Ladder settings saved successfully', 'success');
             this.closeModal();
 

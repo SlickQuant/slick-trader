@@ -41,6 +41,9 @@
 *.dwo
 
 build/
+.agents/
+.claude/
+.codex/
 .vscode/
 *.log
 logs/

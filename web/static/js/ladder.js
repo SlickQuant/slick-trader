@@ -173,7 +173,7 @@ class LadderManager {
                     </option>
                 `).join('')}
             </select>
-            <button class="ladder-settings-btn" id="ladderSettingsBtn" title="Ladder Settings">⚙️</button>
+            <!-- <button class="ladder-settings-btn" id="ladderSettingsBtn" title="Ladder Settings">⚙️</button> -->
         `;
         container.appendChild(selectorDiv);
 
@@ -568,17 +568,6 @@ class LadderManager {
         // Get config for this instrument
         const config = this.getConfigForInstrument(instrument);
 
-        // Validate config has strategy ID
-        if (!config.default_strategy_id || config.default_strategy_id.trim() === '') {
-            if (window.modalManager) {
-                window.modalManager.showNotification(
-                    'Please configure a strategy ID in ladder settings (⚙️ icon)',
-                    'error'
-                );
-            }
-            return;
-        }
-
         // Convert SlickLadder side to order side
         const orderSide = side === 0 ? 'buy' : 'sell';
 
@@ -619,7 +608,6 @@ class LadderManager {
         }
         const timeInForce = tifSelectEl ? parseInt(tifSelectEl.value) : (orderType === 'limit' ? 0 : 1);
         const payload = {
-            strategy_id: config.default_strategy_id,
             instrument: instrument,
             broker_id: brokerId,
             side: orderSide,

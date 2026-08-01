@@ -164,7 +164,7 @@ bool TradingEngine::initialize(const std::string& config_path) {
     }
 
     // Initialize web server (optional, configurable)
-    if (config.contains("web_service") && config["web_service"].value("enable", true)) {
+    if (config.contains("web_service") && config["web_service"].value("enabled", true)) {
         LOG_INFO("");
         LOG_INFO("==================================================");
         LOG_INFO("          Initialize Web Service...");

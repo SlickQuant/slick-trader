@@ -4,6 +4,7 @@
 #include <slick-trader/core/risk_manager.hpp>
 #include <slick-trader/core/strategy_manager.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
+#include <slick-trader/strategy/manual_strategy.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
 #include <chrono>
@@ -27,7 +28,6 @@ bool WebServer::initialize(const json& config) {
         // Set defaults if not in config
         ladder_config_ = {
             {"default_qty", 0.01},
-            {"default_strategy_id", ""},
             {"per_instrument", json::object()}
         };
         LOG_INFO("WebServer: Using default ladder config");
@@ -564,13 +564,13 @@ void WebServer::handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpReques
         auto order_data = json::parse(body);
 
         // Validate required fields
-        if (!order_data.contains("strategy_id") || !order_data.contains("instrument") ||
+        if (!order_data.contains("instrument") ||
             !order_data.contains("side") || !order_data.contains("quantity") || !order_data.contains("broker_id")) {
-            send_error_response(res, "Missing required fields: strategy_id, instrument, broker_id, side, quantity", 400);
+            send_error_response(res, "Missing required fields: instrument, broker_id, side, quantity", 400);
             return;
         }
 
-        std::string strategy_id = order_data["strategy_id"];
+        const std::string strategy_id = ManualStrategy::ID;
         std::string instrument = order_data["instrument"];
         uint8_t broker_id_raw = order_data["broker_id"];
         std::string side_str = order_data["side"];
@@ -1224,7 +1224,7 @@ void WebServer::handle_put_ladder_config(uWS::HttpResponse<false>* res, uWS::Htt
         auto new_config = json::parse(body);
 
         // Validate config structure
-        if (!new_config.contains("default_qty") || !new_config.contains("default_strategy_id")) {
+        if (!new_config.contains("default_qty")) {
             send_error_response(res, "Invalid ladder config format: missing required fields", 400);
             return;
         }
@@ -1232,9 +1232,8 @@ void WebServer::handle_put_ladder_config(uWS::HttpResponse<false>* res, uWS::Htt
         // Update in-memory config
         ladder_config_ = new_config;
 
-        LOG_INFO("WebServer: Updated ladder config - default_qty: {}, default_strategy_id: {}",
-                 ladder_config_["default_qty"].get<double>(),
-                 ladder_config_["default_strategy_id"].get<std::string>());
+        LOG_INFO("WebServer: Updated ladder config - default_qty: {}",
+                 ladder_config_["default_qty"].get<double>());
 
         json response = {
             {"status", "ok"},

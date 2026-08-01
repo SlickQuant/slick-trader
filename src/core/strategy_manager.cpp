@@ -1,6 +1,7 @@
 #include <slick/logger.hpp>
 #include <slick-trader/core/strategy_manager.hpp>
 #include <slick-trader/core/strategy_config.hpp>
+#include <slick-trader/strategy/manual_strategy.hpp>
 
 using namespace slick;
 using namespace slick::trader;
@@ -194,11 +195,21 @@ void StrategyManager::load_strategies(const json& config) {
         }
     }
 
-    if (strategies_.empty()) {
-        LOG_WARN("⚠ No strategies loaded - system will receive market data but won't trade");
+    // Always register ManualStrategy for orders placed through the Web UI
+    {
+        auto manual = std::make_shared<ManualStrategy>();
+        manual->initialize({}, position_tracker_, pnl_calculator_, risk_manager_,
+                           md_request_queue_, order_request_queue_);
+        risk_manager_.set_limits(ManualStrategy::ID, RiskLimits{});
+        add_strategy(manual);
+        LOG_INFO("✓ Registered ManualStrategy for web UI orders");
+    }
+
+    if (strategies_.size() == 1) {
+        LOG_WARN("⚠ No strategy plugins loaded - system will receive market data but won't auto-trade");
         LOG_WARN("⚠ Place strategy plugins ({}) in: {}", plugin_extension, strategy_plugins_folder);
     } else {
-        LOG_INFO("✓ Successfully loaded {} strategy/strategies", strategies_.size());
+        LOG_INFO("✓ Successfully loaded {} strategy/strategies", strategies_.size() - 1);
     }
 }
 
