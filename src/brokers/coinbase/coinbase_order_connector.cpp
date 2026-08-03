@@ -2,6 +2,7 @@
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/register_event.hpp>
+#include <slick-trader/core/broker_status.hpp>
 #include <slick/logger.hpp>
 #include <coinbase/websocket.hpp>
 #include <coinbase/rest.hpp>
@@ -65,6 +66,7 @@ CoinbaseOrderConnector::CoinbaseOrderConnector(
     , request_queue_(request_queue)
     , request_cursor_(request_queue.initial_reading_index())
 {
+    BrokerStatusRegistry::instance().set_order_enabled(BrokerId::COINBASE, enabled_);
     if (!enabled_) {
         LOG_INFO("Coinbase Order Connector disabled");
     } else {
@@ -388,10 +390,12 @@ void CoinbaseOrderConnector::handle_cancel_request(const CancelOrderEvent& reque
 
 void CoinbaseOrderConnector::onUserDataConnected(WebSocketClient* client) {
     LOG_INFO("Coinbase User WebSocket {:p} connected", static_cast<void*>(client));
+    BrokerStatusRegistry::instance().set_order_connected(BrokerId::COINBASE, true);
 }
 
 void CoinbaseOrderConnector::onUserDataDisconnected(WebSocketClient* client) {
     LOG_INFO("Coinbase User WebSocket {:p} disconnected", static_cast<void*>(client));
+    BrokerStatusRegistry::instance().set_order_connected(BrokerId::COINBASE, false);
     if (is_running()) {
         LOG_WARN("Coinbase User WebSocket {:p} disconnected while running - reconnecting", static_cast<void*>(client));
         connect();

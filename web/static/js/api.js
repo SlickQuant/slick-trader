@@ -78,6 +78,13 @@ class ApiClient {
     }
 
     /**
+     * Get broker connectivity status
+     */
+    async getBrokers() {
+        return this.get('/api/brokers');
+    }
+
+    /**
      * Get all strategies
      */
     async getStrategies() {

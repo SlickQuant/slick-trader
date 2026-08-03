@@ -217,6 +217,11 @@ void StrategyManager::add_strategy(std::shared_ptr<IStrategy> strategy) {
     strategies_.push_back(strategy);
     strategy_map_[strategy->name()] = strategy;
 
+    // Track which MD brokers this strategy depends on (for auto-pause on MD disconnect)
+    for (const auto& sub : strategy->get_subscriptions()) {
+        strategy_md_brokers_[strategy->name()].insert(sub.broker_id);
+    }
+
     // If the engine is already running, start the strategy immediately (hot-loading)
     // Otherwise, it will be started when engine.start() is called
     if (is_running()) [[unlikely]] {
@@ -225,6 +230,24 @@ void StrategyManager::add_strategy(std::shared_ptr<IStrategy> strategy) {
     } else {
         LOG_INFO("StrategyManager: Added strategy '{}'", strategy->name());
     }
+}
+
+bool StrategyManager::start_strategy(const std::string& strategy_id) {
+    auto it = strategy_map_.find(strategy_id);
+    if (it == strategy_map_.end()) return false;
+    auto_paused_strategies_.erase(strategy_id);
+    auto_pause_reasons_.erase(strategy_id);
+    it->second->start();
+    return true;
+}
+
+bool StrategyManager::stop_strategy(const std::string& strategy_id) {
+    auto it = strategy_map_.find(strategy_id);
+    if (it == strategy_map_.end()) return false;
+    auto_paused_strategies_.erase(strategy_id);
+    auto_pause_reasons_.erase(strategy_id);
+    it->second->stop();
+    return true;
 }
 
 void StrategyManager::start() {
@@ -350,9 +373,8 @@ void StrategyManager::unsubscribe(const SubscriptionRequest& sub) {
 void StrategyManager::run() {
     LOG_INFO("StrategyManager: Worker thread started");
 
-    // Track last PnL check time
-    auto last_pnl_check = std::chrono::steady_clock::now();
-    constexpr auto pnl_check_interval = std::chrono::seconds(1);
+    auto last_periodic_check = std::chrono::steady_clock::now();
+    constexpr auto check_interval = std::chrono::seconds(1);
     bool has_event = false;
 
     while (running_.load(std::memory_order_relaxed)) {
@@ -361,11 +383,11 @@ void StrategyManager::run() {
             has_event = true;
         }
 
-        // Periodically check for loss limits
         auto now = std::chrono::steady_clock::now();
-        if (now - last_pnl_check >= pnl_check_interval) {
+        if (now - last_periodic_check >= check_interval) {
             check_loss_limits();
-            last_pnl_check = now;
+            check_broker_status();
+            last_periodic_check = now;
             has_event = true;
         }
 
@@ -375,6 +397,44 @@ void StrategyManager::run() {
     }
 
     LOG_INFO("StrategyManager: Worker thread stopped");
+}
+
+void StrategyManager::check_broker_status() {
+    auto& reg = BrokerStatusRegistry::instance();
+
+    for (auto& strategy : strategies_) {
+        const std::string name(strategy->name());
+
+        if (risk_manager_.is_halted(name)) continue;
+
+        auto it = strategy_md_brokers_.find(name);
+        if (it == strategy_md_brokers_.end()) continue;
+
+        bool md_lost = false;
+        std::string reason;
+        for (BrokerId bid : it->second) {
+            if (reg.is_md_enabled(bid) && !reg.is_md_connected(bid)) {
+                md_lost = true;
+                reason = std::string("MD disconnected for broker ") + reg.get(bid).name;
+                break;
+            }
+        }
+
+        const bool is_auto_paused = auto_paused_strategies_.count(name) > 0;
+        auto* base = dynamic_cast<StrategyBase*>(strategy.get());
+
+        if (md_lost && !is_auto_paused && base && base->is_running()) {
+            LOG_WARN("StrategyManager: Auto-pausing '{}' — {}", name, reason);
+            strategy->stop();
+            auto_paused_strategies_.insert(name);
+            auto_pause_reasons_[name] = reason;
+        } else if (!md_lost && is_auto_paused) {
+            LOG_INFO("StrategyManager: Auto-resuming '{}' after MD reconnect", name);
+            strategy->start();
+            auto_paused_strategies_.erase(name);
+            auto_pause_reasons_.erase(name);
+        }
+    }
 }
 
 void StrategyManager::process_event(const Event* event) {

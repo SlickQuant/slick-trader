@@ -4,6 +4,7 @@
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
 #include <slick-trader/events/register_event.hpp>
+#include <slick-trader/core/broker_status.hpp>
 #include <slick-trader/utils/time.hpp>
 #include <slick/net/http.hpp>
 #include <hyperliquid/info.hpp>
@@ -32,6 +33,9 @@ HyperliquidMDConnector::HyperliquidMDConnector(
     , request_cursor_(request_queue.initial_reading_index())
     , api_url_(config.value("api_url", hyperliquid::MAINNET_API_URL))
 {
+    auto& reg = BrokerStatusRegistry::instance();
+    reg.set_name(BrokerId::HYPERLIQUID, "Hyperliquid");
+    reg.set_md_enabled(BrokerId::HYPERLIQUID, enabled_);
     if (enabled_) {
         event_buffer_ = mux.add_producer(
             producer_id,
@@ -70,12 +74,14 @@ bool HyperliquidMDConnector::connect() {
         info_ = std::make_unique<hyperliquid::Info>(api_url_, false, true);
         info_->load_meta();
         connected_.store(true, std::memory_order_release);
+        BrokerStatusRegistry::instance().set_md_connected(BrokerId::HYPERLIQUID, true);
         LOG_INFO("Hyperliquid MD: Connected");
         return true;
     } catch (const std::exception& e) {
         LOG_ERROR("Hyperliquid MD: connect() failed: {}", e.what());
         info_.reset();
         connected_.store(false, std::memory_order_release);
+        BrokerStatusRegistry::instance().set_md_connected(BrokerId::HYPERLIQUID, false);
         return false;
     }
 }
@@ -92,6 +98,7 @@ void HyperliquidMDConnector::disconnect() {
         sub_ids_.clear();
         info_.reset();
         connected_.store(false, std::memory_order_release);
+        BrokerStatusRegistry::instance().set_md_connected(BrokerId::HYPERLIQUID, false);
         LOG_INFO("Hyperliquid MD: Disconnected");
     }
 }

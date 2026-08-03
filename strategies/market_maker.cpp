@@ -305,7 +305,7 @@ protected:
     void on_reject(const OrderRejectEvent& event) override {
         const std::string_view cid(event.client_order_id);
         const std::string_view oid(event.order_id);
-        LOG_WARN("MarketMaker: REJECT cid={} reason={}", event.client_order_id, event.reason);
+        LOG_WARN("MarketMaker: REJECT cid={} reason={}", cid, std::string_view(event.reason));
 
         auto slot_matches = [&](const QuoteSlot& slot) -> bool {
             if (!cid.empty()) return cid == slot.client_id;
@@ -465,7 +465,7 @@ private:
         if (cid.empty()) {
             // submit_order() rejected pre-trade (risk check); slot stays EMPTY so
             // update_quotes() will retry on the next market data tick.
-            LOG_WARN("MarketMaker: {} order rejected pre-trade at {:.4f} — slot stays EMPTY",
+            LOG_WARN("MarketMaker: {} order rejected pre-trade at {:.4f} - slot stays EMPTY",
                      side == Side::BUY ? "BID" : "ASK", price);
             return;
         }

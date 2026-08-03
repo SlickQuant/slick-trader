@@ -5,8 +5,10 @@
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/events/order_book_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
+#include <slick-trader/core/broker_status.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
 #include <atomic>
+#include <array>
 #include <thread>
 #include <string>
 #include <string_view>
@@ -106,6 +108,7 @@ private:
                                      const std::string& strategy_id, std::string_view body);
     void handle_post_resume_strategy(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                        const std::string& strategy_id);
+    void handle_get_brokers(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
     void handle_get_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
     void handle_put_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                    const std::string& body);
@@ -145,6 +148,9 @@ private:
 
     // PnL broadcasting
     void broadcast_pnl_update();
+
+    // Broker status broadcasting
+    void check_and_broadcast_broker_status();
 
     // WebSocket subscription tracking
     struct Subscription {
@@ -209,6 +215,15 @@ private:
     std::unordered_map<std::string, TrackedOrder> open_orders_;
     // Reverse map: broker order_id → client_order_id
     std::unordered_map<std::string, std::string> oid_to_cid_;
+
+    // Broker status snapshot for change detection (plain bools, no atomics)
+    struct BrokerSnapshot {
+        bool md_enabled{false};
+        bool md_connected{false};
+        bool order_enabled{false};
+        bool order_connected{false};
+    };
+    std::array<BrokerSnapshot, static_cast<size_t>(BrokerId::_BROKER_ID_COUNT_)> last_broker_status_{};
 };
 
 } // namespace slick::trader

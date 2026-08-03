@@ -2,6 +2,7 @@
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/register_event.hpp>
+#include <slick-trader/core/broker_status.hpp>
 #include <slick-trader/utils/time.hpp>
 #include <hyperliquid/info.hpp>
 #include <hyperliquid/exchange.hpp>
@@ -45,6 +46,7 @@ HyperliquidOrderConnector::HyperliquidOrderConnector(
     , request_cursor_(request_queue.initial_reading_index())
     , api_url_(config.value("api_url", hyperliquid::MAINNET_API_URL))
 {
+    BrokerStatusRegistry::instance().set_order_enabled(BrokerId::HYPERLIQUID, enabled_);
     if (!enabled_) {
         LOG_INFO("Hyperliquid order connector is disabled");
     }
@@ -108,6 +110,7 @@ bool HyperliquidOrderConnector::connect() {
             });
 
         connected_.store(true, std::memory_order_release);
+        BrokerStatusRegistry::instance().set_order_connected(BrokerId::HYPERLIQUID, true);
         LOG_INFO("Hyperliquid Order: Connected");
         return true;
     } catch (const std::exception& e) {
@@ -115,6 +118,7 @@ bool HyperliquidOrderConnector::connect() {
         exchange_.reset();
         info_.reset();
         connected_.store(false, std::memory_order_release);
+        BrokerStatusRegistry::instance().set_order_connected(BrokerId::HYPERLIQUID, false);
         return false;
     }
 }
@@ -125,6 +129,7 @@ void HyperliquidOrderConnector::disconnect() {
         exchange_.reset();
         info_.reset();
         connected_.store(false, std::memory_order_release);
+        BrokerStatusRegistry::instance().set_order_connected(BrokerId::HYPERLIQUID, false);
         LOG_INFO("Hyperliquid Order: Disconnected");
     }
 }

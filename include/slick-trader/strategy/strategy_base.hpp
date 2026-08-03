@@ -4,6 +4,7 @@
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/md_subscription.hpp>
 #include <slick-trader/core/order.hpp>
+#include <slick-trader/core/broker_status.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/risk_manager.hpp>
@@ -237,6 +238,21 @@ protected:
             reject.set_client_order_id(client_order_id.data());
             reject.set_reason(reject_reason.c_str());
             on_order_reject(reject);
+            return {};
+        }
+
+        // Check broker connectivity before enqueuing — avoids orders stuck in PENDING_NEW
+        auto& br = BrokerStatusRegistry::instance();
+        if (!br.is_order_enabled(broker_id) || !br.is_order_connected(broker_id)) {
+            const std::string reason = !br.is_order_enabled(broker_id)
+                ? "Broker order connector disabled"
+                : "Broker order connector disconnected";
+            OrderRejectEvent broker_reject;
+            broker_reject.timestamp_ns = get_timestamp_ns();
+            broker_reject.set_instrument(instrument);
+            broker_reject.set_client_order_id(client_order_id.data());
+            broker_reject.set_reason(reason.c_str());
+            on_order_reject(broker_reject);
             return {};
         }
 

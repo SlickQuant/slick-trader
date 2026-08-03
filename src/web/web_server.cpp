@@ -115,6 +115,11 @@ void WebServer::setup_routes(uWS::App &app) {
         send_json_response(res, R"({"status":"ok"})");
     });
 
+    // Broker status
+    app.get("/api/brokers", [this](auto* res, auto* req) {
+        handle_get_brokers(res, req);
+    });
+
     // Get all strategies
     app.get("/api/strategies", [this](auto* res, auto* req) {
         handle_get_strategies(res, req);
@@ -335,6 +340,33 @@ void WebServer::setup_routes(uWS::App &app) {
     });
 }
 
+void WebServer::handle_get_brokers(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    try {
+        auto& reg = BrokerStatusRegistry::instance();
+        json brokers = json::array();
+        const auto& all = reg.all();
+        for (size_t i = 1; i < all.size(); ++i) {
+            const auto& s = all[i];
+            if (s.name[0] == '\0') continue;
+            brokers.push_back({
+                {"id", i},
+                {"name", s.name},
+                {"md", {
+                    {"enabled", s.md_enabled.load(std::memory_order_acquire)},
+                    {"connected", s.md_connected.load(std::memory_order_acquire)}
+                }},
+                {"order", {
+                    {"enabled", s.order_enabled.load(std::memory_order_acquire)},
+                    {"connected", s.order_connected.load(std::memory_order_acquire)}
+                }}
+            });
+        }
+        send_json_response(res, json{{"brokers", brokers}}.dump());
+    } catch (const std::exception& e) {
+        send_error_response(res, e.what(), 500);
+    }
+}
+
 void WebServer::handle_get_strategies(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
     try {
         json response = json::array();
@@ -356,12 +388,27 @@ void WebServer::handle_get_strategies(uWS::HttpResponse<false>* res, uWS::HttpRe
                 instruments_array.push_back(inst);
             }
 
+            const std::string sname = strategy->name();
+            std::string status;
+            std::string pause_reason;
+            if (risk_manager_.is_halted(sname)) {
+                status = "halted";
+                pause_reason = risk_manager_.get_halt_reason(sname);
+            } else if (strategy_manager_.is_auto_paused(sname)) {
+                status = "paused";
+                pause_reason = strategy_manager_.get_auto_pause_reason(sname);
+            } else if (auto* base = dynamic_cast<StrategyBase*>(strategy.get()); base && base->is_running()) {
+                status = "running";
+            } else {
+                status = "stopped";
+            }
+
             response.push_back({
-                {"name", strategy->name()},
-                {"id", strategy->name()},  // Use name as ID for now
-                {"status", risk_manager_.is_halted(strategy->name()) ? "halted" : "running"},
-                {"halt_reason", risk_manager_.get_halt_reason(strategy->name())},
-                {"type", "plugin"},         // TODO: Add strategy type
+                {"name", sname},
+                {"id", sname},
+                {"status", status},
+                {"halt_reason", pause_reason},
+                {"type", "plugin"},
                 {"instruments", instruments_array}
             });
         }
@@ -692,14 +739,20 @@ void WebServer::handle_post_strategy_control(uWS::HttpResponse<false>* res, uWS:
         // For now, just log and return
         LOG_INFO("WebServer: Strategy control request - Strategy: {}, Action: {}", strategy_id, action);
 
-        if (action == "start" || action == "stop" || action == "pause" || action == "resume") {
-            json response = {
-                {"success", true},
-                {"message", "Strategy control not yet implemented"},
-                {"strategy_id", strategy_id},
-                {"action", action}
-            };
-            send_json_response(res, response.dump());
+        if (action == "start" || action == "resume") {
+            bool ok = strategy_manager_.start_strategy(strategy_id);
+            if (!ok) {
+                send_error_response(res, "Strategy not found: " + strategy_id, 404);
+                return;
+            }
+            send_json_response(res, json{{"success", true}, {"strategy_id", strategy_id}, {"action", action}}.dump());
+        } else if (action == "stop" || action == "pause") {
+            bool ok = strategy_manager_.stop_strategy(strategy_id);
+            if (!ok) {
+                send_error_response(res, "Strategy not found: " + strategy_id, 404);
+                return;
+            }
+            send_json_response(res, json{{"success", true}, {"strategy_id", strategy_id}, {"action", action}}.dump());
         } else {
             send_error_response(res, "Invalid action: must be 'start', 'stop', 'pause', or 'resume'", 400);
         }
@@ -1115,7 +1168,55 @@ void WebServer::process_events() {
         }
     }
 
+    check_and_broadcast_broker_status();
+
     uWS::Loop::get()->defer([this]() { process_events(); });
+}
+
+void WebServer::check_and_broadcast_broker_status() {
+    auto& reg = BrokerStatusRegistry::instance();
+    const auto& all = reg.all();
+    bool changed = false;
+
+    for (size_t i = 1; i < all.size(); ++i) {
+        const auto& s = all[i];
+        if (s.name[0] == '\0') continue;
+        auto& snap = last_broker_status_[i];
+        bool me = s.md_enabled.load(std::memory_order_acquire);
+        bool mc = s.md_connected.load(std::memory_order_acquire);
+        bool oe = s.order_enabled.load(std::memory_order_acquire);
+        bool oc = s.order_connected.load(std::memory_order_acquire);
+        if (me != snap.md_enabled || mc != snap.md_connected ||
+            oe != snap.order_enabled || oc != snap.order_connected) {
+            snap = {me, mc, oe, oc};
+            changed = true;
+        }
+    }
+
+    if (!changed || all_ws_clients_.empty()) return;
+
+    json brokers = json::array();
+    for (size_t i = 1; i < all.size(); ++i) {
+        const auto& s = all[i];
+        if (s.name[0] == '\0') continue;
+        brokers.push_back({
+            {"id", i},
+            {"name", s.name},
+            {"md", {
+                {"enabled", last_broker_status_[i].md_enabled},
+                {"connected", last_broker_status_[i].md_connected}
+            }},
+            {"order", {
+                {"enabled", last_broker_status_[i].order_enabled},
+                {"connected", last_broker_status_[i].order_connected}
+            }}
+        });
+    }
+
+    const std::string msg = json{{"type", "broker_status"}, {"brokers", brokers}}.dump();
+    for (auto* ws : all_ws_clients_) {
+        ws->send(msg, uWS::OpCode::TEXT);
+    }
 }
 
 void WebServer::broadcast_level2_update(const Level2UpdateEvent& event) {

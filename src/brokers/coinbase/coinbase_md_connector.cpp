@@ -7,6 +7,7 @@
 #include <slick-trader/events/level2_update_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/trade_event.hpp>
+#include <slick-trader/core/broker_status.hpp>
 #include <coinbase/websocket.hpp>
 #include <algorithm>
 #include <chrono>
@@ -34,6 +35,9 @@ CoinbaseMDConnector::CoinbaseMDConnector(
     , request_cursor_(request_queue.initial_reading_index())
     , ws_url_(config.value("websocket_url", "wss://advanced-trade-ws.coinbase.com"))
     , orderbook_depth_(10) {
+    auto& reg = BrokerStatusRegistry::instance();
+    reg.set_name(BrokerId::COINBASE, "Coinbase");
+    reg.set_md_enabled(BrokerId::COINBASE, enabled_);
     if (enabled_) {
         ws_client_ = std::make_unique<coinbase::WebSocketClient>(
             this,
@@ -234,10 +238,12 @@ void CoinbaseMDConnector::process_md_requests() {
 
 void CoinbaseMDConnector::onMarketDataConnected(WebSocketClient* client) {
     LOG_INFO("Coinbase MD WebSocket {:p} connected", static_cast<void*>(client));
+    BrokerStatusRegistry::instance().set_md_connected(BrokerId::COINBASE, true);
 }
 
 void CoinbaseMDConnector::onMarketDataDisconnected(WebSocketClient* client) {
     LOG_INFO("Coinbase MD WebSocket {:p} disconnected", static_cast<void*>(client));
+    BrokerStatusRegistry::instance().set_md_connected(BrokerId::COINBASE, false);
     if (is_running()) {
         LOG_WARN("Coinbase MD WebSocket {:p} disconnected while running - reconnecting...", static_cast<void*>(client));
         reconnecting_.store(true, std::memory_order_release);

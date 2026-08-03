@@ -9,13 +9,16 @@
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick-trader/core/strategy_loader.hpp>
+#include <slick-trader/core/broker_status.hpp>
 #include <slick/queue.h>
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <chrono>
 
 namespace slick::trader {
@@ -98,6 +101,20 @@ public:
         return nullptr;
     }
 
+    // Manual strategy control — clears auto-pause state so MD reconnect won't override
+    bool start_strategy(const std::string& strategy_id);
+    bool stop_strategy(const std::string& strategy_id);
+
+    bool is_auto_paused(const std::string& strategy_id) const {
+        return auto_paused_strategies_.count(strategy_id) > 0;
+    }
+
+    const std::string& get_auto_pause_reason(const std::string& strategy_id) const {
+        static const std::string empty;
+        auto it = auto_pause_reasons_.find(strategy_id);
+        return it != auto_pause_reasons_.end() ? it->second : empty;
+    }
+
     void subscribe_book_update(std::vector<std::string>& instruments) {
         for (const auto& instrument : instruments) {
             auto *book = book_manager_.getOrCreateOrderBook(get_or_create_symbol_id(instrument));
@@ -115,6 +132,7 @@ private:
     void unsubscribe(const SubscriptionRequest& sub);
 
     void check_loss_limits();
+    void check_broker_status();
 
     void process_event(const Event* event);
 
@@ -140,6 +158,9 @@ private:
     std::unordered_map<std::string, slick::orderbook::SymbolId> symbol_ids_;
     std::unordered_map<slick::orderbook::SymbolId, std::string> symbol_names_;
     std::unordered_map<std::string, uint8_t> subscriptions_;
+    std::unordered_map<std::string, std::set<BrokerId>> strategy_md_brokers_;
+    std::unordered_set<std::string> auto_paused_strategies_;
+    std::unordered_map<std::string, std::string> auto_pause_reasons_;
     slick::orderbook::SymbolId next_symbol_id_{0};
 
     // Position & PnL tracking (non-owning pointers)

@@ -141,6 +141,11 @@ class Dashboard {
             this.handleLevel2Update(data);
         });
 
+        // Broker status update handler
+        this.wsClient.on('broker_status', (data) => {
+            this.renderBrokerStatus(data.brokers);
+        });
+
         // Connect
         this.wsClient.connect();
     }
@@ -156,6 +161,7 @@ class Dashboard {
 
             // Load all data in parallel
             await Promise.all([
+                this.loadBrokers(),
                 this.loadPnL(),
                 this.loadPositions(),
                 this.loadStrategies(),
@@ -166,6 +172,43 @@ class Dashboard {
             console.error('[Dashboard] Failed to load initial data:', error);
             this.log('Failed to load initial data: ' + error.message, 'error');
         }
+    }
+
+    /**
+     * Load and render broker status
+     */
+    async loadBrokers() {
+        try {
+            const data = await api.getBrokers();
+            this.renderBrokerStatus(data.brokers || []);
+        } catch (error) {
+            console.error('[Dashboard] Failed to load brokers:', error);
+            const el = document.getElementById('brokerStatusList');
+            if (el) el.innerHTML = '<span class="broker-status-loading">Unavailable</span>';
+        }
+    }
+
+    renderBrokerStatus(brokers) {
+        const el = document.getElementById('brokerStatusList');
+        if (!el) return;
+        if (!brokers || brokers.length === 0) {
+            el.innerHTML = '<span class="broker-status-loading">No brokers configured</span>';
+            return;
+        }
+        el.innerHTML = brokers.map(b => {
+            const mdDot = !b.md.enabled ? 'dot-disabled' : b.md.connected ? 'dot-connected' : 'dot-disconnected';
+            const ordDot = !b.order.enabled ? 'dot-disabled' : b.order.connected ? 'dot-connected' : 'dot-disconnected';
+            const mdLabel = !b.md.enabled ? 'MD (off)' : b.md.connected ? 'MD' : 'MD (disconnected)';
+            const ordLabel = !b.order.enabled ? 'Order (off)' : b.order.connected ? 'Order' : 'Order (disconnected)';
+            return `
+                <div class="broker-item">
+                    <span class="broker-name">${b.name}</span>
+                    <div class="broker-connectors">
+                        <span class="connector-badge"><span class="dot ${mdDot}"></span>${mdLabel}</span>
+                        <span class="connector-badge"><span class="dot ${ordDot}"></span>${ordLabel}</span>
+                    </div>
+                </div>`;
+        }).join('');
     }
 
     /**
@@ -324,10 +367,11 @@ class Dashboard {
             };
             const isRunning = strategy.status === 'running';
             const isHalted = strategy.status === 'halted';
-            const statusLabel = isHalted
-                ? (strategy.halt_reason || 'Halted').split(':')[0].trim()
+            const isPaused = strategy.status === 'paused';
+            const statusLabel = isHalted || isPaused
+                ? (strategy.halt_reason || strategy.status).split(':')[0].trim()
                 : (strategy.status || 'unknown');
-            const statusTitle = isHalted ? (strategy.halt_reason || '') : '';
+            const statusTitle = (isHalted || isPaused) ? (strategy.halt_reason || '') : '';
 
             return `
                 <tr>
