@@ -153,8 +153,20 @@ body {
 
 /* Summary Section */
 /* Broker Status */
+.status-row {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+    align-items: start;
+}
+
 .broker-status-section {
-    margin-bottom: 1.5rem;
+    height: 100%;
+}
+
+.broker-status-section .card {
+    height: 100%;
 }
 
 .broker-status-list {
@@ -431,6 +443,10 @@ body {
 
     .main-content {
         padding: 1rem;
+    }
+
+    .status-row {
+        grid-template-columns: 1fr;
     }
 
     .summary-section {

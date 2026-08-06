@@ -28,10 +28,10 @@ public:
         s.name[sizeof(s.name) - 1] = '\0';
     }
 
-    void set_md_enabled(BrokerId id, bool v)    { slot(id).md_enabled.store(v, std::memory_order_release); }
-    void set_md_connected(BrokerId id, bool v)  { slot(id).md_connected.store(v, std::memory_order_release); }
-    void set_order_enabled(BrokerId id, bool v) { slot(id).order_enabled.store(v, std::memory_order_release); }
-    void set_order_connected(BrokerId id, bool v){ slot(id).order_connected.store(v, std::memory_order_release); }
+    void set_md_enabled(BrokerId id, bool v);
+    void set_md_connected(BrokerId id, bool v);
+    void set_order_enabled(BrokerId id, bool v);
+    void set_order_connected(BrokerId id, bool v);
 
     bool is_md_enabled(BrokerId id)    const { return slot(id).md_enabled.load(std::memory_order_acquire); }
     bool is_md_connected(BrokerId id)  const { return slot(id).md_connected.load(std::memory_order_acquire); }

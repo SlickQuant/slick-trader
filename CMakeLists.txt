@@ -49,7 +49,7 @@ if(SLICK_TRADER_FAST_FETCHCONTENT)
 endif()
 
 set(SLICK_LOGGER_ENABLE_SOURCE_LOCATION OFF CACHE BOOL "" FORCE)
-find_package(slick-logger 1.1.2 CONFIG QUIET)
+find_package(slick-logger 1.1.3 CONFIG QUIET)
 if (NOT slick-logger_FOUND)
     message(STATUS "Fetching slick-logger...")
     # Disable examples, tests, and benchmarks for slick_logger
@@ -59,7 +59,7 @@ if (NOT slick-logger_FOUND)
     FetchContent_Declare(
         slick-logger
         GIT_REPOSITORY https://github.com/SlickQuant/slick-logger.git
-        GIT_TAG v1.1.2
+        GIT_TAG v1.1.3
     )
     FetchContent_MakeAvailable(slick-logger)
 else()

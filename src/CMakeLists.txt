@@ -26,6 +26,7 @@ target_link_libraries(slick-trader-core PUBLIC
 # Broker implementations library
 add_library(slick-trader-brokers STATIC
     core/broker_factory.cpp
+    core/broker_status.cpp
     brokers/coinbase/coinbase_broker.cpp
     brokers/coinbase/coinbase_md_connector.cpp
     brokers/coinbase/coinbase_order_connector.cpp

@@ -305,7 +305,7 @@ protected:
     void on_reject(const OrderRejectEvent& event) override {
         const std::string_view cid(event.client_order_id);
         const std::string_view oid(event.order_id);
-        LOG_WARN("MarketMaker: REJECT cid={} reason={}", cid, std::string_view(event.reason));
+        LOG_WARN("MarketMaker: REJECT cid={} reason={}", cid, event.reason);
 
         auto slot_matches = [&](const QuoteSlot& slot) -> bool {
             if (!cid.empty()) return cid == slot.client_id;
@@ -322,7 +322,7 @@ protected:
     void on_cancel(const OrderCancelEvent& event) override {
         const std::string_view cid(event.client_order_id);
         const std::string_view oid(event.order_id);
-        LOG_DEBUG("MarketMaker: CANCEL cid={}", event.client_order_id);
+        LOG_DEBUG("MarketMaker: CANCEL cid={}", cid);
 
         auto slot_matches = [&](const QuoteSlot& slot) -> bool {
             if (!cid.empty()) return cid == slot.client_id;
@@ -451,6 +451,18 @@ private:
     }
 
     void place_quote(Side side, double price, QuoteSlot& slot) {
+            auto& br = BrokerStatusRegistry::instance();
+        if (!br.is_order_enabled(broker_id_) || !br.is_order_connected(broker_id_)) {
+            if (!order_unavailable_logged_) {
+                LOG_WARN("MarketMaker: {} order system unavailable for broker {} - skipping quote",
+                         side == Side::BUY ? "BID" : "ASK", broker_str_);
+                order_unavailable_logged_ = true;
+            }
+            return;
+        } else if (order_unavailable_logged_) {
+            order_unavailable_logged_ = false;
+        }
+
         const auto cid = submit_order(
             instrument_,
             broker_id_,
@@ -534,6 +546,8 @@ private:
     // Quote slots (one per side)
     QuoteSlot bid_slot_;
     QuoteSlot ask_slot_;
+
+    bool order_unavailable_logged_{false};  // avoid spamming logs if broker order system is down
 };
 
 // ---------------------------------------------------------------------------
