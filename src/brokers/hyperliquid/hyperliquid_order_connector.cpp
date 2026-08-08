@@ -68,10 +68,6 @@ void HyperliquidOrderConnector::register_order_connector() {
 }
 
 bool HyperliquidOrderConnector::connect() {
-    if (!enabled_) {
-        return false;
-    }
-
     LOG_INFO("Hyperliquid Order: Connecting to {}", api_url_);
 
     if (private_key_.empty()) {
@@ -139,6 +135,11 @@ void HyperliquidOrderConnector::start() {
         LOG_WARN("Hyperliquid Order: Already running");
         return;
     }
+
+    if (!enabled_) {
+        return;
+    }
+
     LOG_INFO("Hyperliquid Order: Starting");
     
     if (connect()) {

@@ -100,7 +100,7 @@ protected:
     }
 
     void on_stop() override {
-        LOG_INFO("MarketMaker: Stopping — cancelling open quotes");
+        LOG_INFO("MarketMaker: Stopping - cancelling open quotes");
         // Explicitly cancel ACTIVE and PENDING_MODIFY slots (PENDING_MODIFY may not
         // be covered by cancel_all_orders() if PENDING_MODIFY is not in is_open()).
         for (auto* slot : {&bid_slot_, &ask_slot_}) {

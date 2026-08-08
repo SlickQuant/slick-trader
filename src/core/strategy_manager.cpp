@@ -424,7 +424,7 @@ void StrategyManager::check_broker_status() {
         auto* base = dynamic_cast<StrategyBase*>(strategy.get());
 
         if (md_lost && !is_auto_paused && base && base->is_running()) {
-            LOG_WARN("StrategyManager: Auto-pausing '{}' — {}", name, reason);
+            LOG_WARN("StrategyManager: Auto-pausing '{}' - {}", name, reason);
             strategy->stop();
             auto_paused_strategies_.insert(name);
             auto_pause_reasons_[name] = reason;

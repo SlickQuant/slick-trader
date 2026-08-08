@@ -202,7 +202,9 @@ void HyperliquidMDConnector::run() {
     connect();
 
     while (running_.load(std::memory_order_acquire)) {
-        info_->dispatch();
+        if (info_) {
+            info_->dispatch();
+        }
         process_md_requests();
     }
 
@@ -350,6 +352,60 @@ void HyperliquidMDConnector::on_l2(const nlohmann::json& msg) {
 
     try {
         const auto& data = *data_ptr;
+        const auto s_ptr = data.find("s");
+        if (s_ptr != data.end() && s_ptr->is_string()) {
+            // This is a snapshot response to a subscription request, not an actual l2 update
+
+            const std::string coin = s_ptr->at("coin").get<std::string>();
+            const uint64_t time_ms = s_ptr->value("t", uint64_t(0));
+
+            std::string instr = coin;
+            auto iter = coin_to_name_.find(coin);
+            if (iter != coin_to_name_.end()) {
+                instr = iter->second;
+            }
+
+            const auto& levels = s_ptr->at("levels");
+            if (levels.size() < 2) return;
+
+            const auto& bids = levels[0];
+            const auto& asks = levels[1];
+            const size_t total_levels = bids.size() + asks.size();
+            if (total_levels == 0) return;
+
+            const uint32_t event_size = static_cast<uint32_t>(
+                sizeof(Level2UpdateEvent) + total_levels * sizeof(PriceLevel));
+
+            EventSerializer::publish<Level2UpdateEvent>(*event_buffer_, event_size, [&](Level2UpdateEvent& ev) {
+                ev.broker_id = BrokerId::HYPERLIQUID;
+                ev.timestamp_ns = get_timestamp_ns();
+                ev.event_time_ns = time_ms * 1'000'000ULL;
+                ev.set_instrument(instr);
+                ev.is_snapshot = true;
+                ev.sequence_num = time_ms;
+                ev.num_levels = static_cast<uint16_t>(total_levels);
+
+                size_t idx = 0;
+                for (const auto& level : bids) {
+                    ev.levels[idx].price = to_price_t(std::stod(level["px"].get<std::string>()));
+                    ev.levels[idx].quantity = to_qty_t(std::stod(level["sz"].get<std::string>()));
+                    ev.levels[idx].side = Side::BUY;
+
+                    bid_prices_.insert(ev.levels[idx].price); // Add to bids set
+                    ++idx;
+                }
+                for (const auto& level : asks) {
+                    ev.levels[idx].price = to_price_t(std::stod(level["px"].get<std::string>()));
+                    ev.levels[idx].quantity = to_qty_t(std::stod(level["sz"].get<std::string>()));
+                    ev.levels[idx].side = Side::SELL;
+                    
+                    ask_prices_.insert(ev.levels[idx].price); // Add to asks set
+                    ++idx;
+                }
+            });
+            return;
+        }
+
         const auto c_ptr = data.find("c");
         if (c_ptr == data.end() || !c_ptr->is_string()) return;
 
@@ -363,6 +419,9 @@ void HyperliquidMDConnector::on_l2(const nlohmann::json& msg) {
         if (iter != coin_to_name_.end()) {
             instr = iter->second;
         }
+
+        LOG_TRACE("Hyperliquid MD: l2 for {}: {}", instr, c_ptr->get<std::string>());
+        LOG_TRACE("Hyperliquid MD: l2 diff for {}: {}", instr, diff.dump());
 
         const auto& removed_levels = diff.at("r");
         if (!removed_levels.empty() && removed_levels.is_array() && removed_levels.size() == 2) {
