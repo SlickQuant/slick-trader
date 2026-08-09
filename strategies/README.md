@@ -1,14 +1,31 @@
 # SlickTrader Strategy Plugins
 
-This directory contains example strategy plugins that can be **dynamically loaded at runtime** without recompiling the trading engine.
+This directory contains strategy plugins that can be **dynamically loaded at runtime** without
+recompiling the trading engine.
 
 ## Plugin Architecture
 
-Strategies are compiled as shared libraries (.dll on Windows, .so on Linux/Mac) and loaded using the `StrategyLoader` class. This allows:
-- **Hot-reloading**: Update strategies without restarting the engine
-- **Isolation**: Strategy crashes don't crash the engine
-- **Flexibility**: Load/unload strategies dynamically
-- **Distribution**: Distribute strategy plugins separately
+Strategies are compiled as shared libraries (.dll on Windows, .so on Linux/Mac) and loaded by
+`StrategyManager` via the `StrategyLoader` class. Note what this architecture does and doesn't
+buy you:
+- **Live parameter updates, not code hot-reload**: `PUT /api/strategies/:id/config` calls
+  `on_config()` on an already-loaded strategy and persists the change to `config.json` — no
+  restart needed. But `StrategyManager::load_strategies()` only runs once, at engine startup
+  ([trading_engine.cpp](../src/core/trading_engine.cpp)); nothing re-scans the plugins folder or
+  swaps in a rebuilt `.dll`/`.so` at runtime. To pick up a rebuilt plugin binary, restart the
+  engine.
+- **No crash isolation**: plugins run in-process — same address space, same `StrategyManager`
+  worker thread as the engine. Dispatch calls (`strategy->on_trade()`, `on_quote()`, etc. in
+  [strategy_manager.cpp](../src/core/strategy_manager.cpp)) are plain virtual calls with no
+  `try`/`catch` or SEH wrapping. An unhandled exception or a crash (e.g. null deref) inside a
+  strategy takes down the whole engine — write defensively.
+- **Flexibility**: Load a specific plugin at a given path via `StrategyLoader::load()`
+- **Distribution**: Distribute strategy plugins as standalone `.dll`/`.so` files, built
+  independently of the engine
+
+The one exception is `ManualStrategy` ([manual_strategy.hpp](../include/slick-trader/strategy/manual_strategy.hpp)):
+it's a built-in core strategy, not a plugin, and is always registered at startup to own orders
+placed manually through the Web UI.
 
 ## Building Strategy Plugins
 
@@ -16,14 +33,16 @@ All strategies in this directory are automatically built as shared libraries:
 
 ```bash
 cmake --build build --config Debug
-# Plugins output to: build/strategies/
+# Plugins output to: build/strategies/<Config>/  (e.g. build/strategies/Debug/ on Windows,
+# where <Config> comes from the Visual Studio multi-config generator; build/strategies/ on
+# single-config generators like Ninja/Makefiles)
 ```
 
 ### Windows Output
-- `build/strategies/simple_strategy_plugin.dll`
+- `build/strategies/Debug/market_maker.dll`
 
 ### Linux/Mac Output
-- `build/strategies/libsimple_strategy_plugin.so`
+- `build/strategies/libmarket_maker.so`
 
 ## Creating Your Own Plugin
 
@@ -33,7 +52,7 @@ Inherit from `StrategyBase`:
 
 ```cpp
 #include <slick-trader/strategy/strategy_base.hpp>
-#include <slick-trader/strategy/strategy_loader.hpp>
+#include <slick-trader/strategy/strategy_export.hpp>
 
 class MyStrategy : public slick::trader::StrategyBase {
 public:
@@ -64,15 +83,20 @@ This macro creates the required C functions:
 - `destroy_strategy()` - Destroys strategy instance
 - `get_strategy_name()` - Returns strategy name
 - `get_strategy_version()` - Returns strategy version
+- `set_logger_instance()` - Points the plugin's logger at the host process's logger instance
 
 ### 3. Add to CMakeLists.txt
 
-Add your strategy to `strategies/CMakeLists.txt`:
+Add your strategy to `strategies/CMakeLists.txt`, following the pattern used for `market_maker`:
 
 ```cmake
 add_library(my_strategy SHARED
     my_strategy.cpp
 )
+
+if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
+    set_target_properties(my_strategy PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+endif()
 
 target_include_directories(my_strategy PRIVATE
     ${CMAKE_SOURCE_DIR}/include
@@ -88,14 +112,78 @@ set_target_properties(my_strategy PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
 )
+
+# Synchronize PDB writes on Windows
+if(MSVC)
+    target_compile_options(my_strategy PRIVATE /FS)
+endif()
 ```
 
-## Loading Plugins at Runtime
+### 4. Add a Strategy Config File
 
-### From C++ Code
+Each strategy is configured through a `<name>.config.json` file dropped into the configs folder
+(see [Automatic Loading](#automatic-loading-recommended) below). The filename itself doesn't
+matter as long as it ends in `.config.json` — the file is matched to a loaded plugin by its
+`name` field, which must equal the string returned by your strategy's `name()` (i.e. the first
+constructor argument to `StrategyBase`).
+
+Real example, [config/market_maker.config.json](../config/market_maker.config.json):
+
+```json
+{
+    "name": "MarketMaker",
+    "enabled": true,
+    "parameters": {
+        "broker": "HYPERLIQUID",
+        "instrument": "BTC",
+        "order_size": 0.005,
+        "max_inventory": 0.010001,
+        "min_profit_usd": 0.5
+    },
+    "risk_limits": {
+        "max_loss_per_strategy": -200.0,
+        "max_order_value": 10000.0,
+        "max_orders_per_second": 10,
+        "max_position_size": 0.05
+    }
+}
+```
+
+Schema (parsed by `StrategyConfig::from_json`, see
+[strategy_config.hpp](../include/slick-trader/core/strategy_config.hpp)):
+- `name` — must match `IStrategy::name()`
+- `enabled` — whether to run the strategy (default: `true` if no config file is found at all)
+- `risk_limits` — `max_position_size`, `max_order_value`, `max_orders_per_second`,
+  `max_loss_per_strategy`, plus optional per-instrument overrides under `instruments`
+- `parameters` — free-form JSON strategy authors read via `get_parameter<T>(key, default)`
+
+## Loading Plugins
+
+### Automatic Loading (recommended)
+
+This is how strategies are loaded in practice. On startup, `StrategyManager::load_strategies()`
+(see [strategy_manager.cpp](../src/core/strategy_manager.cpp)) scans a plugins folder for every
+`.dll`/`.so` file, loads them all, and matches each loaded strategy to a `*.config.json` file
+found in a configs folder by name (see [Add a Strategy Config File](#4-add-a-strategy-config-file)
+above). Both folders are set in the top-level `config.json` under `strategies`:
+
+```json
+"strategies": {
+    "enabled": true,
+    "strategy_plugins_folder": "build/strategies/Debug",
+    "strategy_configs_folder": "config"
+}
+```
+
+A plugin with no matching config file is still loaded and defaults to enabled with default risk
+limits; a plugin whose config file has `"enabled": false` is loaded but skipped.
+
+### Manual Loading (advanced)
+
+You can also load a specific plugin directly from C++ using `StrategyLoader`:
 
 ```cpp
-#include <slick-trader/strategy/strategy_loader.hpp>
+#include <slick-trader/core/strategy_loader.hpp>
 
 // Create loader
 StrategyLoader loader;
@@ -135,48 +223,20 @@ if (!strategy) {
 }
 ```
 
-## Example Plugin: SimpleStrategyPlugin
+## Reference Example: MarketMaker
 
-`simple_strategy_plugin.cpp` demonstrates:
-- ✅ Market data consumption (trades, quotes)
-- ✅ Order submission with risk validation
-- ✅ Automatic position tracking (via StrategyBase)
-- ✅ PnL calculation and logging
-- ✅ Proper plugin export
+[market_maker.cpp](market_maker.cpp) is the current, buildable reference plugin — a
+production-ready market maker with:
+- Configurable fair value: `SIMPLE_MID`, `WEIGHTED_MID`, or `NLEVEL_WMID`
+- Inventory skew: reservation price shifted against open position
+- Trend detection: dual-EMA signal shifts quotes in trend direction
+- Book imbalance: immediate microstructure pressure adjustment
+- Quote refresh via direct order modify (single round-trip, no quote gap)
+- A per-side quote-slot state machine (`EMPTY`/`PENDING_NEW`/`ACTIVE`/`PENDING_MODIFY`/`PENDING_CANCEL`)
+- Post-only GTC orders only (maker-friendly)
 
-### To Enable in Example
-
-Edit `examples/example_trading_system.cpp` and uncomment lines 119-142:
-
-```cpp
-// Uncomment this block:
-LOG_INFO("Loading strategy plugin...");
-StrategyLoader loader;
-
-#ifdef _WIN32
-    const std::string plugin_path = "strategies/simple_strategy_plugin.dll";
-#else
-    const std::string plugin_path = "strategies/libsimple_strategy_plugin.so";
-#endif
-
-auto simple_strategy = loader.load(plugin_path);
-if (simple_strategy) {
-    engine.add_strategy(simple_strategy);
-
-    RiskLimits limits;
-    limits.max_position_size = to_qty_t(0.1);
-    limits.max_order_value = to_price_t(10000.0);
-    limits.max_orders_per_second = 10;
-    engine.get_risk_manager().set_limits(simple_strategy->name(), limits);
-}
-```
-
-Then rebuild and run:
-
-```bash
-cmake --build build --config Debug
-./build/examples/Debug/example_trading_system.exe config.json
-```
+All of its config parameters are documented in the file's header comment, and
+[config/market_maker.config.json](../config/market_maker.config.json) shows a real config for it.
 
 ## Plugin Best Practices
 
@@ -256,9 +316,15 @@ Implement proper cleanup in destructor:
 - Verify all dependencies are available
 - Add logging to constructor to debug
 
+### "No config find for strategy X" / strategy running with unexpected defaults
+- Your config file's `name` field doesn't match the strategy's `name()` string
+- Confirm the file lives in `strategy_configs_folder` and ends in `.config.json`
+
 ## Additional Resources
 
 - [StrategyBase API](../include/slick-trader/strategy/strategy_base.hpp)
 - [IStrategy Interface](../include/slick-trader/strategy/istrategy.hpp)
-- [Strategy Loader](../include/slick-trader/strategy/strategy_loader.hpp)
-- [Example Trading System](../examples/example_trading_system.cpp)
+- [StrategyLoader](../include/slick-trader/core/strategy_loader.hpp)
+- [StrategyManager (auto-discovery logic)](../include/slick-trader/core/strategy_manager.hpp)
+- [StrategyConfig (config file schema)](../include/slick-trader/core/strategy_config.hpp)
+- [ManualStrategy](../include/slick-trader/strategy/manual_strategy.hpp)
