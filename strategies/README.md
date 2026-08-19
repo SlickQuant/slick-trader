@@ -40,9 +40,11 @@ cmake --build build --config Debug
 
 ### Windows Output
 - `build/strategies/Debug/market_maker.dll`
+- `build/strategies/Debug/order_stacker.dll`
 
 ### Linux/Mac Output
 - `build/strategies/libmarket_maker.so`
+- `build/strategies/liborder_stacker.so`
 
 ## Creating Your Own Plugin
 
@@ -87,37 +89,50 @@ This macro creates the required C functions:
 
 ### 3. Add to CMakeLists.txt
 
-Add your strategy to `strategies/CMakeLists.txt`, following the pattern used for `market_maker`:
+Add one line to [strategies/CMakeLists.txt](CMakeLists.txt). The
+`slick_trader_add_strategy()` function defined at the top of that file handles the boilerplate —
+`SHARED` library, include paths, linking `slick-trader-core`, the empty `PREFIX`, the output
+directory, and MSVC's `/FS`:
 
 ```cmake
-add_library(my_strategy SHARED
-    my_strategy.cpp
-)
-
-if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
-    set_target_properties(my_strategy PROPERTIES CXX_SCAN_FOR_MODULES OFF)
-endif()
-
-target_include_directories(my_strategy PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
-)
-
-target_link_libraries(my_strategy PRIVATE
-    slick-trader-core
-)
-
-set_target_properties(my_strategy PROPERTIES
-    PREFIX ""
-    OUTPUT_NAME "my_strategy"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/strategies"
-)
-
-# Synchronize PDB writes on Windows
-if(MSVC)
-    target_compile_options(my_strategy PRIVATE /FS)
-endif()
+slick_trader_add_strategy(my_strategy)
 ```
+
+Sources default to `<name>.cpp`. Override them, and link extra targets, with the optional
+`SOURCES` and `LINK` arguments:
+
+```cmake
+slick_trader_add_strategy(my_strategy
+    SOURCES my_strategy.cpp my_helper.cpp
+    LINK    slick::stacker
+)
+```
+
+The two shipped plugins are declared exactly this way:
+
+```cmake
+slick_trader_add_strategy(market_maker)
+slick_trader_add_strategy(order_stacker LINK slick::stacker)
+```
+
+If your plugin needs a third-party library, declare it in
+[strategies/CMakeLists.txt](CMakeLists.txt) alongside the target rather than in the root
+`CMakeLists.txt` — that keeps it out of the dependency graph for anyone who builds with
+`-DSLICK_TRADER_BUILD_STRATEGIES=OFF`. `slick-stacker` is fetched there for this reason.
+
+### Building the plugins at all
+
+The whole directory is behind a CMake option:
+
+```cmake
+option(SLICK_TRADER_BUILD_STRATEGIES "Build the example strategy plugins" ${PROJECT_IS_TOP_LEVEL})
+```
+
+It defaults **ON** when SlickTrader is the top-level project and **OFF** when it is consumed as a
+subproject, on the reasoning that the example plugins are for developing against this repo rather
+than for consuming it. Turn it off explicitly with `-DSLICK_TRADER_BUILD_STRATEGIES=OFF`; the
+engine still builds and still loads any plugin `.dll`/`.so` it finds at runtime, since plugins are
+`dlopen`ed and never linked.
 
 ### 4. Add a Strategy Config File
 
@@ -238,6 +253,57 @@ production-ready market maker with:
 All of its config parameters are documented in the file's header comment, and
 [config/market_maker.config.json](../config/market_maker.config.json) shows a real config for it.
 
+## Reference Example: OrderStacker
+
+[order_stacker.cpp](order_stacker.cpp) is the second reference plugin, and the one to read if you
+want to drive a **third-party order-management library** from `StrategyBase`. It maintains a
+two-sided ladder ("stack") of resting post-only orders using the header-only
+[slick-stacker](https://github.com/SlickQuant/slick-stacker) library: you hand the stacker one
+price and one quantity per side, and it lays down the configured rungs behind that and keeps the
+venue in agreement as acknowledgements, fills, cancels and rejects arrive.
+
+With the shipped defaults (`offset_ticks: 0`, `levels: 4`, `level_gap_ticks: 1`, `tick_size: 0.01`):
+
+```
+  ask ladder                      bid ladder
+  100.04                          100.00   <- best_bid, level 0
+  100.03                           99.99
+  100.02                           99.98
+  100.01                           99.97
+  100.00  <- best_ask, level 0     99.96
+```
+
+### How the integration works
+
+- **The executor bridge.** slick-stacker's `OrderExecutor` concept needs an *integral* order id,
+  but slick-trader identifies orders by `std::string client_order_id` plus a broker-assigned
+  `order_id` that only arrives with the ack. A private nested `Executor` class holds a
+  back-pointer to the strategy — being a nested class, it reaches `StrategyBase`'s protected
+  `submit_order()`/`cancel_order()`/`modify_order()` directly, with no `friend` declaration and no
+  `std::function` indirection. It allocates monotonic `uint64_t` ids of the form `(seq << 1) | side`
+  so the side survives the record being erased.
+- **`ack_required = true` is a prerequisite, not a tuning knob.** `cancel_order()` needs the broker
+  `order_id`, which does not exist until the ack. `ack_required=true` is what stops the stacker
+  asking for a cancel or modify any earlier.
+- **Prices are snapped to the tick grid**, rounding away from the market on both sides. An off-grid
+  price makes the stacker's `depth_of()` return an invalid depth, which it answers with a full
+  rebase — cancelling every order, every tick. Rounding away from the market also means rounding
+  can never push a price across the spread.
+- **`offset_ticks = 0` quotes at the touch.** When `tick_size` equals the venue tick, the snap is
+  an identity and level 0 sits exactly on the best bid/ask. Set `tick_size` coarser and the quote
+  snaps to the grid instead, sitting up to one tick behind — safe, but not what the name implies.
+  Expect a higher post-only reject rate at offset 0; the stacker re-places those on the next pass.
+- **One `reconcile()` per event.** The stacker's `on_*` handlers never send — all I/O happens in
+  `reconcile()`. The library wants one reconcile per event *batch*, but the engine dispatches one
+  event at a time, so the plugin reconciles at the end of every handler behind a re-entrancy guard.
+- **A `max_position` guard** pulls the offending side once the filled position reaches the limit,
+  with a hysteresis band so it cannot flap. Note it sees only the *filled* position, so peak
+  exposure can overshoot by up to one ladder before the pull lands.
+
+Every config parameter is documented in the file's header comment;
+[order_stacker.json](order_stacker.json) is the template to copy to
+`config/order_stacker.config.json`.
+
 ## Plugin Best Practices
 
 ### 1. Use StrategyBase
@@ -283,6 +349,18 @@ Implement proper cleanup in destructor:
     // Release resources
 }
 ```
+
+### 6. Respect the Worker Thread
+Market-data and order callbacks all run on the single `StrategyManager` worker thread, so state
+touched only from those handlers needs no locking. Two callbacks are exceptions:
+
+- `on_config()` arrives from the **WebServer** thread via `PUT /api/strategies/:id/config`
+- `on_stop()` runs on the caller's thread, *before* the worker thread is joined
+
+If your strategy owns anything large or non-atomic, latch new parameters in `on_config()` and
+apply them from a market-data handler rather than mutating in place — see `apply_pending_params()`
+in [order_stacker.cpp](order_stacker.cpp). (`market_maker.cpp` calls `update_quotes()` straight
+from `on_config()`, which is the pattern to avoid for anything bigger than a few scalars.)
 
 ## Platform-Specific Notes
 

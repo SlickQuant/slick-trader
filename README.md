@@ -76,6 +76,8 @@ dashboard for monitoring and manual control.
   (both `find_package(... REQUIRED)`, not auto-fetched). Configure with vcpkg's toolchain file.
 - Everything else (`slick-logger`, `slick-orderbook`, `slick-net`, `coinbase-advanced-cpp`,
   `hyperliquid-cpp`) is pulled automatically via CMake `FetchContent` if not already installed.
+  `slick-stacker` is fetched too, but only when the strategy plugins are being built — it is
+  needed solely by `order_stacker`.
 - Optional: a system **Lua 5.4** or **Python3** (dev headers) if you want to enable
   `SLICK_TRADER_ENABLE_LUA_STRATEGY` / script-based strategies (Python auto-detection is on by
   default; Lua is off by default).
@@ -99,7 +101,18 @@ Build:
 
 This produces:
 - `build/Debug/slick-trader.exe` — the main engine executable
-- `build/strategies/Debug/*.dll` — strategy plugins (e.g. `market_maker.dll`)
+- `build/strategies/Debug/*.dll` — strategy plugins (e.g. `market_maker.dll`, `order_stacker.dll`)
+
+### Build Options
+
+| Option | Default | Effect |
+|---|---|---|
+| `SLICK_TRADER_BUILD_STRATEGIES` | ON when top-level, OFF as a subproject | Build the example strategy plugins. When OFF, `slick-stacker` is not fetched either — it is needed only by `order_stacker`. The engine is unaffected: plugins are `dlopen`ed at runtime, never linked. |
+| `SLICK_TRADER_DISABLE_CXX_MODULE_SCAN` | ON | Skip C++ module dependency scanning for faster MSVC builds |
+| `SLICK_TRADER_FAST_FETCHCONTENT` | ON | Skip FetchContent update checks on every configure |
+| `SLICK_TRADER_SUPPRESS_VS_REGEN` | ON | Disable `ZERO_CHECK` auto-regeneration for Visual Studio generators |
+| `SLICK_TRADER_ENABLE_PYTHON_STRATEGY` | ON | Auto-detect Python3 for script-based strategies |
+| `SLICK_TRADER_ENABLE_LUA_STRATEGY` | OFF | Auto-detect Lua 5.4 for script-based strategies |
 
 See [strategies/README.md](strategies/README.md) for how to write and build your own strategy
 plugin.
@@ -194,6 +207,10 @@ project setup, `CMakeLists.txt` wiring, config schema, loading, and troubleshoot
 [strategies/README.md](strategies/README.md). [`strategies/market_maker.cpp`](strategies/market_maker.cpp)
 is a production-style reference implementation (configurable fair value, inventory skew, trend
 detection, book-imbalance adjustment, post-only quoting via a per-side state machine).
+[`strategies/order_stacker.cpp`](strategies/order_stacker.cpp) is the reference for integrating a
+third-party order-management library: it maintains a two-sided ladder of resting orders offset a
+configurable number of ticks from the top of book, driving `slick-stacker` through an executor
+adapter over `StrategyBase`.
 
 ## Dependencies
 
@@ -201,6 +218,7 @@ detection, book-imbalance adjustment, post-only quoting via a per-side state mac
 |---|---|
 | [slick-logger](https://github.com/SlickQuant/slick-logger) | Logging |
 | [slick-orderbook](https://github.com/SlickQuant/slick-orderbook) | L2 order book maintenance |
+| [slick-stacker](https://github.com/SlickQuant/slick-stacker) | Header-only resting-order ladder engine (used by the `order_stacker` strategy plugin) |
 | [slick-net](https://github.com/SlickQuant/slick-net) | Networking (fetched transitively by the broker SDKs) |
 | [slick-queue](https://github.com/SlickQuant/slick-queue) / `stream_buffer_multiplexer` | Lock-free single-producer event queues, multiplexed for broadcast to strategies/web |
 | [coinbase-advanced-cpp](https://github.com/SlickQuant/coinbase-advanced-cpp) | Coinbase Advanced Trade API client |

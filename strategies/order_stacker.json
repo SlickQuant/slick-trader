@@ -1,0 +1,27 @@
+{
+    "name": "OrderStacker",
+    "enabled": true,
+    "parameters": {
+        "broker": "COINBASE",
+        "instrument": "BTC-USD",
+        "tick_size": 0.01,
+        "offset_ticks": 0,
+        "levels": 4,
+        "level_gap_ticks": 1,
+        "stack_qty": 0.001,
+        "top_qty": 0.001,
+        "max_position": 0.01,
+        "position_resume_qty": 0.001,
+        "post_only": true,
+        "prefer_modify": true,
+        "refill_on_fill": false,
+        "slack_levels": 1,
+        "min_order_qty": 0.0001
+    },
+    "risk_limits": {
+        "max_loss_per_strategy": -200.0,
+        "max_order_value": 10000.0,
+        "max_orders_per_second": 200,
+        "max_position_size": 0.05
+    }
+}

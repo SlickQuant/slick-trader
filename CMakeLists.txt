@@ -11,6 +11,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN "Disable C++ module dependency scanning for faster MSVC builds" ON)
 option(SLICK_TRADER_FAST_FETCHCONTENT "Avoid FetchContent update checks on every configure" ON)
+# Example strategy plugins are for developing against this repo, not for consuming it. Default them
+# off when SlickTrader is pulled in as a subproject, so a dependent neither builds them nor pays for
+# the dependencies only they need (slick-stacker, declared in strategies/CMakeLists.txt).
+option(SLICK_TRADER_BUILD_STRATEGIES "Build the example strategy plugins" ${PROJECT_IS_TOP_LEVEL})
 option(SLICK_TRADER_SUPPRESS_VS_REGEN "Disable ZERO_CHECK auto-regeneration for Visual Studio generators" ON)
 option(SLICK_TRADER_ENABLE_LUA_STRATEGY "Enable Lua strategy support auto-detection" OFF)
 option(SLICK_TRADER_ENABLE_PYTHON_STRATEGY "Enable Python strategy support auto-detection" ON)
@@ -45,6 +49,7 @@ if(SLICK_TRADER_FAST_FETCHCONTENT)
     set(FETCHCONTENT_UPDATES_DISCONNECTED_SLICK-LOGGER ON CACHE BOOL "" FORCE)
     set(FETCHCONTENT_UPDATES_DISCONNECTED_SLICK-NET ON CACHE BOOL "" FORCE)
     set(FETCHCONTENT_UPDATES_DISCONNECTED_SLICK-ORDERBOOK ON CACHE BOOL "" FORCE)
+    set(FETCHCONTENT_UPDATES_DISCONNECTED_SLICK-STACKER ON CACHE BOOL "" FORCE)
     set(FETCHCONTENT_UPDATES_DISCONNECTED_COINBASE-ADVANCED-CPP ON CACHE BOOL "" FORCE)
 endif()
 
@@ -82,6 +87,10 @@ if (NOT slick-orderbook_FOUND)
 else()
     message(STATUS "Found slick-orderbook ${slick-orderbook_VERSION}: ${slick-orderbook_DIR}")
 endif()
+
+# NOTE: slick-stacker is NOT declared here. It is needed only by the order_stacker strategy
+# plugin, so it is declared in strategies/CMakeLists.txt and fetched only when
+# SLICK_TRADER_BUILD_STRATEGIES is ON.
 
 # Add coinbase-advanced-cpp dependency
 find_package(coinbase-advanced-cpp 1.0.0 CONFIG QUIET)
@@ -194,7 +203,11 @@ elseif(UNIX AND APPLE)
 endif()
 
 add_subdirectory(src)
-add_subdirectory(strategies)
+if(SLICK_TRADER_BUILD_STRATEGIES)
+    add_subdirectory(strategies)
+else()
+    message(STATUS "Strategy plugins disabled (SLICK_TRADER_BUILD_STRATEGIES=OFF)")
+endif()
 add_subdirectory(web)
 # add_subdirectory(examples)
 
