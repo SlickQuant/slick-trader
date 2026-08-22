@@ -17,6 +17,14 @@
 //   order_size             (default: 0.001) — order size per side
 //   max_inventory          (default: 0.01)  — absolute position limit; skips a side at limit
 //   refresh_threshold_bps  (default: 0.5)  — reprice if target moves more than this many bps
+//   tick_size              (default: 0)    — instrument tick; enables the absolute threshold below
+//   refresh_threshold_ticks(default: 0)    — reprice if target moves more than this many ticks.
+//                                             Overrides refresh_threshold_bps when both this and
+//                                             tick_size are set. Required for instruments trading
+//                                             at or through zero, where bps of price means nothing.
+//   allow_negative_price   (default: false)— accept zero/negative bids and asks as real prices
+//                                             (futures calendar spreads) instead of bad data.
+//                                             Pair it with the tick threshold above.
 //   inventory_skew_factor  (default: 0.3)  — [0,1] how aggressively to lean vs inventory
 //   fair_value_mode        (default: "WEIGHTED_MID") — see above
 //   nlevel_depth           (default: 5)    — book levels for NLEVEL_WMID (max 10)
@@ -34,6 +42,8 @@
 #include <slick-trader/utils/types.hpp>
 #include <algorithm>
 #include <cmath>
+#include <format>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -57,17 +67,41 @@ enum class SlotState : uint8_t {
     PENDING_CANCEL   // cancel_order() called (inventory limit), waiting for on_cancel
 };
 
+// "No price" marker for the double-valued prices below. Zero cannot serve as one: futures
+// calendar spreads and the odd outright settle at or below zero, so 0.0 and negatives are
+// real prices. NaN is what from_price_t(NULL_PRICE) already yields, so the two agree.
+inline constexpr double kNoPrice = std::numeric_limits<double>::quiet_NaN();
+
+// How far two prices may sit apart and still count as the same price, in absolute price units.
+//
+//   tick mode (tick_tolerance > 0) — a fixed distance, independent of price level. The only
+//     measure that means anything for an instrument that trades at or through zero, such as a
+//     futures calendar spread, where a percentage of the price is a percentage of nothing.
+//   bps mode  — a fraction of |reference|. The absolute value matters: a spread quoted below
+//     zero with a signed reference yields a negative tolerance, and every comparison against
+//     it inverts, so every move reads as "unchanged" and the strategy stops repricing.
+inline double price_tolerance(double reference, double bps_fraction, double tick_tolerance) {
+    if (tick_tolerance > 0.0) return tick_tolerance;
+    return std::abs(reference) * bps_fraction;
+}
+
 struct QuoteSlot {
     SlotState   state{SlotState::EMPTY};
     std::string client_id;       // assigned immediately by submit_order()
     std::string broker_id;       // assigned by broker in on_ack()
-    double      posted_price{0.0};
+    // Last state the venue confirmed for this order. Updated on every ack, so a rejected
+    // amendment falls back to what is actually resting rather than to what we last asked for.
+    double      posted_price{kNoPrice};
+    double      posted_qty{0.0};
+    double      pending_price{kNoPrice};  // price requested by an in-flight modify
 
     void reset() {
-        state        = SlotState::EMPTY;
+        state         = SlotState::EMPTY;
         client_id.clear();
         broker_id.clear();
-        posted_price = 0.0;
+        posted_price  = kNoPrice;
+        posted_qty    = 0.0;
+        pending_price = kNoPrice;
     }
 };
 
@@ -89,10 +123,18 @@ protected:
 
     bool on_initialize() override {
         LOG_INFO("MarketMaker: Initialized instrument={} broker={} "
-                 "min_profit_usd={} taker_fee_rate={:.4f} size={} max_inv={} fv_mode={}",
+                 "min_profit_usd={} taker_fee_rate={:.4f} size={} max_inv={} fv_mode={} "
+                 "refresh={} neg_price={}",
                  instrument_, broker_str_, min_profit_usd_, taker_fee_rate_,
-                 order_size_, max_inventory_, fair_value_mode_str_);
+                 order_size_, max_inventory_, fair_value_mode_str_,
+                 refresh_mode_description(), allow_negative_price_);
         return true;
+    }
+
+    std::string refresh_mode_description() const {
+        return tick_tolerance_ > 0.0
+            ? std::format("{}tick ({})", refresh_threshold_ticks_, tick_tolerance_)
+            : std::format("{}bps", refresh_threshold_bps_ * 10000.0);
     }
 
     void on_start() override {
@@ -123,6 +165,22 @@ protected:
         order_size_    = get_parameter<double>("order_size", 0.001);
         max_inventory_ = get_parameter<double>("max_inventory", 0.01);
         refresh_threshold_bps_ = get_parameter<double>("refresh_threshold_bps", 0.5) / 10000.0;
+
+        // Absolute reprice threshold. Both have to be set for it to take over from bps; a bps
+        // threshold is a fraction of the price and therefore meaningless for an instrument that
+        // trades at or through zero.
+        tick_size_               = get_parameter<double>("tick_size", 0.0);
+        refresh_threshold_ticks_ = get_parameter<double>("refresh_threshold_ticks", 0.0);
+        tick_tolerance_ = (tick_size_ > 0.0 && refresh_threshold_ticks_ > 0.0)
+                        ? tick_size_ * refresh_threshold_ticks_
+                        : 0.0;
+
+        allow_negative_price_ = get_parameter<bool>("allow_negative_price", false);
+        if (allow_negative_price_ && tick_tolerance_ <= 0.0) {
+            LOG_WARN("MarketMaker: allow_negative_price is set but no tick threshold is configured "
+                     "(tick_size + refresh_threshold_ticks). Near zero a bps threshold collapses "
+                     "to nothing and the strategy will reprice on every tick.");
+        }
         inventory_skew_factor_ = get_parameter<double>("inventory_skew_factor", 0.3);
         imbalance_sensitivity_ = get_parameter<double>("imbalance_sensitivity", 0.3);
         trend_sensitivity_     = get_parameter<double>("trend_sensitivity", 0.5);
@@ -156,7 +214,7 @@ protected:
         // If already running with a valid fair value, immediately recalculate quotes so
         // updated parameters (spread, size, etc.) take effect without waiting for the next tick.
         // update_quotes() uses needs_refresh() → modify_slot() for in-place order updates.
-        if (is_running() && fair_value_ > 0.0) {
+        if (is_running() && !std::isnan(fair_value_)) {
             LOG_INFO("MarketMaker: Config updated at runtime — recalculating quotes");
             update_quotes();
         }
@@ -185,7 +243,7 @@ protected:
         const double bid_qty = from_qty_t(event.bid_quantity);
         const double ask_qty = from_qty_t(event.ask_quantity);
 
-        if (bid <= 0.0 || ask <= 0.0 || bid >= ask) return;
+        if (!is_usable_price(bid) || !is_usable_price(ask) || bid >= ask) return;
 
         const double total_qty = bid_qty + ask_qty;
 
@@ -234,7 +292,13 @@ protected:
         const double total_qty = bid_total_qty + ask_total_qty;
 
         // Cross-side weighted: weight toward the thinner side (same logic as WEIGHTED_MID)
-        fair_value_     = (bid_vwap * ask_total_qty + ask_vwap * bid_total_qty) / total_qty;
+        const double fv = (bid_vwap * ask_total_qty + ask_vwap * bid_total_qty) / total_qty;
+
+        // Individual levels are not screened the way on_quote() screens top of book, so a level
+        // carrying NULL_PRICE would poison the VWAP with NaN. Check the result before adopting it.
+        if (!is_usable_price(fv)) return;
+
+        fair_value_     = fv;
         book_imbalance_ = (bid_total_qty - ask_total_qty) / total_qty;
 
         update_ema(fair_value_);
@@ -255,9 +319,37 @@ protected:
         // event.price is the broker-confirmed price (new price for modifies).
         auto handle = [&](QuoteSlot& slot, const char* label) {
             if (cid != slot.client_id) return;
-            slot.state        = SlotState::ACTIVE;
-            slot.broker_id    = std::string(event.order_id);
-            slot.posted_price = from_price_t(event.price);
+
+            const double acked_price = from_price_t(event.price);
+            const double acked_qty   = from_qty_t(event.quantity);
+
+            // Every ack is the venue stating where the order rests right now, so the slot
+            // records it unconditionally — including acks that do not settle a pending
+            // edit. That recorded state is exactly what the order falls back to if the
+            // edit is rejected, and on venues that allow several edits in flight (CME) it
+            // can be a *later* accepted one than the edit being waited on, not the state
+            // we started from. Only the state transition below is conditional.
+            slot.broker_id  = std::string(event.order_id);
+            slot.posted_qty = acked_qty;
+            if (!std::isnan(acked_price)) {
+                slot.posted_price = acked_price;  // keep the last real price if this ack has none
+            }
+
+            // While an edit is in flight the venue also keeps streaming the order's
+            // *pre-edit* state (Coinbase publishes an OPEN update per book change).
+            // Completing the modify on one of those drops the slot to ACTIVE at the old
+            // price, so the next tick fires a second edit on top of the first — which is
+            // what the exchange answers with edit_failure_reason: UNKNOWN. Only an ack at
+            // the price we asked for closes a PENDING_MODIFY.
+            if (slot.state == SlotState::PENDING_MODIFY && !is_confirming_price(acked_price, slot.pending_price)) {
+                LOG_DEBUG("MarketMaker: {} resting at {:.4f}x{} while modify to {:.4f} is in "
+                          "flight — recorded, slot stays PENDING_MODIFY",
+                          label, acked_price, acked_qty, slot.pending_price);
+                return;
+            }
+
+            slot.state         = SlotState::ACTIVE;
+            slot.pending_price = kNoPrice;
             LOG_DEBUG("MarketMaker: {} ack price={:.4f} broker={}", label,
                       slot.posted_price, event.order_id);
         };
@@ -289,7 +381,7 @@ protected:
                 ask_slot_.reset();
             }
             // Re-quote immediately on full fill
-            if (is_running() && fair_value_ > 0.0) {
+            if (is_running() && !std::isnan(fair_value_)) {
                 update_quotes();
             }
         }
@@ -311,10 +403,33 @@ protected:
             if (!cid.empty()) return cid == slot.client_id;
             return !oid.empty() && oid == slot.broker_id;
         };
-        if (slot_matches(bid_slot_)) {
-            bid_slot_.reset();
-        } else if (slot_matches(ask_slot_)) {
-            ask_slot_.reset();
+
+        // A refused *amendment* is not a dead order. An edit or a cancel the venue rejects
+        // leaves the original resting at the last state it confirmed, so the slot returns to
+        // ACTIVE and the next tick retries. Clearing it is what leaked an order per failed
+        // edit: the slot went EMPTY and update_quotes() placed a second one beside the live
+        // original. Every other reject — a PENDING_NEW that never reached the book, a venue
+        // FAILED on a resting order — does mean the order is gone, so the slot is cleared.
+        auto handle = [&](QuoteSlot& slot, const char* label) -> bool {
+            if (!slot_matches(slot)) return false;
+            switch (slot.state) {
+            case SlotState::PENDING_MODIFY:
+            case SlotState::PENDING_CANCEL:
+                LOG_WARN("MarketMaker: {} {} rejected — order still resting at {:.4f}x{}, "
+                         "the last state the venue confirmed", label,
+                         slot.state == SlotState::PENDING_MODIFY ? "edit" : "cancel",
+                         slot.posted_price, slot.posted_qty);
+                slot.state         = SlotState::ACTIVE;
+                slot.pending_price = kNoPrice;
+                break;
+            default:
+                slot.reset();
+                break;
+            }
+            return true;
+        };
+        if (!handle(bid_slot_, "BID")) {
+            handle(ask_slot_, "ASK");
         }
         // Next market data event will trigger re-quoting
     }
@@ -335,7 +450,7 @@ protected:
         }
 
         // Re-quote if strategy is still running (i.e., this was a refresh cancel)
-        if (is_running() && fair_value_ > 0.0) {
+        if (is_running() && !std::isnan(fair_value_)) {
             update_quotes();
         }
     }
@@ -356,14 +471,21 @@ private:
         ++quote_count_;
     }
 
-    // Returns trend signal in [-1, +1]; 0 during EMA warm-up
-    double trend_signal() const {
-        if (quote_count_ < static_cast<uint64_t>(ema_slow_periods_) || fair_value_ <= 0.0) {
+    // Returns trend signal in [-1, +1]; 0 during EMA warm-up.
+    //
+    // The EMA spread is an absolute price move, so it needs a scale to become a signal.
+    // |fair value| / 1000 is the long-standing one — a 0.1% spread between the EMAs saturates
+    // the signal — and the absolute value keeps it from inverting below zero. That is no scale
+    // at all for an instrument trading at or near zero, so tick mode normalises by the half
+    // spread instead: one half-spread of EMA drift saturates.
+    double trend_signal(double half_spread) const {
+        if (quote_count_ < static_cast<uint64_t>(ema_slow_periods_) || std::isnan(fair_value_)) {
             return 0.0;
         }
-        // Normalize EMA spread relative to fair value, then scale to [-1, +1]
-        const double raw = (ema_fast_ - ema_slow_) / fair_value_;
-        return std::clamp(raw * 1000.0, -1.0, 1.0);
+        const double scale = tick_tolerance_ > 0.0 ? half_spread
+                                                   : std::abs(fair_value_) / 1000.0;
+        if (scale <= 0.0) return 0.0;
+        return std::clamp((ema_fast_ - ema_slow_) / scale, -1.0, 1.0);
     }
 
     double current_inventory() {
@@ -372,9 +494,33 @@ private:
             get_position_tracker()->get_position(get_name(), instrument_).quantity);
     }
 
+    double tolerance_around(double reference) const {
+        return price_tolerance(reference, refresh_threshold_bps_, tick_tolerance_);
+    }
+
     bool needs_refresh(double posted, double target) const {
-        if (posted <= 0.0) return true;
-        return std::abs(target - posted) / posted > refresh_threshold_bps_;
+        if (std::isnan(posted)) return true;   // nothing confirmed yet — post one
+        if (std::isnan(target)) return false;  // no usable target — leave the order alone
+        return std::abs(target - posted) > tolerance_around(posted);
+    }
+
+    // Does an ack price confirm the edit we requested? The venue rounds to its own tick,
+    // so an ack never comes back bit-exact. Half the refresh threshold is the right
+    // window: it swallows tick rounding, yet is strictly narrower than any reprice we
+    // would have asked for, since needs_refresh() only fires past the full threshold —
+    // so a pre-edit price can never be mistaken for a confirmation.
+    bool is_confirming_price(double acked, double requested) const {
+        if (std::isnan(requested)) return true;  // no edit outstanding — nothing to confirm
+        if (std::isnan(acked)) return false;     // venue quoted no price — keep waiting
+        return std::abs(acked - requested) <= tolerance_around(requested) * 0.5;
+    }
+
+    // A price the strategy can quote around. NaN is the venue saying "no price". Zero and
+    // negatives are real prices only where the instrument actually trades there, so they stay
+    // rejected as bad data unless allow_negative_price says otherwise.
+    bool is_usable_price(double p) const {
+        if (std::isnan(p)) return false;
+        return allow_negative_price_ || p > 0.0;
     }
 
     // -----------------------------------------------------------------------
@@ -382,7 +528,7 @@ private:
     // -----------------------------------------------------------------------
 
     void update_quotes() {
-        if (!is_running() || fair_value_ <= 0.0) return;
+        if (!is_running() || std::isnan(fair_value_)) return;
 
         // Recover slots that got stuck in PENDING_NEW because submit_order() was
         // rejected before the order left the process (empty client_id = never sent).
@@ -393,13 +539,16 @@ private:
             ask_slot_.reset();
         }
 
-        const double half_spread = min_profit_usd_ / (2.0 * order_size_) + fair_value_ * taker_fee_rate_;
+        // Fees are charged on absolute notional, so the fee term uses |fair value| — a signed
+        // one would shrink the spread on an instrument quoted below zero.
+        const double half_spread = min_profit_usd_ / (2.0 * order_size_)
+                                 + std::abs(fair_value_) * taker_fee_rate_;
         const double inventory    = current_inventory();
         const double inv_ratio    = std::clamp(inventory / max_inventory_, -1.0, 1.0);
 
         // Three independent additive adjustments to reservation price
         const double skew_offset = -inv_ratio * inventory_skew_factor_ * half_spread;
-        const double trend_off   = trend_signal() * trend_sensitivity_ * half_spread;
+        const double trend_off   = trend_signal(half_spread) * trend_sensitivity_ * half_spread;
         const double imb_off     = book_imbalance_ * imbalance_sensitivity_ * half_spread;
 
         const double adjusted_mid = fair_value_ + skew_offset + trend_off + imb_off;
@@ -502,8 +651,12 @@ private:
     void modify_slot(QuoteSlot& slot, double new_price) {
         if (slot.state != SlotState::ACTIVE) return;
         modify_order(slot.client_id, to_price_t(new_price), to_qty_t(order_size_));
-        slot.state        = SlotState::PENDING_MODIFY;
-        slot.posted_price = new_price;  // optimistic; confirmed to broker-actual in on_ack
+        slot.state         = SlotState::PENDING_MODIFY;
+        slot.pending_price = new_price;
+        // posted_price deliberately keeps the last confirmed price: until the venue acks
+        // the edit that is still where the order rests, and if the edit is rejected
+        // needs_refresh() has to compare the next target against reality, not against a
+        // price we only wished for.
         LOG_DEBUG("MarketMaker: MODIFY {} -> {:.4f}", slot.client_id, new_price);
     }
 
@@ -521,6 +674,9 @@ private:
     double order_size_{0.001};
     double max_inventory_{0.01};
     double refresh_threshold_bps_{0.5 / 10000.0};
+    double tick_size_{0.0};
+    double refresh_threshold_ticks_{0.0};
+    bool   allow_negative_price_{false};
     double inventory_skew_factor_{0.3};
     double imbalance_sensitivity_{0.3};
     double trend_sensitivity_{0.5};
@@ -531,11 +687,13 @@ private:
     // Derived from config
     double alpha_fast_{0.0};
     double alpha_slow_{0.0};
+    // > 0 switches the reprice threshold from bps of price to this absolute distance.
+    double tick_tolerance_{0.0};
 
     // -----------------------------------------------------------------------
     // Runtime state
     // -----------------------------------------------------------------------
-    double   fair_value_{0.0};
+    double   fair_value_{kNoPrice};
     double   book_imbalance_{0.0};
 
     // EMA state

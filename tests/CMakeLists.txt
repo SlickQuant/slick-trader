@@ -29,6 +29,9 @@ add_executable(slick-trader-tests
     test_main.cpp
     test_broker_status_injection.cpp
     test_strategy_ownership.cpp
+    # Includes strategies/market_maker.cpp directly — the plugin has no header, and its quote-slot
+    # state machine is what the test drives.
+    test_market_maker_quote_slots.cpp
 )
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)

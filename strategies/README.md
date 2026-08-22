@@ -259,6 +259,40 @@ production-ready market maker with:
 - A per-side quote-slot state machine (`EMPTY`/`PENDING_NEW`/`ACTIVE`/`PENDING_MODIFY`/`PENDING_CANCEL`)
 - Post-only GTC orders only (maker-friendly)
 
+Three things the slot machine has to get right, because each of the first two leaks live orders
+if it does not:
+
+- **A rejected amendment is not a dead order.** Venues reject an edit (Coinbase:
+  `edit_failure_reason`) or a cancel while leaving the original resting. `PENDING_MODIFY` and
+  `PENDING_CANCEL` + reject therefore return to `ACTIVE` and retry; every other reject clears the
+  slot. Clearing it on an amendment failure leaves the original resting and puts a second order
+  beside it.
+- **Only an ack at the requested price closes a `PENDING_MODIFY`.** Venues keep streaming the
+  order's pre-edit price while the edit is in flight. Accepting one of those as the modify ack
+  drops the slot to `ACTIVE` at the stale price and fires a second, overlapping edit — which is
+  what provokes the edit failure in the first place.
+- **Every ack records where the order rests, even one that settles nothing.** An ack is the venue
+  stating the order's current price and size, and that is what the order falls back to when an
+  amendment is rejected. On a venue that accepts several edits in flight (CME) the fallback is the
+  last edit it *accepted*, not the state the sequence started from.
+
+### Prices at or below zero
+
+Futures calendar spreads trade through zero, so the strategy never uses `0.0` as a "no price"
+marker — `NaN` is, matching what `from_price_t(NULL_PRICE)` returns — and never divides by a
+signed price. Two config parameters turn the support on:
+
+| Parameter | Purpose |
+|---|---|
+| `allow_negative_price` | Accept zero/negative bids and asks as real prices instead of rejecting them as bad data. Default `false`, which keeps the historical behaviour for instruments that cannot trade there. |
+| `tick_size` + `refresh_threshold_ticks` | Reprice on an absolute number of ticks instead of `refresh_threshold_bps`. Both must be set; together they override the bps threshold. |
+
+The tick threshold is not optional in practice: a bps threshold is a fraction of the price, and
+near zero that fraction collapses to nothing, so the strategy would reprice on every tick. Setting
+`allow_negative_price` without it logs a warning. Tick mode also changes how the trend term is
+normalised — by the half spread rather than by `|fair value| / 1000`, which is no scale at all for
+an instrument quoted near zero.
+
 All of its config parameters are documented in the file's header comment, and
 [config/market_maker.config.json](../config/market_maker.config.json) shows a real config for it.
 
