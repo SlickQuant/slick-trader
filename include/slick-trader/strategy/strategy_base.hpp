@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <atomic>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -92,6 +93,16 @@ public:
     void on_order_ack(const OrderAckEvent& event) override {
         const std::string client_id(event.client_order_id);
         const std::string order_id(event.order_id);
+
+        // Every strategy receives every ack, so foreign ones have to be dropped here —
+        // before the "unknown client_order_id" branch below adopts them and starts
+        // booking another strategy's fills into this strategy's position and PnL.
+        if (!owns_order(client_id, order_id)) {
+            LOG_DEBUG("Strategy {}: ignoring ACK for foreign order client_order_id={} order_id={}",
+                      name_, client_id, order_id);
+            return;
+        }
+
         LOG_INFO("Strategy {}: on_order_ack client_order_id={} order_id={}", name_, client_id, order_id);
         // Coinbase sends a second OPEN-status ACK with empty client_order_id; ignore it to
         // prevent a phantom "" entry from overwriting order_id_to_client_id_ mappings.
@@ -102,7 +113,8 @@ public:
         }
         auto it = orders_by_client_id_.find(client_id);
         if (it == orders_by_client_id_.end()) {
-            // Order not previously seen (e.g. arrived from reconnect snapshot)
+            // Ours by client_order_id but not tracked yet (e.g. replayed from a broker
+            // reconnect snapshot) — owns_order() has already vouched for the prefix.
             LOG_INFO("Strategy {}: ACK for unknown client_order_id={} - inserting new entry", name_, client_id);
             Order order;
             order.client_order_id  = client_id;
@@ -142,37 +154,45 @@ public:
     // Automatically track fills in position tracker and maintain order state
     void on_order_fill(const OrderFillEvent& event) override {
         const std::string order_id(event.order_id);
-        LOG_INFO("Strategy {}: on_order_fill called order_id={} qty={} price={} side={}",
+        auto cid_it = order_id_to_client_id_.find(order_id);
+        if (cid_it == order_id_to_client_id_.end()) {
+            // Fills fan out to every strategy; this one was placed by another.
+            LOG_DEBUG("Strategy {}: ignoring fill for foreign order_id={}", name_, order_id);
+            return;
+        }
+
+        LOG_INFO("Strategy {}: on_order_fill order_id={} qty={} price={} side={}",
                  name_, order_id, from_qty_t(event.fill_quantity), from_price_t(event.fill_price),
                  event.side == Side::BUY ? "BUY" : "SELL");
-        auto cid_it = order_id_to_client_id_.find(order_id);
-        if (cid_it != order_id_to_client_id_.end()) {
-            auto& order = orders_by_client_id_.at(cid_it->second);
-            const qty_t new_filled = order.filled_qty + event.fill_quantity;
-            if (new_filled > 0) {
-                order.avg_fill_price = to_price_t(
-                    (from_price_t(order.avg_fill_price) * from_qty_t(order.filled_qty)
-                     + from_price_t(event.fill_price) * from_qty_t(event.fill_quantity))
-                    / from_qty_t(new_filled));
-            }
-            order.filled_qty       = new_filled;
-            order.remaining_qty    = event.remaining_quantity;
-            order.last_update_time = event.timestamp_ns;
-            order.status = (order.remaining_qty == 0)
-                               ? OrderStatus::FILLED
-                               : OrderStatus::PARTIALLY_FILLED;
 
-            LOG_INFO("Strategy {}: order {} owned - tracking position", name_, order_id);
-            position_tracker_->on_fill(name_, event);
-            on_fill(event);  // Call derived class hook
-        } else {
-            LOG_INFO("Strategy {}: fill for order_id={} not owned (map size={})",
-                     name_, order_id, order_id_to_client_id_.size());
+        auto& order = orders_by_client_id_.at(cid_it->second);
+        const qty_t new_filled = order.filled_qty + event.fill_quantity;
+        if (new_filled > 0) {
+            order.avg_fill_price = to_price_t(
+                (from_price_t(order.avg_fill_price) * from_qty_t(order.filled_qty)
+                 + from_price_t(event.fill_price) * from_qty_t(event.fill_quantity))
+                / from_qty_t(new_filled));
         }
+        order.filled_qty       = new_filled;
+        order.remaining_qty    = event.remaining_quantity;
+        order.last_update_time = event.timestamp_ns;
+        order.status = (order.remaining_qty == 0)
+                           ? OrderStatus::FILLED
+                           : OrderStatus::PARTIALLY_FILLED;
+
+        position_tracker_->on_fill(name_, event);
+        on_fill(event);  // Call derived class hook
     }
 
     void on_order_reject(const OrderRejectEvent& event) override {
-        auto it = orders_by_client_id_.find(std::string(event.client_order_id));
+        const std::string client_id(event.client_order_id);
+        const std::string order_id(event.order_id);
+        if (!owns_order(client_id, order_id)) {
+            LOG_DEBUG("Strategy {}: ignoring reject for foreign order client_order_id={} order_id={}",
+                      name_, client_id, order_id);
+            return;
+        }
+        auto it = orders_by_client_id_.find(client_id);
         if (it != orders_by_client_id_.end()) {
             it->second.status           = OrderStatus::REJECTED;
             it->second.last_update_time = event.timestamp_ns;
@@ -181,7 +201,14 @@ public:
     }
 
     void on_order_cancel(const OrderCancelEvent& event) override {
-        auto cid_it = order_id_to_client_id_.find(std::string(event.order_id));
+        const std::string client_id(event.client_order_id);
+        const std::string order_id(event.order_id);
+        if (!owns_order(client_id, order_id)) {
+            LOG_DEBUG("Strategy {}: ignoring cancel for foreign order client_order_id={} order_id={}",
+                      name_, client_id, order_id);
+            return;
+        }
+        auto cid_it = order_id_to_client_id_.find(order_id);
         if (cid_it != order_id_to_client_id_.end()) {
             auto& order = orders_by_client_id_.at(cid_it->second);
             order.status           = OrderStatus::CANCELLED;
@@ -216,6 +243,31 @@ protected:
 
     virtual std::string generate_order_id() {
         return name_ + "_" + std::to_string(get_timestamp_ns());
+    }
+
+    // Broker order events fan out to every strategy, so each one has to recognise its
+    // own. generate_order_id() stamps the strategy name as a "<name>_" prefix, and that
+    // prefix is the only link from a broker event back to the strategy that placed it.
+    // Override this together with generate_order_id() if a strategy uses a different id
+    // scheme, and keep strategy names distinct enough that no name is a "<name>_"-prefix
+    // of another.
+    virtual bool owns_client_order_id(std::string_view client_order_id) const {
+        return client_order_id.size() > name_.size() + 1
+            && client_order_id.starts_with(name_)
+            && client_order_id[name_.size()] == '_';
+    }
+
+    // Ownership test for an incoming broker event. An id we already track settles it
+    // outright; the prefix check is the fallback for orders we placed but have not
+    // recorded yet — one rejected pre-trade in submit_order(), or one replayed from a
+    // broker reconnect snapshot. Events that omit client_order_id (Coinbase does so on
+    // follow-ups) are resolved through the broker order_id recorded at ack time.
+    bool owns_order(const std::string& client_order_id, const std::string& order_id) const {
+        if (!client_order_id.empty()) {
+            return orders_by_client_id_.contains(client_order_id)
+                || owns_client_order_id(client_order_id);
+        }
+        return !order_id.empty() && order_id_to_client_id_.contains(order_id);
     }
 
     // Helper methods for order submission
