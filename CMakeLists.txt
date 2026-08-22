@@ -18,6 +18,7 @@ option(SLICK_TRADER_BUILD_STRATEGIES "Build the example strategy plugins" ${PROJ
 option(SLICK_TRADER_SUPPRESS_VS_REGEN "Disable ZERO_CHECK auto-regeneration for Visual Studio generators" ON)
 option(SLICK_TRADER_ENABLE_LUA_STRATEGY "Enable Lua strategy support auto-detection" OFF)
 option(SLICK_TRADER_ENABLE_PYTHON_STRATEGY "Enable Python strategy support auto-detection" ON)
+option(SLICK_TRADER_BUILD_TESTS "Build the unit/regression tests" ${PROJECT_IS_TOP_LEVEL})
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
     set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
@@ -212,9 +213,9 @@ add_subdirectory(web)
 # add_subdirectory(examples)
 
 # Tests
-# option(BUILD_EXCH_SIMULATOR_TESTING "Build tests" ON)
-# if(BUILD_EXCH_SIMULATOR_TESTING)
-#   find_package(GTest CONFIG REQUIRED)
-#   enable_testing()
-#   add_subdirectory(tests)
-# endif()
+if(SLICK_TRADER_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+else()
+    message(STATUS "Tests disabled (SLICK_TRADER_BUILD_TESTS=OFF)")
+endif()

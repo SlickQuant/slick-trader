@@ -39,6 +39,8 @@ namespace slick::logger {
 
 namespace slick::trader {
 
+class BrokerStatusRegistry;
+
 // Strategy loader for dynamic library loading
 // Loads .so/.dll strategy plugins at runtime
 class StrategyLoader {
@@ -74,6 +76,7 @@ private:
     using GetNameFunc = const char* (*)();
     using GetVersionFunc = const char* (*)();
     using SetLoggerFunc = void (*)(slick::logger::Logger*);
+    using SetBrokerStatusFunc = void (*)(BrokerStatusRegistry*);
 
     void* handle_{nullptr};
     std::string library_path_;

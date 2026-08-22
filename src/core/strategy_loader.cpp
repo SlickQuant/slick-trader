@@ -1,4 +1,5 @@
 #include <slick-trader/core/strategy_loader.hpp>
+#include <slick-trader/core/broker_status.hpp>
 #include <slick/logger.hpp>
 
 #ifdef _WIN32
@@ -38,6 +39,7 @@ std::shared_ptr<IStrategy> StrategyLoader::load(const std::string& library_path)
     auto get_name_func = reinterpret_cast<GetNameFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "get_strategy_name"));
     auto get_version_func = reinterpret_cast<GetVersionFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "get_strategy_version"));
     auto set_logger_func = reinterpret_cast<SetLoggerFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "set_logger_instance"));
+    auto set_broker_status_func = reinterpret_cast<SetBrokerStatusFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "set_broker_status_registry"));
 
 #else
     // Unix: dlopen
@@ -56,6 +58,7 @@ std::shared_ptr<IStrategy> StrategyLoader::load(const std::string& library_path)
     auto get_name_func = reinterpret_cast<GetNameFunc>(dlsym(handle_, "get_strategy_name"));
     auto get_version_func = reinterpret_cast<GetVersionFunc>(dlsym(handle_, "get_strategy_version"));
     auto set_logger_func = reinterpret_cast<SetLoggerFunc>(dlsym(handle_, "set_logger_instance"));
+    auto set_broker_status_func = reinterpret_cast<SetBrokerStatusFunc>(dlsym(handle_, "set_broker_status_registry"));
 #endif
 
     // Verify required functions exist
@@ -69,6 +72,17 @@ std::shared_ptr<IStrategy> StrategyLoader::load(const std::string& library_path)
     // same initialized logger instance rather than the plugin-local singleton.
     if (set_logger_func) {
         set_logger_func(&slick::logger::Logger::instance());
+    }
+
+    // Same problem, same fix: the plugin statically links slick-trader-core and so owns
+    // a private BrokerStatusRegistry that nothing writes. Without this the plugin reads
+    // an all-false registry and silently skips every order it tries to submit.
+    if (set_broker_status_func) {
+        set_broker_status_func(&BrokerStatusRegistry::instance());
+    } else {
+        LOG_WARN("StrategyLoader: {} exports no set_broker_status_registry() -- rebuild it against "
+                 "SLICK_TRADER_EXPORT_STRATEGY; it will see all brokers as disconnected and place no orders",
+                 library_path);
     }
 
     // Log strategy info if available

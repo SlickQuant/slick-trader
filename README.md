@@ -61,11 +61,17 @@ dashboard for monitoring and manual control.
   forwards new/modify/cancel order requests to the owning broker's order connector.
   `StrategyBase` (which real strategies inherit from) validates every order against the
   `RiskManager` and checks `BrokerStatusRegistry` for connector health before it's queued.
+  Order events are broadcast to all strategies, so `StrategyBase` attributes each one by the
+  `<strategy-name>_` prefix `generate_order_id()` stamps on `client_order_id` and ignores the
+  rest — without that, one strategy books another's fills into its own position and PnL.
 - `WebServer` reads the same tracker/calculator/risk state and streams updates to connected
   browsers over WebSocket, and exposes a REST API for querying and controlling strategies/orders.
 - `BrokerStatusRegistry` is a lock-free, always-on status board (market-data/order
   enabled+connected flags per broker) that both the dashboard and `StrategyBase::submit_order`
-  consult to avoid orders getting stuck when a broker connector is down.
+  consult to avoid orders getting stuck when a broker connector is down. Strategy plugins link
+  `slick-trader-core` statically and so would otherwise get their own private copy of it, so
+  `StrategyLoader` injects the host's instance into every plugin at load time (alongside the
+  logger) — see [strategies/README.md](strategies/README.md).
 
 ## Requirements
 
@@ -102,6 +108,19 @@ Build:
 This produces:
 - `build/Debug/slick-trader.exe` — the main engine executable
 - `build/strategies/Debug/*.dll` — strategy plugins (e.g. `market_maker.dll`, `order_stacker.dll`)
+- `build/tests/Debug/slick-trader-tests.exe` — the regression test suite
+
+### Tests
+
+```bash
+ctest --test-dir build -C Debug --output-on-failure
+# or run the binary directly:
+build/tests/Debug/slick-trader-tests.exe
+```
+
+The suite covers behaviour that only reproduces across a module boundary: that a plugin loaded
+through `StrategyLoader` observes the host's `BrokerStatusRegistry`, and that a strategy ignores
+order events belonging to other strategies. Requires GTest (`find_package(GTest CONFIG)`).
 
 ### Build Options
 
@@ -113,6 +132,7 @@ This produces:
 | `SLICK_TRADER_SUPPRESS_VS_REGEN` | ON | Disable `ZERO_CHECK` auto-regeneration for Visual Studio generators |
 | `SLICK_TRADER_ENABLE_PYTHON_STRATEGY` | ON | Auto-detect Python3 for script-based strategies |
 | `SLICK_TRADER_ENABLE_LUA_STRATEGY` | OFF | Auto-detect Lua 5.4 for script-based strategies |
+| `SLICK_TRADER_BUILD_TESTS` | ON when top-level, OFF as a subproject | Build `slick-trader-tests` and its probe plugin. Requires GTest. |
 
 See [strategies/README.md](strategies/README.md) for how to write and build your own strategy
 plugin.
@@ -193,6 +213,7 @@ include/slick-trader/   Public headers (.hpp), organized by domain:
   utils/                 Fixed-point price/qty types, time helpers, fee structures
 src/                     Implementation (.cpp) mirroring include/, plus main.cpp
 strategies/              Strategy plugins, built as shared libraries (see its README)
+tests/                   GTest regression suite, plus a probe plugin for cross-module tests
 web/static/              Dashboard frontend (HTML/CSS/JS)
 config/                  Runtime JSON configs (only config_example.json is checked in)
 ```

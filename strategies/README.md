@@ -86,6 +86,15 @@ This macro creates the required C functions:
 - `get_strategy_name()` - Returns strategy name
 - `get_strategy_version()` - Returns strategy version
 - `set_logger_instance()` - Points the plugin's logger at the host process's logger instance
+- `set_broker_status_registry()` - Points the plugin at the host's `BrokerStatusRegistry`
+
+The two `set_*` entry points exist because a plugin links `slick-trader-core` **statically**, so
+it owns private copies of that library's singletons — on Windows the host exports no symbols for
+them to bind to. `StrategyLoader` calls both before `create_strategy()`. Without the registry
+injection a plugin reads an all-false broker status and `submit_order()` rejects every order as
+"Broker order connector disconnected", while orders placed from inside the host still succeed. If
+you hand-roll the exports instead of using the macro, export both or the plugin will never place
+an order.
 
 ### 3. Add to CMakeLists.txt
 
@@ -313,7 +322,20 @@ Inherit from `StrategyBase` to get:
 - Order submission helpers
 - Access to position tracker, PnL calculator, risk manager
 
-### 2. Set Risk Limits
+### 2. Keep client_order_id ownership intact
+
+`StrategyManager` broadcasts every ack/fill/reject/cancel to every loaded strategy, so
+`StrategyBase` decides which events are yours from the `<strategy-name>_` prefix that
+`generate_order_id()` stamps on `client_order_id`; everything else is dropped before it can reach
+your `on_ack`/`on_fill`/`on_reject`/`on_cancel` hooks or the position tracker. Two consequences:
+
+- If you override `generate_order_id()` with a different id scheme, override
+  `owns_client_order_id()` to match — otherwise your own fills are ignored and your position
+  never updates.
+- Keep strategy names distinct enough that no name is a `<name>_` prefix of another
+  (`MM` and `MM_Fast` collide; `MarketMaker` and `OrderStacker` do not).
+
+### 3. Set Risk Limits
 Always configure risk limits for your strategy:
 ```cpp
 RiskLimits limits;
@@ -323,7 +345,7 @@ limits.max_orders_per_second = 50;              // Rate limit
 engine.get_risk_manager().set_limits(strategy->name(), limits);
 ```
 
-### 3. Handle Errors Gracefully
+### 4. Handle Errors Gracefully
 Check for null pointers:
 ```cpp
 if (!get_position_tracker()) {
@@ -332,7 +354,7 @@ if (!get_position_tracker()) {
 }
 ```
 
-### 4. Log Important Events
+### 5. Log Important Events
 Use the logging framework:
 ```cpp
 LOG_INFO("MyStrategy: Submitted order {}", order_id);
@@ -340,7 +362,7 @@ LOG_WARN("MyStrategy: Position limit reached");
 LOG_ERROR("MyStrategy: Invalid state");
 ```
 
-### 5. Clean Up Resources
+### 6. Clean Up Resources
 Implement proper cleanup in destructor:
 ```cpp
 ~MyStrategy() override {
@@ -350,7 +372,7 @@ Implement proper cleanup in destructor:
 }
 ```
 
-### 6. Respect the Worker Thread
+### 7. Respect the Worker Thread
 Market-data and order callbacks all run on the single `StrategyManager` worker thread, so state
 touched only from those handlers needs no locking. Two callbacks are exceptions:
 

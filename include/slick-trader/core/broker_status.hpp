@@ -17,9 +17,24 @@ struct BrokerStatus {
 
 class BrokerStatusRegistry {
 public:
+    // Process-wide singleton — but strategy plugins are shared libraries that link
+    // slick-trader-core statically, so on Windows each module gets its own copy of
+    // the function-local static below. A plugin would then read an all-false registry
+    // that nothing ever writes, and every order it submits would be skipped as
+    // "broker order connector disconnected". StrategyLoader injects the host's
+    // instance into each plugin via set_instance(), the same way it forwards the
+    // logger. See SLICK_TRADER_EXPORT_STRATEGY / set_broker_status_registry().
     static BrokerStatusRegistry& instance() {
-        static BrokerStatusRegistry inst;
-        return inst;
+        static BrokerStatusRegistry module_local;
+        auto* shared = shared_.load(std::memory_order_acquire);
+        return shared ? *shared : module_local;
+    }
+
+    // Point this module's registry at the host's instance. Called once per plugin at
+    // load time, before create_strategy(); never called in the host, which keeps
+    // using its own module_local.
+    static void set_instance(BrokerStatusRegistry* registry) {
+        shared_.store(registry, std::memory_order_release);
     }
 
     void set_name(BrokerId id, const char* name) {
@@ -53,6 +68,10 @@ private:
     const BrokerStatus& slot(BrokerId id) const {
         return statuses_[static_cast<size_t>(id)];
     }
+
+    // Module-local redirect slot: null in the host, set to the host's registry in
+    // every plugin. Deliberately not shared across modules — each module needs its own.
+    static inline std::atomic<BrokerStatusRegistry*> shared_{nullptr};
 
     std::array<BrokerStatus, static_cast<size_t>(BrokerId::_BROKER_ID_COUNT_)> statuses_;
 };
