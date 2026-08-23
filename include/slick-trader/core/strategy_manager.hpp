@@ -6,6 +6,7 @@
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
+#include <slick-trader/events/strategy_config_event.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick-trader/core/strategy_loader.hpp>
@@ -133,6 +134,7 @@ private:
 
     void check_loss_limits();
     void check_broker_status();
+    void dispatch_strategy_config(const StrategyConfigEvent& event);
 
     void process_event(const Event* event);
 

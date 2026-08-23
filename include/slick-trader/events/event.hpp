@@ -41,6 +41,7 @@ enum class EventType : uint8_t {
     STATUS,
     SUBSCRIBE,
     UNSUBSCRIBE,
+    STRATEGY_CONFIG,
 };
 
 // Base event header - all events must be POD/trivially copyable for lock-free queue

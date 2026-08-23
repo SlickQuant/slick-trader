@@ -399,6 +399,40 @@ void StrategyManager::run() {
     LOG_INFO("StrategyManager: Worker thread stopped");
 }
 
+// A parameter update published by the WebServer. Running it here is the point of routing it
+// through the bus: on_config() lands on the worker thread, so a strategy can apply the change
+// straight into state only this thread owns, with no latch and no lock.
+//
+// Deliberately unconditional on run state — a paused or halted strategy still has to see a
+// config change, and applying one is not the same as trading on it.
+void StrategyManager::dispatch_strategy_config(const StrategyConfigEvent& event) {
+    const std::string strategy_id(event.strategy);
+
+    auto strategy = get_strategy(strategy_id);
+    if (!strategy) {
+        LOG_WARN("StrategyManager: config update for unknown strategy '{}'", strategy_id);
+        return;
+    }
+    auto* base = dynamic_cast<StrategyBase*>(strategy.get());
+    if (base == nullptr) {
+        LOG_WARN("StrategyManager: strategy '{}' does not support config updates", strategy_id);
+        return;
+    }
+
+    // The WebServer validated the JSON before publishing, so a parse failure here means the
+    // record was truncated or corrupted in transit — never apply half a config.
+    json params;
+    try {
+        params = json::parse(event.config_text());
+    } catch (const json::exception& e) {
+        LOG_ERROR("StrategyManager: unparsable config for '{}': {}", strategy_id, e.what());
+        return;
+    }
+
+    base->set_config(params);
+    LOG_INFO("StrategyManager: Applied config update to strategy {}", strategy_id);
+}
+
 void StrategyManager::check_broker_status() {
     auto& reg = BrokerStatusRegistry::instance();
 
@@ -462,6 +496,9 @@ void StrategyManager::process_event(const Event* event) {
             break;
         case EventType::ORDER_CANCEL:
             dispatch_order_cancel(*reinterpret_cast<const OrderCancelEvent*>(event));
+            break;
+        case EventType::STRATEGY_CONFIG:
+            dispatch_strategy_config(*reinterpret_cast<const StrategyConfigEvent*>(event));
             break;
         default:
             LOG_WARN("StrategyManager: Unknown event type: {}", static_cast<int>(event->type));

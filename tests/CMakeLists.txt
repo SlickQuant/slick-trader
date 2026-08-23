@@ -32,6 +32,7 @@ add_executable(slick-trader-tests
     # Includes strategies/market_maker.cpp directly — the plugin has no header, and its quote-slot
     # state machine is what the test drives.
     test_market_maker_quote_slots.cpp
+    test_strategy_config_event.cpp
 )
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
@@ -46,6 +47,14 @@ target_link_libraries(slick-trader-tests PRIVATE
 target_compile_definitions(slick-trader-tests PRIVATE
     SLICK_TRADER_TEST_PLUGIN_PATH="$<TARGET_FILE:probe_plugin>"
 )
+
+# Same trick again for strategies/order_stacker.cpp: applying a config update on the worker
+# thread is what the test drives. That plugin is built on the header-only slick-stacker ladder
+# engine, which only exists when the strategy plugins are part of this build.
+if(TARGET slick::stacker)
+    target_sources(slick-trader-tests PRIVATE test_order_stacker_config_apply.cpp)
+    target_link_libraries(slick-trader-tests PRIVATE slick::stacker)
+endif()
 add_dependencies(slick-trader-tests probe_plugin)
 
 if(MSVC)

@@ -121,8 +121,18 @@ private:
                           std::string_view body);
     void handle_delete_all_orders(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
 
-    // Persist updated strategy parameters to config.json on disk
+    // Hand a parameter update to the StrategyManager worker over the event bus.
+    // Returns false when the update could not be published at all.
+    bool publish_strategy_config(const std::string& strategy_id, const nlohmann::json& params);
+
+    // Persist updated strategy parameters to whichever file the strategy loader reads
     void save_strategy_parameters(const std::string& strategy_id, const nlohmann::json& params);
+
+    // Writes `parameters` into <configs_folder>/*.config.json for the file whose "name"
+    // is strategy_id. Returns false when no such file exists.
+    bool save_to_strategy_config_file(const std::string& configs_folder,
+                                      const std::string& strategy_id,
+                                      const nlohmann::json& params);
 
     // WebSocket handlers
     void handle_ws_open(uWS::WebSocket<false, true, void*>* ws);
@@ -169,6 +179,12 @@ private:
 
     slick::stream_buffer_multiplexer& event_mux_;
     uint64_t event_cursor_{0};
+
+    // Producer side of the same bus: strategy parameter updates are published here from the
+    // uWS event loop thread and applied by the StrategyManager worker, so a strategy's
+    // on_config() runs on the thread that owns its state. Registered in initialize(), which
+    // is before any producer or consumer thread starts — add_producer() is setup-only.
+    std::shared_ptr<slick::stream_buffer_multiplexer::producer_buffer> config_producer_buffer_;
 
     // // Market data queue (shared with StrategyManager)
     // std::shared_ptr<slick::SlickQueue<uint8_t>> md_queue_;

@@ -212,10 +212,18 @@ bool TradingEngine::wait_for_brokers_ready(std::chrono::seconds timeout_sec) {
             ++num_producers;
             auto &register_event = reinterpret_cast<RegisterEvent&>(*event);
             if (register_event.shm_name[0] != '\0') {
-                event_mux_->add_producer(register_event.producer_id, register_event.shm_name);
-                LOG_INFO("Register IPC producer {}: borker={} type={}, shm_name={}", register_event.producer_id,
-                    to_string(register_event.broker_id), to_string(register_event.component_type), register_event.shm_name);
-                ++num_ipc_producers;
+                // add_producer() throws if the id is already taken. An out-of-process broker
+                // picks its own id, so a clash with an in-process producer is possible; losing
+                // that one broker's events beats taking the engine down on the way up.
+                try {
+                    event_mux_->add_producer(register_event.producer_id, register_event.shm_name);
+                    LOG_INFO("Register IPC producer {}: borker={} type={}, shm_name={}", register_event.producer_id,
+                        to_string(register_event.broker_id), to_string(register_event.component_type), register_event.shm_name);
+                    ++num_ipc_producers;
+                } catch (const std::exception& e) {
+                    LOG_ERROR("Failed to register IPC producer {} (broker={}): {}",
+                        register_event.producer_id, to_string(register_event.broker_id), e.what());
+                }
             }
 
         } else if (event->type == EventType::REGISTER_END) {

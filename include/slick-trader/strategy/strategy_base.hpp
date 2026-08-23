@@ -79,6 +79,12 @@ public:
         on_shutdown();
     }
 
+    // Apply a parameter update. Call this from the StrategyManager worker thread ONLY:
+    // on_config() is where a strategy reconfigures state that only its own thread owns.
+    // The WebServer does not call it directly — PUT /api/strategies/:id/config publishes a
+    // STRATEGY_CONFIG event and StrategyManager::dispatch_strategy_config() lands it here.
+    // (StrategyBase::initialize() also calls on_config(), on the loading thread, before the
+    // worker exists.)
     void set_config(const nlohmann::json& params) {
         config_params_ = params;
         on_config(params);  // Call derived class hook

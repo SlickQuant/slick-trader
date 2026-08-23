@@ -7,6 +7,8 @@
 #include <slick-trader/strategy/manual_strategy.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
+#include <slick-trader/events/strategy_config_event.hpp>
+#include <slick-trader/events/event_serializer.hpp>
 #include <chrono>
 #include <fstream>
 #include <sstream>
@@ -31,6 +33,28 @@ bool WebServer::initialize(const json& config) {
             {"per_instrument", json::object()}
         };
         LOG_INFO("WebServer: Using default ladder config");
+    }
+
+    // Register our producer on the event bus. Strategy parameter updates go out this way so
+    // the StrategyManager worker applies them on its own thread. add_producer() is setup-only
+    // and no bus thread has started yet, so here is the place to do it.{
+
+    // The id follows the same convention StrategyManager uses for its top-of-book producer:
+    // one past whatever is already registered. A collision is only possible if a broker
+    // claimed a sparse id, so scan for a free one rather than letting the throw escape.
+    const auto config_queue_size   = config.value("config_queue_size", 1u << 16 /* 64K */);
+    const auto config_control_size = config.value("config_control_size", 4096u);
+    try {
+        uint32_t producer_id = static_cast<uint32_t>(event_mux_.producer_count());
+        while (event_mux_.has_producer(producer_id)) {
+            ++producer_id;
+        }
+        config_producer_buffer_ = event_mux_.add_producer(producer_id, config_queue_size,
+                                                            config_control_size);
+        LOG_INFO("WebServer: Publishing strategy config updates as producer {}", producer_id);
+    } catch (const std::exception& e) {
+        // Not fatal: everything except live parameter updates still works.
+        LOG_ERROR("WebServer: Could not register the config producer: {}", e.what());
     }
 
     LOG_INFO("WebServer: Initialized on {}:{}", config_.host, config_.port);
@@ -892,10 +916,15 @@ void WebServer::handle_put_strategy_config(uWS::HttpResponse<false>* res, uWS::H
             return;
         }
 
-        base->set_config(params);
+        // Hand the update to the worker thread rather than calling set_config() from here:
+        // a strategy's on_config() may touch state that only its own thread owns.
+        if (!publish_strategy_config(strategy_id, params)) {
+            send_error_response(res, "Could not publish the config update", 503);
+            return;
+        }
         save_strategy_parameters(strategy_id, params);
 
-        LOG_INFO("WebServer: Updated config for strategy {}", strategy_id);
+        LOG_INFO("WebServer: Published config update for strategy {}", strategy_id);
 
         json response = {
             {"success", true},
@@ -910,6 +939,80 @@ void WebServer::handle_put_strategy_config(uWS::HttpResponse<false>* res, uWS::H
     }
 }
 
+bool WebServer::publish_strategy_config(const std::string& strategy_id, const nlohmann::json& params) {
+    if (!config_producer_buffer_) {
+        LOG_ERROR("WebServer: no config producer registered — cannot publish an update for {}",
+                  strategy_id);
+        return false;
+    }
+
+    const std::string text = params.dump();
+    if (text.size() > MAX_STRATEGY_CONFIG_LENGTH) {
+        LOG_ERROR("WebServer: config for {} is {} bytes, over the {} byte limit",
+                  strategy_id, text.size(), MAX_STRATEGY_CONFIG_LENGTH);
+        return false;
+    }
+    if (strategy_id.size() >= MAX_STRATEGY_NAME_LENGTH) {
+        LOG_ERROR("WebServer: strategy name '{}' is too long to publish", strategy_id);
+        return false;
+    }
+
+    // Trailing flexible array, so the published size covers the header plus the JSON text.
+    const uint32_t size = StrategyConfigEvent::size_for(text.size());
+    return EventSerializer::publish<StrategyConfigEvent>(
+        *config_producer_buffer_, size, [&](StrategyConfigEvent& event) {
+            event.timestamp_ns = get_timestamp_ns();
+            event.set_strategy(strategy_id);
+            event.set_config(text);
+        });
+}
+
+// Mirrors StrategyManager::load_strategies(): the per-strategy files live in
+// strategy_configs_folder as *.config.json and are keyed by the "name" INSIDE the
+// file, not by the filename, so that is what we match on here.
+bool WebServer::save_to_strategy_config_file(const std::string& configs_folder,
+                                             const std::string& strategy_id,
+                                             const nlohmann::json& params) {
+    std::error_code ec;
+    if (configs_folder.empty() || !std::filesystem::exists(configs_folder, ec)) {
+        return false;
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(configs_folder, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file()) continue;
+        if (!entry.path().filename().string().ends_with(".config.json")) continue;
+
+        json strategy_json;
+        {
+            std::ifstream in(entry.path());
+            if (!in.is_open()) continue;
+            try {
+                strategy_json = json::parse(in);
+            } catch (const json::exception& e) {
+                LOG_WARN("WebServer: skipping unparsable strategy config {}: {}",
+                         entry.path().filename().string(), e.what());
+                continue;
+            }
+        }
+        if (strategy_json.value("name", "") != strategy_id) continue;
+
+        // Only the parameters block is ours; enabled and risk_limits stay as written.
+        strategy_json["parameters"] = params;
+
+        const auto path = entry.path().string();
+        std::ofstream out(path, std::ios::trunc);
+        if (!out.is_open()) {
+            LOG_ERROR("WebServer: cannot open {} for writing", path);
+            return false;
+        }
+        out << strategy_json.dump(4) << "\n";
+        LOG_INFO("WebServer: Persisted config for strategy {} to {}", strategy_id, path);
+        return true;
+    }
+    return false;
+}
+
 void WebServer::save_strategy_parameters(const std::string& strategy_id, const nlohmann::json& params) {
     if (config_path_.empty()) {
         LOG_WARN("WebServer: config_path not set — cannot persist strategy config");
@@ -920,18 +1023,38 @@ void WebServer::save_strategy_parameters(const std::string& strategy_id, const n
         auto config = json::parse(in);
         in.close();
 
+        // Preferred layout: one <name>.config.json per strategy in the configs folder.
+        // Resolve the folder exactly as StrategyManager::load_strategies() does, so we
+        // write the file that will actually be read back at startup.
+        if (config.contains("strategies") && config["strategies"].is_object()) {
+            const auto& strategies = config["strategies"];
+            const auto plugins_folder = strategies.value("strategy_plugins_folder",
+                                                         std::string("strategies"));
+            const auto configs_folder = strategies.value("strategy_configs_folder",
+                                                         plugins_folder);
+            if (save_to_strategy_config_file(configs_folder, strategy_id, params)) {
+                return;
+            }
+        }
+
+        // Legacy layout: the parameters live inline in a "strategies" array in the
+        // main config. Only rewrite the file when the strategy is actually in it —
+        // an unconditional rewrite reports success while persisting nothing.
         if (config.contains("strategies") && config["strategies"].is_array()) {
             for (auto& s : config["strategies"]) {
                 if (s.value("name", "") == strategy_id) {
                     s["parameters"] = params;
-                    break;
+                    std::ofstream out(config_path_);
+                    out << config.dump(2);
+                    LOG_INFO("WebServer: Persisted config for strategy {} to {}",
+                             strategy_id, config_path_);
+                    return;
                 }
             }
         }
 
-        std::ofstream out(config_path_);
-        out << config.dump(2);
-        LOG_INFO("WebServer: Persisted config for strategy {} to {}", strategy_id, config_path_);
+        LOG_WARN("WebServer: no config file found for strategy {} — the running strategy "
+                 "has the new parameters, but they will not survive a restart", strategy_id);
     } catch (const std::exception& e) {
         LOG_ERROR("WebServer: Failed to save config for strategy {}: {}", strategy_id, e.what());
     }

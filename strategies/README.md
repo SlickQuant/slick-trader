@@ -8,9 +8,13 @@ recompiling the trading engine.
 Strategies are compiled as shared libraries (.dll on Windows, .so on Linux/Mac) and loaded by
 `StrategyManager` via the `StrategyLoader` class. Note what this architecture does and doesn't
 buy you:
-- **Live parameter updates, not code hot-reload**: `PUT /api/strategies/:id/config` calls
-  `on_config()` on an already-loaded strategy and persists the change to `config.json` — no
-  restart needed. But `StrategyManager::load_strategies()` only runs once, at engine startup
+- **Live parameter updates, not code hot-reload**: `PUT /api/strategies/:id/config` reaches
+  `on_config()` on an already-loaded strategy (over the event bus, see
+  [Respect the Worker Thread](#7-respect-the-worker-thread)) and persists the change to that
+  strategy's `<name>.config.json` in the configs folder — the same file the loader reads at startup, so the
+  change survives a restart. No restart is needed to apply it. (Editing that file by hand is the
+  other way round: nothing watches it, so a hand edit only takes effect on the next start.)
+  But `StrategyManager::load_strategies()` only runs once, at engine startup
   ([trading_engine.cpp](../src/core/trading_engine.cpp)); nothing re-scans the plugins folder or
   swaps in a rebuilt `.dll`/`.so` at runtime. To pick up a rebuilt plugin binary, restart the
   engine.
@@ -408,15 +412,33 @@ Implement proper cleanup in destructor:
 
 ### 7. Respect the Worker Thread
 Market-data and order callbacks all run on the single `StrategyManager` worker thread, so state
-touched only from those handlers needs no locking. Two callbacks are exceptions:
+touched only from those handlers needs no locking. **`on_config()` runs there too**, which means
+you can reconfigure worker-owned state directly inside it — no latch, no lock:
 
-- `on_config()` arrives from the **WebServer** thread via `PUT /api/strategies/:id/config`
+```cpp
+void on_config(const nlohmann::json& params) override {
+    // Worker thread. Touch whatever your event handlers touch.
+}
+```
+
+That is what routing config updates over the event bus buys you. `PUT /api/strategies/:id/config`
+does **not** call `set_config()` from the uWS thread; it publishes a `StrategyConfigEvent` onto
+the same `stream_buffer_multiplexer` the market data rides
+([strategy_config_event.hpp](../include/slick-trader/events/strategy_config_event.hpp)), and
+`StrategyManager::dispatch_strategy_config()` parses it and calls `set_config()` from the worker
+loop. The parameters travel as JSON text in a trailing flexible array, the same idiom
+`Level2UpdateEvent` uses for its price levels — publish with `size_for(text.size())`, never
+`sizeof(StrategyConfigEvent)`.
+
+Two things still are not on the worker thread:
+
 - `on_stop()` runs on the caller's thread, *before* the worker thread is joined
+- anything your own strategy spawns
 
-If your strategy owns anything large or non-atomic, latch new parameters in `on_config()` and
-apply them from a market-data handler rather than mutating in place — see `apply_pending_params()`
-in [order_stacker.cpp](order_stacker.cpp). (`market_maker.cpp` calls `update_quotes()` straight
-from `on_config()`, which is the pattern to avoid for anything bigger than a few scalars.)
+A config update arrives whether or not the strategy is running, and applying one is not the same
+as trading on it — so if your `on_config()` acts on the change immediately, give a stopped
+strategy the same treatment your market-data handler does. `order_stacker.cpp` pulls its ladder
+before reconciling, so an update to a paused strategy cannot put orders back on the book.
 
 ## Platform-Specific Notes
 

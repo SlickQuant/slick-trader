@@ -62,10 +62,8 @@
 #include <slick-trader/utils/types.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <cstdint>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -165,8 +163,8 @@ private:
 
     friend class Executor;
 
-    // Snapshot of the JSON parameters, handed from the WebServer thread to the
-    // worker thread. Plain scalars only.
+    // Snapshot of the JSON parameters. Plain scalars only — everything the ladder
+    // is shaped from, read out of the JSON in on_config() and applied from there.
     struct Params {
         std::string instrument{"BTC-USD"};
         std::string broker{"COINBASE"};
@@ -192,10 +190,9 @@ protected:
 
     bool on_initialize() override {
         session_stamp_ = get_timestamp_ns();
-        // on_config() has already run (StrategyBase::initialize calls it first),
-        // so the pending params are populated. Apply them here so instrument_
-        // and broker_id_ exist before get_subscriptions() is called.
-        apply_pending_params();
+        // on_config() has already run and applied the parameters
+        // (StrategyBase::initialize calls it first), so instrument_ and broker_id_
+        // exist by the time get_subscriptions() is called.
         if (!configured_) {
             LOG_ERROR("OrderStacker: initial configuration is invalid — refusing to start");
             return false;
@@ -219,8 +216,10 @@ protected:
         LOG_INFO("OrderStacker: Shutdown");
     }
 
-    // Reached from the WebServer thread via PUT /api/strategies/:id/config, so
-    // it only latches. apply_pending_params() does the real work on the worker.
+    // Runs on the StrategyManager worker thread: PUT /api/strategies/:id/config
+    // publishes a STRATEGY_CONFIG event and the worker applies it here, so this
+    // can reconfigure pair_ in place. At startup it runs on the loading thread,
+    // before the worker exists. Either way there is no second thread to race.
     void on_config(const nlohmann::json& /*params*/) override {
         Params p;
         p.instrument          = get_parameter<std::string>("instrument", "BTC-USD");
@@ -239,11 +238,14 @@ protected:
         p.slack_levels        = get_parameter<int>("slack_levels", 0);
         p.min_order_qty       = get_parameter<double>("min_order_qty", 0.0);
 
-        {
-            std::lock_guard<std::mutex> lk(params_mutex_);
-            pending_ = p;
-        }
-        params_dirty_.store(true, std::memory_order_release);
+        apply_params(p);
+        if (!configured_) return;
+
+        // Same stance as on_quote(): a stopped strategy holds no ladder, so the
+        // reconcile below cannot put a paused strategy back on the book. The next
+        // quote() after a restart clears the stacker's own pulled flag.
+        if (!is_running()) pair_.pull();
+        pump();
     }
 
     // The base implementation stamps get_timestamp_ns() (steady_clock, ~100 ns
@@ -279,7 +281,6 @@ public:
         // Market data is broadcast to every loaded strategy.
         if (std::string_view(event.instrument) != instrument_) return;
 
-        apply_pending_params();
         if (!configured_ || get_position_tracker() == nullptr) return;
 
         const bool bid_ok = event.bid_price != NULL_PRICE && event.bid_price > 0;
@@ -328,7 +329,6 @@ public:
 
     void on_trade(const TradeEvent& event) override {
         if (std::string_view(event.instrument) != instrument_) return;
-        apply_pending_params();
         // Retry heartbeat: reconcile() leaves dirty_ set when a message was
         // refused, and nothing else will wake us.
         if (configured_) pump();
@@ -474,15 +474,7 @@ private:
     // Configuration
     // -----------------------------------------------------------------------
 
-    void apply_pending_params() {
-        if (!params_dirty_.exchange(false, std::memory_order_acquire)) return;
-
-        Params p;
-        {
-            std::lock_guard<std::mutex> lk(params_mutex_);
-            p = pending_;
-        }
-
+    void apply_params(Params p) {
         // Instrument and broker are baked into the subscriptions, which are
         // fixed once the strategy starts.
         if (!configured_) {
@@ -686,11 +678,6 @@ private:
     qty_t        resume_qty_{0};
     bool         post_only_{true};
     bool         configured_{false};
-
-    // Config handoff (WebServer thread -> worker thread)
-    std::mutex        params_mutex_;
-    Params            pending_;
-    std::atomic<bool> params_dirty_{false};
 
     // Order bookkeeping
     std::unordered_map<Executor::order_id_t, Rec>         recs_;

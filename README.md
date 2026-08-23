@@ -166,7 +166,7 @@ Top-level keys in `config.json` ([example](config/config_example.json)):
 | `event_queue_size`, `order_request_queue_size`, `md_request_queue_size` | Lock-free queue capacities (entries) |
 | `brokers[]` | Per-broker `{name, enabled, market_data:{...}, order:{...}}` — see below |
 | `strategies` | `enabled`, `strategy_plugins_folder`, `strategy_configs_folder`, plus TOB (top-of-book) queue sizing |
-| `web_service` | `enabled`, `web_server_port`, `web_server_cors`, `web_server_static_path`, `ladder_config` (default order size, per-instrument overrides) |
+| `web_service` | `enabled`, `web_server_port`, `web_server_cors`, `web_server_static_path`, `ladder_config` (default order size, per-instrument overrides), `config_queue_size`/`config_control_size` (event-bus producer the dashboard publishes strategy parameter updates through) |
 
 ### Broker configuration
 
