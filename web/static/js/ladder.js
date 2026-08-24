@@ -664,11 +664,23 @@ class LadderManager {
     onOrderUpdate(data) {
         if (data.event === 'ack' && data.order_id && data.instrument && data.price != null) {
             const sideEnum = data.side === 'buy' ? 0 : 1;
+            // A modify is acked at its NEW price under the SAME order_id, so this
+            // is a move as often as it is a new order. Take the order off its old
+            // level before recording the new one, or the border stays behind on a
+            // price we no longer rest at -- for as long as that level survives in
+            // the book, which is forever if anyone else is quoting it.
+            const previous = this.pendingOrders.get(data.order_id);
             this.pendingOrders.set(data.order_id, {
                 instrument: data.instrument,
                 price: data.price,
                 sideEnum
             });
+            if (previous && (previous.instrument !== data.instrument ||
+                             previous.price !== data.price ||
+                             previous.sideEnum !== sideEnum) &&
+                !this._hasOrdersAtLevel(previous.instrument, previous.price, previous.sideEnum)) {
+                this.setOwnOrder(previous.instrument, previous.price, previous.sideEnum, false);
+            }
             this.setOwnOrder(data.instrument, data.price, sideEnum, true);
         } else if (data.event === 'fill' && data.order_id) {
             if (data.remaining_qty === 0) {

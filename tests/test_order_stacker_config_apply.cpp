@@ -321,4 +321,39 @@ TEST_F(OrderStackerConfigTest, ConfigUpdateDoesNotRevivePausedStrategy) {
     EXPECT_TRUE(venue_.empty()) << "a paused strategy holds no ladder";
 }
 
+
+// The live shape from config/order_stacker.config.json (levels=4, slack_levels=1,
+// top_qty != stack_qty), reconfigured the way the operator did it: stack_qty first, then
+// level_gap_ticks. The dashboard showed an ask rung left one tick behind the touch afterwards,
+// belonging to neither the old shape nor the new one. The ladder engine turned out to be
+// innocent -- the stranded rung was a market-data bug in the simulator, which never published
+// the level update a cancel produced -- so this pins down the sequence that was suspected.
+TEST_F(OrderStackerConfigTest, StackQtyThenLevelGapLeavesNoStrayRung) {
+    auto params = base_params();
+    params["levels"]          = 4;
+    params["level_gap_ticks"] = 1;
+    params["stack_qty"]       = 0.001;
+    params["top_qty"]         = 0.001;
+    params["slack_levels"]    = 1;
+    params["min_order_qty"]   = 0.0001;
+    stacker_.set_config(params);
+
+    send_quote(100.00, 100.01);
+    settle();
+    ASSERT_EQ(resting_ticks(Side::SELL), ticks_of({100.01, 100.02, 100.03, 100.04, 100.05}));
+    ASSERT_EQ(resting_ticks(Side::BUY),  ticks_of({100.00, 99.99, 99.98, 99.97, 99.96}));
+
+    params["stack_qty"] = 0.002;
+    stacker_.set_config(params);
+    settle();
+
+    params["level_gap_ticks"] = 2;
+    stacker_.set_config(params);
+    settle();
+
+    EXPECT_EQ(resting_ticks(Side::SELL), ticks_of({100.01, 100.03, 100.05, 100.07, 100.09}));
+    EXPECT_EQ(resting_ticks(Side::BUY),  ticks_of({100.00, 99.98, 99.96, 99.94, 99.92}));
+}
+
+
 }  // namespace
