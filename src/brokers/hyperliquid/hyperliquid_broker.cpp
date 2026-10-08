@@ -1,5 +1,6 @@
 #include <slick/logger.hpp>
 #include <slick-trader/brokers/hyperliquid/hyperliquid_broker.hpp>
+#include <slick-trader/core/broker_registry.hpp>
 
 namespace {
     nlohmann::json empty_json;
@@ -47,5 +48,7 @@ FeeStructure HyperliquidBroker::get_fees(std::string_view /*symbol*/) const {
     // Hyperliquid default taker fee: 0.05%
     return FeeStructure{FeeType::PERCENTAGE, 0.0005};
 }
+
+SLICK_TRADER_REGISTER_BROKER("hyperliquid", HyperliquidBroker);
 
 } // namespace slick::trader

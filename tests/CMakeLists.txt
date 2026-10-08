@@ -33,6 +33,7 @@ add_executable(slick-trader-tests
     # state machine is what the test drives.
     test_market_maker_quote_slots.cpp
     test_strategy_config_event.cpp
+    test_broker_registry.cpp
 )
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
@@ -47,6 +48,15 @@ target_link_libraries(slick-trader-tests PRIVATE
 target_compile_definitions(slick-trader-tests PRIVATE
     SLICK_TRADER_TEST_PLUGIN_PATH="$<TARGET_FILE:probe_plugin>"
 )
+
+# Every broker the executable carries, so the registry test sees the same set - plus
+# the suites brokers declared through slick_trader_add_broker(... TESTS ...), which
+# is how an out-of-tree broker's tests get built.
+slick_trader_link_brokers(slick-trader-tests)
+get_property(_slick_trader_broker_tests GLOBAL PROPERTY SLICK_TRADER_BROKER_TESTS)
+if(_slick_trader_broker_tests)
+    target_sources(slick-trader-tests PRIVATE ${_slick_trader_broker_tests})
+endif()
 
 # Same trick again for strategies/order_stacker.cpp: applying a config update on the worker
 # thread is what the test drives. That plugin is built on the header-only slick-stacker ladder

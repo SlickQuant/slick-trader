@@ -120,7 +120,8 @@ build/tests/Debug/slick-trader-tests.exe
 
 The suite covers behaviour that only reproduces across a module boundary: that a plugin loaded
 through `StrategyLoader` observes the host's `BrokerStatusRegistry`, and that a strategy ignores
-order events belonging to other strategies. Requires GTest (`find_package(GTest CONFIG)`).
+order events belonging to other strategies. It also checks that every broker built into the binary
+is registered under its config name. Requires GTest (`find_package(GTest CONFIG)`).
 
 ### Build Options
 
@@ -133,6 +134,36 @@ order events belonging to other strategies. Requires GTest (`find_package(GTest 
 | `SLICK_TRADER_ENABLE_PYTHON_STRATEGY` | ON | Auto-detect Python3 for script-based strategies |
 | `SLICK_TRADER_ENABLE_LUA_STRATEGY` | OFF | Auto-detect Lua 5.4 for script-based strategies |
 | `SLICK_TRADER_BUILD_TESTS` | ON when top-level, OFF as a subproject | Build `slick-trader-tests` and its probe plugin. Requires GTest. |
+| `SLICK_TRADER_EXTERNAL_BROKERS` | *(empty)* | `;`-separated directories of out-of-tree brokers to build in. See below. |
+
+### Brokers and out-of-tree brokers
+
+Each broker is its own OBJECT library under `src/brokers/<name>/`, declared with
+`slick_trader_add_broker()` from [cmake/slick_trader_broker.cmake](cmake/slick_trader_broker.cmake),
+and registers itself with `BrokerRegistry` under its config `name`:
+
+```cpp
+SLICK_TRADER_REGISTER_BROKER("coinbase", CoinbaseBroker);
+```
+
+A broker kept in its own repository uses the same two pieces and is built in by pointing the
+configure step at its directory; no file in this repository changes:
+
+```cmake
+slick_trader_add_broker(mybroker
+    SOURCES src/mybroker_broker.cpp ...
+    DEPENDS my-sdk
+    TESTS   tests/test_mybroker.cpp      # compiled into slick-trader-tests
+)
+```
+
+```bash
+cmake -S . -B build -DSLICK_TRADER_EXTERNAL_BROKERS=/path/to/slick-trader-mybroker
+```
+
+Keep that setting in a `CMakeUserPresets.json`, which `.gitignore` excludes, so a local path never
+reaches the repository. A `brokers[]` config entry whose `name` has no adapter in the binary is a
+fatal startup error that lists the brokers the binary does carry.
 
 See [strategies/README.md](strategies/README.md) for how to write and build your own strategy
 plugin.
@@ -204,7 +235,7 @@ and [web/static/FEATURES.md](web/static/FEATURES.md) for UI details.
 ```
 include/slick-trader/   Public headers (.hpp), organized by domain:
   core/                  TradingEngine, StrategyManager, PositionTracker, PnLCalculator,
-                         RiskManager, BrokerFactory, BrokerStatusRegistry, StrategyLoader
+                         RiskManager, BrokerRegistry, BrokerStatusRegistry, StrategyLoader
   brokers/               IBroker + per-venue implementations (coinbase/, hyperliquid/)
   strategy/              IStrategy, StrategyBase, ManualStrategy, plugin export macro
   events/                Wire event types (trades, quotes, order book, order lifecycle)
@@ -212,6 +243,7 @@ include/slick-trader/   Public headers (.hpp), organized by domain:
   web/                   WebServer
   utils/                 Fixed-point price/qty types, time helpers, fee structures
 src/                     Implementation (.cpp) mirroring include/, plus main.cpp
+cmake/                   Build helpers: slick_trader_add_broker() and the external-broker hook
 strategies/              Strategy plugins, built as shared libraries (see its README)
 tests/                   GTest regression suite, plus a probe plugin for cross-module tests
 web/static/              Dashboard frontend (HTML/CSS/JS)

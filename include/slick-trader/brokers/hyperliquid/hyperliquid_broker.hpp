@@ -34,7 +34,7 @@ public:
     // std::shared_ptr<IOrderConnector> get_order_connector() override;
     FeeStructure get_fees(std::string_view symbol) const override;
 
-    // Configuration — called by BrokerFactory before start()
+    // Configuration — called before start()
     // void set_md_api_url(const std::string& url);
     // void set_order_api_url(const std::string& url);
     // void set_private_key(const std::string& key);

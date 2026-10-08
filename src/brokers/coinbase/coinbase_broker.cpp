@@ -1,5 +1,6 @@
 #include <slick/logger.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_broker.hpp>
+#include <slick-trader/core/broker_registry.hpp>
 
 namespace {
     json empty_json;
@@ -53,5 +54,7 @@ FeeStructure CoinbaseBroker::get_fees(std::string_view) const {
     }
     return cached_fees_;
 }
+
+SLICK_TRADER_REGISTER_BROKER("coinbase", CoinbaseBroker);
 
 } // namespace slick::trader

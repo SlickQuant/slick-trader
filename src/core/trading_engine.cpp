@@ -1,6 +1,6 @@
 #include <slick/logger.hpp>
 #include <slick-trader/core/trading_engine.hpp>
-#include <slick-trader/core/broker_factory.hpp>
+#include <slick-trader/core/broker_registry.hpp>
 #include <slick-trader/web/web_server.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/brokers/imarket_data_connector.hpp>
@@ -120,6 +120,12 @@ bool TradingEngine::initialize(const std::string& config_path) {
         LOG_INFO("          Initialize Brokers...");
         LOG_INFO("==================================================");
 
+        std::string built_in;
+        for (const auto& key : BrokerRegistry::instance().keys()) {
+            built_in += built_in.empty() ? key : ", " + key;
+        }
+        LOG_INFO("Broker adapters built in: {}", built_in.empty() ? "(none)" : built_in);
+
         for (const auto& broker_json : config["brokers"]) {
             // Parse broker configuration
             auto enabled = broker_json.value("enabled", true);
@@ -130,8 +136,17 @@ bool TradingEngine::initialize(const std::string& config_path) {
                 continue;
             }
 
-            // Create broker
-            auto broker = BrokerFactory::create_broker(broker_json, *event_mux_, *control_queue_, *md_request_queue_, *order_request_queue_);
+            // An enabled broker with no adapter compiled in - a typo, or an
+            // out-of-tree broker left out of SLICK_TRADER_EXTERNAL_BROKERS - is fatal
+            // rather than silently skipped.
+            auto factory = BrokerRegistry::instance().find(broker_name);
+            if (!factory) {
+                LOG_ERROR("No broker adapter for '{}'. This build has: {}",
+                          broker_name, built_in.empty() ? "(none)" : built_in);
+                return false;
+            }
+
+            auto broker = factory(broker_json, *event_mux_, *control_queue_, *md_request_queue_, *order_request_queue_);
             if (!broker) {
                 LOG_ERROR("Failed to create broker: {}", broker_name);
                 return false;

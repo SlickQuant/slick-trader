@@ -203,6 +203,9 @@ elseif(UNIX AND APPLE)
     set(CMAKE_DL_LIBS "")
 endif()
 
+# slick_trader_add_broker() / slick_trader_link_brokers()
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/slick_trader_broker.cmake)
+
 add_subdirectory(src)
 if(SLICK_TRADER_BUILD_STRATEGIES)
     add_subdirectory(strategies)
