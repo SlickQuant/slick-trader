@@ -5,7 +5,7 @@
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/order_book_event.hpp>
 #include <slick-trader/events/order_event.hpp>
-#include <slick/queue.h>
+#include <slick/queue.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
 #include <cstring>
 #include <type_traits>

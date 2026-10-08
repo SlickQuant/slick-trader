@@ -2,7 +2,7 @@
 #include <slick-trader/brokers/hyperliquid/hyperliquid_broker.hpp>
 
 namespace {
-    json empty_json;
+    nlohmann::json empty_json;
 }
 
 namespace slick::trader {

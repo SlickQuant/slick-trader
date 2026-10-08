@@ -13,7 +13,7 @@
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/risk_manager.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
-#include <slick/queue.h>
+#include <slick/queue.hpp>
 
 #include <string>
 #include <vector>

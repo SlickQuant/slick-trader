@@ -6,11 +6,7 @@
 #include <cstdint>
 #include <slick-trader/events/md_subscription.hpp>
 
-// Forward declare SlickQueue
-namespace slick {
-    template<typename T>
-    class SlickQueue;
-}
+#include <slick/queue.hpp>
 
 namespace slick::trader {
 

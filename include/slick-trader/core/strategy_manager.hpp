@@ -11,7 +11,7 @@
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick-trader/core/strategy_loader.hpp>
 #include <slick-trader/core/broker_status.hpp>
-#include <slick/queue.h>
+#include <slick/queue.hpp>
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <vector>

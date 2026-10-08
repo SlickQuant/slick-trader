@@ -19,6 +19,8 @@ class Exchange;
 
 namespace slick::trader {
 
+using json = nlohmann::json;
+
 struct NewOrderEvent;
 struct ModifyOrderEvent;
 struct CancelOrderEvent;

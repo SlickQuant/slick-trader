@@ -7,7 +7,7 @@
 #include <slick-trader/events/order_book_event.hpp>
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick-trader/utils/types.hpp>
-#include <slick/queue.h>
+#include <slick/queue.hpp>
 #include <memory>
 #include <string>
 #include <vector>

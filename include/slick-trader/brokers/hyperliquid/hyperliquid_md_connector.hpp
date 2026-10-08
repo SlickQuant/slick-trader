@@ -17,6 +17,8 @@ namespace hyperliquid { class Info; }
 
 namespace slick::trader {
 
+using json = nlohmann::json;
+
 using producer_buffer = slick::stream_buffer_multiplexer::producer_buffer;
 
 class HyperliquidMDConnector : public IMarketDataConnector {

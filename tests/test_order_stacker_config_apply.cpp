@@ -21,7 +21,7 @@
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/risk_manager.hpp>
-#include <slick/queue.h>
+#include <slick/queue.hpp>
 
 // One test binary cannot carry two plugins' C entry points, and
 // test_market_maker_quote_slots.cpp already links a set. The tests drive the class directly,

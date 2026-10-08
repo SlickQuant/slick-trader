@@ -55,7 +55,7 @@ if(SLICK_TRADER_FAST_FETCHCONTENT)
 endif()
 
 set(SLICK_LOGGER_ENABLE_SOURCE_LOCATION OFF CACHE BOOL "" FORCE)
-find_package(slick-logger 1.1.3 CONFIG QUIET)
+find_package(slick-logger 2.2.0 CONFIG QUIET)
 if (NOT slick-logger_FOUND)
     message(STATUS "Fetching slick-logger...")
     # Disable examples, tests, and benchmarks for slick_logger
@@ -65,7 +65,7 @@ if (NOT slick-logger_FOUND)
     FetchContent_Declare(
         slick-logger
         GIT_REPOSITORY https://github.com/SlickQuant/slick-logger.git
-        GIT_TAG v1.1.3
+        GIT_TAG v2.2.0
     )
     FetchContent_MakeAvailable(slick-logger)
 else()
@@ -73,7 +73,7 @@ else()
 endif()
 
 # Add slick-orderbook dependency
-find_package(slick-orderbook 1.0.3 CONFIG QUIET)
+find_package(slick-orderbook 1.1.0 CONFIG QUIET)
 if (NOT slick-orderbook_FOUND)
     message(STATUS "Fetching slick-orderbook...")
     set(BUILD_SLICK_ORDERBOOK_TESTS OFF CACHE BOOL "" FORCE)
@@ -82,7 +82,7 @@ if (NOT slick-orderbook_FOUND)
     FetchContent_Declare(
         slick-orderbook
         GIT_REPOSITORY https://github.com/SlickQuant/slick-orderbook.git
-        GIT_TAG v1.0.3
+        GIT_TAG v1.1.0
     )
     FetchContent_MakeAvailable(slick-orderbook)
 else()
@@ -94,27 +94,27 @@ endif()
 # SLICK_TRADER_BUILD_STRATEGIES is ON.
 
 # Add coinbase-advanced-cpp dependency
-find_package(coinbase-advanced-cpp 1.0.0 CONFIG QUIET)
+find_package(coinbase-advanced-cpp 2.0.1 CONFIG QUIET)
 if (NOT coinbase-advanced-cpp_FOUND)
     message(STATUS "Fetching coinbase-advanced-cpp...")
     set(BUILD_COINBASE_ADVANCED_TESTS OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
         coinbase-advanced-cpp
         GIT_REPOSITORY https://github.com/SlickQuant/coinbase-advanced-cpp.git
-        GIT_TAG main
+        GIT_TAG v2.0.1
     )
     FetchContent_MakeAvailable(coinbase-advanced-cpp)
 else()
     message(STATUS "Found coinbase-advanced-cpp ${coinbase-advanced-cpp_VERSION}: ${coinbase-advanced-cpp_DIR}")
 endif()
 
-find_package(hyperliquid 0.3.0 CONFIG QUIET)
+find_package(hyperliquid 0.4.0 CONFIG QUIET)
 if (NOT hyperliquid_FOUND)
     message(STATUS "Fetching hyperliquid-cpp...")
     FetchContent_Declare(
         hyperliquid-cpp
         GIT_REPOSITORY https://github.com/SlickQuant/hyperliquid-cpp.git
-        GIT_TAG v0.3.0
+        GIT_TAG v0.4.0
     )
     FetchContent_MakeAvailable(hyperliquid-cpp)
 else()

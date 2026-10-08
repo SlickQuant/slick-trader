@@ -19,4 +19,4 @@
 
 // SlickTrader headers
 #include <slick/logger.hpp>
-#include <slick/queue.h>
+#include <slick/queue.hpp>

@@ -19,7 +19,7 @@
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/risk_manager.hpp>
-#include <slick/queue.h>
+#include <slick/queue.hpp>
 
 #include "../strategies/market_maker.cpp"
 

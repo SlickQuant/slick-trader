@@ -1,6 +1,6 @@
 #pragma once
 
-#include <slick/queue.h>
+#include <slick/queue.hpp>
 #include <uwebsockets/App.h>
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/events/order_book_event.hpp>

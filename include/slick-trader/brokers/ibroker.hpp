@@ -3,12 +3,9 @@
 #include <string>
 #include <string_view>
 #include <memory>
+#include <slick/stream_buffer_multiplexer.hpp>
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/utils/fee_structure.hpp>
-
-namespace slick {
-    class stream_buffer_multiplexer;
-}
 
 namespace slick::trader {
 
