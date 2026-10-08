@@ -38,6 +38,13 @@ public:
     void clear_all();
 
     // Set fallback fee structure for brokers that don't report fees in fill events
+    // Contract multiplier for an instrument - the currency value of a one-unit price move
+    // on one unit of quantity (futures: ES = 50; spot instruments keep the default of 1).
+    // Applies to later fills and to positions already held; PnL realized before it was set
+    // stays as booked. Returns false, and changes nothing, for a non-finite or non-positive value.
+    bool set_contract_multiplier(std::string_view instrument, double multiplier);
+    double get_contract_multiplier(std::string_view instrument) const;
+
     void set_fee_structure(FeeStructure fee_structure) { fee_structure_ = fee_structure; }
     const FeeStructure& get_fee_structure() const { return fee_structure_; }
 
@@ -69,6 +76,8 @@ private:
                                      price_t fill_price, qty_t fill_qty) const;
 
     FeeStructure fee_structure_;  // fallback for brokers without per-fill fee data
+
+    std::unordered_map<std::string, double> contract_multipliers_;  // instrument -> multiplier (absent = 1)
 
     // Positions: strategy_id -> instrument -> PositionWithLots
     std::unordered_map<std::string, std::unordered_map<std::string, PositionWithLots>> positions_;

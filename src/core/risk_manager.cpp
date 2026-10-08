@@ -97,7 +97,10 @@ bool RiskManager::check_position_limit(const std::string& strategy_id, std::stri
 
 bool RiskManager::check_order_value_limit(std::string_view instrument, price_t price, qty_t quantity,
                                             const RiskLimits& limits, std::string* reason) {
-    const double order_value = from_price_t(price) * from_qty_t(quantity);
+    // Notional: price x quantity x contract multiplier (ES at 5000 is $250,000 a contract, not
+    // $5,000). Absolute, because a spread order's price can be negative.
+    const double order_value = std::abs(from_price_t(price) * from_qty_t(quantity))
+                             * position_tracker_.get_contract_multiplier(instrument);
 
     // Get instrument-specific limits (or defaults)
     const auto inst_limits = limits.get_instrument_limits(instrument);

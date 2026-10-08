@@ -34,6 +34,7 @@ add_executable(slick-trader-tests
     test_market_maker_quote_slots.cpp
     test_strategy_config_event.cpp
     test_broker_registry.cpp
+    test_futures_accounting.cpp
 )
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)

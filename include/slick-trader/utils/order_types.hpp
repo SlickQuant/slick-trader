@@ -22,7 +22,8 @@ enum class TimeInForce : uint8_t {
     GTC,  // Good Till Cancel
     IOC,  // Immediate Or Cancel
     FOK,  // Fill Or Kill
-    GTD   // Good Till Date
+    GTD,  // Good Till Date
+    DAY   // Day: expires at the end of the trading session. Appended so the existing values keep their numbers
 };
 
 enum class OrderStatus : uint8_t {
@@ -53,6 +54,7 @@ inline constexpr std::string_view to_string(TimeInForce tif) {
         case TimeInForce::IOC: return "IOC";
         case TimeInForce::FOK: return "FOK";
         case TimeInForce::GTD: return "GTD";
+        case TimeInForce::DAY: return "DAY";
         default: return "UNKNOWN";
     }
 }

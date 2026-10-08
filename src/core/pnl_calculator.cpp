@@ -4,16 +4,22 @@
 
 namespace slick::trader {
 
-void PnLCalculator::update_mark_price(const std::string& instrument, price_t price, uint64_t timestamp_ns) {
-    if (price == NULL_PRICE || price <= 0) {
-        LOG_DEBUG("PnLCalculator::update_mark_price: rejected invalid mark price {} for {}", price, instrument);
-        return;
-    }
-    // NULL_PRICE/100 ≈ 9.22e16 (integer units) = ~$9.22e8 per unit — far above any real asset price.
-    // Exchange null sentinels (e.g. Coinbase INT64_MAX/1e8) will exceed this threshold.
+namespace {
+
+// A usable mark price. Zero and negative prices are real - calendar spreads trade through
+// zero - so only the null price and exchange null sentinels are rejected. NULL_PRICE/100
+// (~9.22e16 in integer units, ~$9.22e8 per unit) is far beyond any real price in either
+// direction, and sentinels such as Coinbase's INT64_MAX/1e8 exceed it.
+constexpr bool is_valid_mark(price_t price) noexcept {
     constexpr price_t SENTINEL_THRESHOLD = NULL_PRICE / 100;
-    if (price >= SENTINEL_THRESHOLD) {
-        LOG_WARN("PnLCalculator::update_mark_price: {} rejecting sentinel price={}", instrument, price);
+    return price != NULL_PRICE && price < SENTINEL_THRESHOLD && price > -SENTINEL_THRESHOLD;
+}
+
+} // namespace
+
+void PnLCalculator::update_mark_price(const std::string& instrument, price_t price, uint64_t timestamp_ns) {
+    if (!is_valid_mark(price)) {
+        LOG_DEBUG("PnLCalculator::update_mark_price: rejected invalid mark price {} for {}", price, instrument);
         return;
     }
     bid_prices_[instrument] = {price, timestamp_ns};
@@ -21,16 +27,11 @@ void PnLCalculator::update_mark_price(const std::string& instrument, price_t pri
 }
 
 void PnLCalculator::update_top_of_book(const std::string& instrument, price_t bid, price_t ask, uint64_t timestamp_ns) {
-    if (bid == NULL_PRICE || bid <= 0 || ask == NULL_PRICE || ask <= 0) {
+    if (!is_valid_mark(bid) || !is_valid_mark(ask)) {
         LOG_DEBUG("PnLCalculator::update_top_of_book: rejected invalid tob for {} bid={} ask={}", instrument, bid, ask);
         return;
     }
     if (bid != bid_prices_[instrument].price || ask != ask_prices_[instrument].price) {
-        constexpr price_t SENTINEL_THRESHOLD = NULL_PRICE / 100;
-        if (bid >= SENTINEL_THRESHOLD || ask >= SENTINEL_THRESHOLD) {
-            LOG_WARN("PnLCalculator::update_top_of_book: {} rejecting sentinel bid={} ask={}", instrument, bid, ask);
-            return;
-        }
         bid_prices_[instrument] = {bid, timestamp_ns};
         ask_prices_[instrument] = {ask, timestamp_ns};
     }
@@ -77,7 +78,7 @@ PnLSnapshot PnLCalculator::calculate_pnl(const std::string& strategy_id, uint64_
             auto mark_it = price_map.find(instrument);
             if (mark_it != price_map.end()) {
                 const price_t mark_price = mark_it->second.price;
-                if (mark_price == NULL_PRICE || mark_price <= 0) {
+                if (!is_valid_mark(mark_price)) {
                     LOG_WARN("PnLCalculator::calculate_pnl: skipping unrealized PnL for {} — invalid mark price {}", instrument, mark_price);
                 } else {
                     total_unrealized += to_price_t(position.get_unrealized_pnl(mark_price))

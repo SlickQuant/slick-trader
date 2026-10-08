@@ -28,6 +28,11 @@ dashboard for monitoring and manual control.
 - **Position, PnL & risk management** — FIFO-lot position tracking, realized/unrealized PnL, and
   pre-trade risk validation (position limits, order-value limits, per-second rate limits,
   max-loss halts) all run single-threaded off the strategy manager for lock-free reads/writes.
+- **Futures-ready accounting** — a per-instrument contract multiplier, taken from the
+  `InstrumentDefinitionEvent` a broker publishes, scales realized/unrealized PnL and order-value
+  risk checks (ES moves $50 a point, not $1). Per-contract fees (`FeeType::PER_UNIT`), a `DAY` time
+  in force, and zero or negative prices (calendar spreads) are supported; brokers that cannot
+  express `DAY` (Coinbase, Hyperliquid) reject it.
 - **Live web dashboard** — a dependency-free vanilla-JS frontend (`web/static/`) served over
   uWebSockets, with a REST API and a price-ladder UI for manual order entry/cancellation.
 - **Manual + automated strategies side by side** — a built-in `ManualStrategy` owns orders placed

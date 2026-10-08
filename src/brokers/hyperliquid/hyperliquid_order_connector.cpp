@@ -18,12 +18,20 @@ namespace slick::trader {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-static hyperliquid::Tif to_hl_tif(TimeInForce tif) {
+// Validates the time in force even for a post-only order, which Hyperliquid expresses as
+// ALO: a DAY order must be rejected, never quietly turned into one that does not expire.
+// Throws for what Hyperliquid cannot express; callers turn that into a reject.
+static hyperliquid::Tif to_hl_tif(TimeInForce tif, bool post_only) {
+    hyperliquid::Tif hl_tif;
     switch (tif) {
         case TimeInForce::IOC:
-        case TimeInForce::FOK: return hyperliquid::Tif::Ioc;
-        default:               return hyperliquid::Tif::Gtc;
+        case TimeInForce::FOK: hl_tif = hyperliquid::Tif::Ioc; break;
+        case TimeInForce::GTC:
+        case TimeInForce::GTD: hl_tif = hyperliquid::Tif::Gtc; break;
+        default:
+            throw std::invalid_argument("Hyperliquid does not support time in force " + std::string(to_string(tif)));
     }
+    return post_only ? hyperliquid::Tif::Alo : hl_tif;
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -239,7 +247,7 @@ void HyperliquidOrderConnector::handle_new_order(const NewOrderEvent& req) {
         } else {
             // LIMIT or BRACKET
             double limit_px = from_price_t(req.price);
-            hyperliquid::Tif tif = req.post_only ? hyperliquid::Tif::Alo : to_hl_tif(req.time_in_force);
+            hyperliquid::Tif tif = to_hl_tif(req.time_in_force, req.post_only);
             response = exchange_->order(coin, is_buy, sz, limit_px,
                 hyperliquid::LimitOrderType{tif}, false, cloid);
         }
@@ -368,7 +376,7 @@ void HyperliquidOrderConnector::handle_modify_order(const ModifyOrderEvent& req)
              oid, from_price_t(req.new_price), from_qty_t(req.new_quantity));
 
     try {
-        hyperliquid::Tif tif = req.new_post_only ? hyperliquid::Tif::Alo : to_hl_tif(req.new_time_in_force);
+        hyperliquid::Tif tif = to_hl_tif(req.new_time_in_force, req.new_post_only);
         hyperliquid::OrderRequest new_order{
             .coin = coin,
             .is_buy = (req.side == Side::BUY),

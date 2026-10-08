@@ -500,6 +500,9 @@ void StrategyManager::process_event(const Event* event) {
         case EventType::STRATEGY_CONFIG:
             dispatch_strategy_config(*reinterpret_cast<const StrategyConfigEvent*>(event));
             break;
+        case EventType::INSTRUMENT_DEFINITION:
+            dispatch_instrument_definition(*reinterpret_cast<const InstrumentDefinitionEvent*>(event));
+            break;
         default:
             LOG_WARN("StrategyManager: Unknown event type: {}", static_cast<int>(event->type));
             break;
@@ -544,6 +547,19 @@ void StrategyManager::check_loss_limits() {
             // Stop the strategy
             strategy->stop();
         }
+    }
+}
+
+// Every strategy is added by load_strategies() before brokers publish anything, so a
+// definition reaches all of them as it arrives - there is nothing to replay.
+void StrategyManager::dispatch_instrument_definition(const InstrumentDefinitionEvent& event) {
+    const std::string_view instrument(event.instrument);
+    position_tracker_.set_contract_multiplier(instrument, event.contract_multiplier);
+    LOG_INFO("StrategyManager: instrument {} on {}: tick={} multiplier={} currency={}",
+             instrument, to_string(event.broker_id), from_price_t(event.tick_size),
+             event.contract_multiplier, event.currency);
+    for (auto& strategy : strategies_) {
+        strategy->on_instrument_definition(event);
     }
 }
 

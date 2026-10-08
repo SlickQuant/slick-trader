@@ -1,6 +1,7 @@
 #include <slick/logger.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <algorithm>
+#include <cmath>
 
 namespace slick::trader {
 
@@ -13,6 +14,7 @@ void PositionTracker::on_fill(const std::string& strategy_id, const OrderFillEve
 
     if (pos_with_lots.position.instrument.empty()) {
         pos_with_lots.position.instrument = instrument;
+        pos_with_lots.position.multiplier = get_contract_multiplier(instrument);
     }
 
     const bool is_buy = (fill.side == Side::BUY);
@@ -41,8 +43,10 @@ void PositionTracker::on_fill(const std::string& strategy_id, const OrderFillEve
 
 void PositionTracker::apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_qty,
                                    price_t fill_price, uint64_t timestamp, price_t fee_amount) {
-    if (fill_price == NULL_PRICE || fill_price <= 0) {
-        LOG_ERROR("PositionTracker: fill has invalid fill_price={} — skipping P&L update", fill_price);
+    // Zero and negative prices are real: calendar spreads trade through zero, and so have
+    // outright futures. Only the null sentinel is not a price.
+    if (fill_price == NULL_PRICE) {
+        LOG_ERROR("PositionTracker: fill has no fill_price — skipping P&L update");
         return;
     }
     Position& p = pos.position;
@@ -97,7 +101,7 @@ void PositionTracker::apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_
             ? from_price_t(oldest_lot.price) - from_price_t(fill_price)  // Closing short
             : from_price_t(fill_price) - from_price_t(oldest_lot.price); // Closing long
 
-        p.realized_pnl += to_price_t(pnl_per_unit * from_qty_t(close_qty));
+        p.realized_pnl += to_price_t(pnl_per_unit * from_qty_t(close_qty) * p.multiplier);
 
         // Update position quantity
         const qty_t signed_close = is_buy ? close_qty : -close_qty;
@@ -138,6 +142,30 @@ price_t PositionTracker::calculate_new_avg_price(price_t current_avg, qty_t curr
     const double total_qty = std::abs(from_qty_t(current_qty)) + std::abs(from_qty_t(fill_qty));
 
     return to_price_t(total_cost / total_qty);
+}
+
+bool PositionTracker::set_contract_multiplier(std::string_view instrument, double multiplier) {
+    if (!std::isfinite(multiplier) || multiplier <= 0.0) {
+        LOG_ERROR("PositionTracker: rejecting contract multiplier {} for {}", multiplier, instrument);
+        return false;
+    }
+
+    const std::string key(instrument);
+    contract_multipliers_[key] = multiplier;
+
+    // Positions already held revalue from now on; what they realized before stays as booked.
+    for (auto& [strategy_id, strategy_positions] : positions_) {
+        auto it = strategy_positions.find(key);
+        if (it != strategy_positions.end()) {
+            it->second.position.multiplier = multiplier;
+        }
+    }
+    return true;
+}
+
+double PositionTracker::get_contract_multiplier(std::string_view instrument) const {
+    auto it = contract_multipliers_.find(std::string(instrument));
+    return it == contract_multipliers_.end() ? 1.0 : it->second;
 }
 
 Position PositionTracker::get_position(const std::string& strategy_id, std::string_view instrument) const {

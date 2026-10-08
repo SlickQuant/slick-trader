@@ -7,6 +7,7 @@
 #include <slick-trader/events/level2_update_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/strategy_config_event.hpp>
+#include <slick-trader/events/instrument_definition_event.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick-trader/core/strategy_loader.hpp>
@@ -152,6 +153,7 @@ private:
     void dispatch_order_fill(const OrderFillEvent& event);
     void dispatch_order_reject(const OrderRejectEvent& event);
     void dispatch_order_cancel(const OrderCancelEvent& event);
+    void dispatch_instrument_definition(const InstrumentDefinitionEvent& event);
 
 private:
     std::vector<std::shared_ptr<IStrategy>> strategies_;

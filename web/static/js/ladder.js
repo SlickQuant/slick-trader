@@ -192,6 +192,7 @@ class LadderManager {
                 <option value="1" selected>IOC</option>
                 <option value="0">GTC</option>
                 <option value="2">FOK</option>
+                <option value="4">DAY</option>
             </select>
         `;
         container.appendChild(orderControlsDiv);

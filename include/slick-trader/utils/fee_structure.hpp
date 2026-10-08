@@ -7,7 +7,8 @@ namespace slick::trader {
 
 enum class FeeType : uint8_t {
     PERCENTAGE,   // fee = |notional| * rate  (e.g. Coinbase: rate = 0.006)
-    FIXED_AMOUNT  // fee = rate per fill (flat amount in quote currency)
+    FIXED_AMOUNT, // fee = rate per fill (flat amount in quote currency)
+    PER_UNIT      // fee = |quantity| * rate (e.g. futures exchange + clearing fees per contract)
 };
 
 struct FeeStructure {
@@ -21,6 +22,9 @@ inline price_t compute_fee(price_t fill_price, qty_t fill_qty, const FeeStructur
     if (fee.type == FeeType::PERCENTAGE) {
         double notional = std::abs(from_price_t(fill_price) * from_qty_t(fill_qty));
         return to_price_t(notional * fee.rate);
+    }
+    if (fee.type == FeeType::PER_UNIT) {
+        return to_price_t(std::abs(from_qty_t(fill_qty)) * fee.rate);
     }
     return to_price_t(fee.rate);  // FIXED_AMOUNT: flat fee per fill
 }

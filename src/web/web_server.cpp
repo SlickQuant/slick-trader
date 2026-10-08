@@ -654,15 +654,15 @@ void WebServer::handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpReques
 
         // Validate broker_id
         BrokerId broker_id = static_cast<BrokerId>(broker_id_raw);
-        if (broker_id == BrokerId::UNKNOWN) {
-            send_error_response(res, "Invalid broker_id: must be 1 (Coinbase), 2 (Alpaca), or 3 (Simulated)", 400);
+        if (broker_id == BrokerId::UNKNOWN || broker_id >= BrokerId::_BROKER_ID_COUNT_) {
+            send_error_response(res, "Invalid broker_id: must be 1 (Coinbase), 2 (Alpaca), 3 (Hyperliquid), 4 (Simulated) or 5 (CME)", 400);
             return;
         }
 
         // Validate time_in_force
         TimeInForce tif = static_cast<TimeInForce>(tif_raw);
-        if (tif_raw > 3) {  // Valid range is 0-3
-            send_error_response(res, "Invalid time_in_force: must be 0 (GTC), 1 (IOC), 2 (FOK), or 3 (GTD)", 400);
+        if (tif_raw > static_cast<uint8_t>(TimeInForce::DAY)) {  // Valid range is 0-4
+            send_error_response(res, "Invalid time_in_force: must be 0 (GTC), 1 (IOC), 2 (FOK), 3 (GTD) or 4 (DAY)", 400);
             return;
         }
 

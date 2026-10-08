@@ -208,19 +208,21 @@ void CoinbaseOrderConnector::process_order_requests() {
 }
 
 void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) {
-    // Convert SlickTrader order types to Coinbase types
-    coinbase::Side cb_side = static_cast<coinbase::Side>(request.side);
-    coinbase::OrderType cb_order_type = to_coinbase_order_type(request.order_type);
-    coinbase::TimeInForce cb_tif = to_coinbase_time_in_force(request.time_in_force);
-
-    LOG_INFO("Processing new order request: client_order_id={}, instrument={}, side={}, type={}, tif={}, {}@{}",
-            request.client_order_id, request.instrument,
-            coinbase::to_string(cb_side), coinbase::to_string(cb_order_type),
-            coinbase::to_string(cb_tif), from_qty_t(request.quantity), 
-            request.price == NULL_PRICE ? "NULL_PRICE" : std::to_string(from_price_t(request.price)));
-
-    // Submit order via REST API
+    // Converted inside the try: an order type or time in force Coinbase does not support
+    // (DAY) throws, and must become a reject rather than escape the order thread.
     try {
+        // Convert SlickTrader order types to Coinbase types
+        coinbase::Side cb_side = static_cast<coinbase::Side>(request.side);
+        coinbase::OrderType cb_order_type = to_coinbase_order_type(request.order_type);
+        coinbase::TimeInForce cb_tif = to_coinbase_time_in_force(request.time_in_force);
+
+        LOG_INFO("Processing new order request: client_order_id={}, instrument={}, side={}, type={}, tif={}, {}@{}",
+                request.client_order_id, request.instrument,
+                coinbase::to_string(cb_side), coinbase::to_string(cb_order_type),
+                coinbase::to_string(cb_tif), from_qty_t(request.quantity), 
+                request.price == NULL_PRICE ? "NULL_PRICE" : std::to_string(from_price_t(request.price)));
+
+        // Submit order via REST API
         auto response = rest_client_->create_order(
             std::string(request.client_order_id),
             std::string(request.instrument),

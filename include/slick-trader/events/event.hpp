@@ -17,6 +17,7 @@ enum class BrokerId : uint8_t {
     ALPACA,
     HYPERLIQUID,
     SIMULATED,
+    CME,
     _BROKER_ID_COUNT_,
 };
 
@@ -42,6 +43,7 @@ enum class EventType : uint8_t {
     SUBSCRIBE,
     UNSUBSCRIBE,
     STRATEGY_CONFIG,
+    INSTRUMENT_DEFINITION,
 };
 
 // Base event header - all events must be POD/trivially copyable for lock-free queue
@@ -75,9 +77,11 @@ inline const char* to_string(BrokerId bid) {
         case BrokerId::ALPACA:
             return "ALPACA";
         case BrokerId::HYPERLIQUID:
-            return "HYPERLIMIT";
+            return "HYPERLIQUID";
         case BrokerId::SIMULATED:
             return "SIMULATED";
+        case BrokerId::CME:
+            return "CME";
         default:
             return "UNKNOWN";
     }
@@ -88,6 +92,7 @@ inline BrokerId to_broker_id(const std::string& broker) {
     else if (broker == "ALPACA")        return BrokerId::ALPACA;
     else if (broker == "HYPERLIQUID")   return BrokerId::HYPERLIQUID;
     else if (broker == "SIMULATED")     return BrokerId::SIMULATED;
+    else if (broker == "CME")           return BrokerId::CME;
     else                                return BrokerId::UNKNOWN;
 }
 

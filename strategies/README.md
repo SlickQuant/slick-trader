@@ -75,6 +75,10 @@ protected:
 };
 ```
 
+Override `on_instrument_definition(const InstrumentDefinitionEvent&)` to learn an instrument's
+tick size, contract multiplier and quantity limits when its broker publishes them. Position, PnL
+and risk accounting apply the contract multiplier on their own, whether or not a strategy does.
+
 ### 2. Export the Plugin
 
 Add the export macro at the end of your .cpp file:

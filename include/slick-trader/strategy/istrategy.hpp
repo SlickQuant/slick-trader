@@ -5,6 +5,7 @@
 #include <slick-trader/events/trade_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/order_book_event.hpp>
+#include <slick-trader/events/instrument_definition_event.hpp>
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick-trader/utils/types.hpp>
 #include <slick/queue.hpp>
@@ -60,6 +61,11 @@ public:
     virtual void on_order_fill(const OrderFillEvent& event) = 0;
     virtual void on_order_reject(const OrderRejectEvent& event) = 0;
     virtual void on_order_cancel(const OrderCancelEvent& event) = 0;
+
+    // Static description of an instrument - tick size, contract multiplier, quantity
+    // limits - as its broker publishes it. Optional: the default ignores it. Position and
+    // risk accounting already apply the contract multiplier, whatever a strategy does here.
+    virtual void on_instrument_definition(const InstrumentDefinitionEvent& /*event*/) {}
 };
 
 } // namespace slick::trader

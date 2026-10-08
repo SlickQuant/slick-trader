@@ -15,6 +15,7 @@ struct Position {
     price_t realized_pnl{0};     // Gross realized PnL from closed trades
     price_t realized_fees{0};   // Fees on closed trades (entry fees of closed lots + their exit fees)
     price_t open_fees{0};       // Entry fees paid for currently held lots (not yet realized)
+    double multiplier{1.0};     // Contract multiplier: currency value of a one-unit price move per unit held (ES: 50)
     uint64_t last_update_time{0}; // Last update timestamp
 
     Position() = default;
@@ -27,7 +28,7 @@ struct Position {
     // Calculate unrealized PnL given current market price
     double get_unrealized_pnl(price_t mark_price) const {
         if (is_flat()) return 0.0;
-        return from_qty_t(quantity) * (from_price_t(mark_price) - from_price_t(avg_price));
+        return from_qty_t(quantity) * (from_price_t(mark_price) - from_price_t(avg_price)) * multiplier;
     }
 
     double get_total_pnl(price_t mark_price) const {
