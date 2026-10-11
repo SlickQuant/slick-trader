@@ -57,7 +57,7 @@ endfunction()
 
 # slick-stacker - header-only resting-order ladder engine. Required only by the
 # order_stacker plugin below, which is why it is fetched here and not at the root.
-find_package(slick-stacker 0.2.0 CONFIG QUIET)
+find_package(slick-stacker ${SLICK_STACKER_MIN_VERSION} CONFIG QUIET)
 if (NOT slick-stacker_FOUND)
     message(STATUS "Fetching slick-stacker...")
     set(SLICK_STACKER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -66,7 +66,7 @@ if (NOT slick-stacker_FOUND)
     FetchContent_Declare(
         slick-stacker
         GIT_REPOSITORY https://github.com/SlickQuant/slick-stacker.git
-        GIT_TAG v0.2.0
+        GIT_TAG v${SLICK_STACKER_MIN_VERSION}
     )
     FetchContent_MakeAvailable(slick-stacker)
 else()

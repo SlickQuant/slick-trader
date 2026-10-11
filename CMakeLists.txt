@@ -54,8 +54,14 @@ if(SLICK_TRADER_FAST_FETCHCONTENT)
     set(FETCHCONTENT_UPDATES_DISCONNECTED_COINBASE-ADVANCED-CPP ON CACHE BOOL "" FORCE)
 endif()
 
+set(SLICK_LOGGER_MIN_VERSION 2.2.0)
+set(SLICK_ORDERBOOK_MIN_VERSION 1.1.0)
+set(SLICK_STACKER_MIN_VERSION 0.2.0)
+set(COINBASE_ADVANCED_CPP_MIN_VERSION 2.1.0)
+set(HYPERLIQUID_MIN_VERSION 0.4.1)
+
 set(SLICK_LOGGER_ENABLE_SOURCE_LOCATION OFF CACHE BOOL "" FORCE)
-find_package(slick-logger 2.2.0 CONFIG QUIET)
+find_package(slick-logger ${SLICK_LOGGER_MIN_VERSION} CONFIG QUIET)
 if (NOT slick-logger_FOUND)
     message(STATUS "Fetching slick-logger...")
     # Disable examples, tests, and benchmarks for slick_logger
@@ -65,7 +71,7 @@ if (NOT slick-logger_FOUND)
     FetchContent_Declare(
         slick-logger
         GIT_REPOSITORY https://github.com/SlickQuant/slick-logger.git
-        GIT_TAG v2.2.0
+        GIT_TAG v${SLICK_LOGGER_MIN_VERSION}
     )
     FetchContent_MakeAvailable(slick-logger)
 else()
@@ -73,7 +79,7 @@ else()
 endif()
 
 # Add slick-orderbook dependency
-find_package(slick-orderbook 1.1.0 CONFIG QUIET)
+find_package(slick-orderbook ${SLICK_ORDERBOOK_MIN_VERSION} CONFIG QUIET)
 if (NOT slick-orderbook_FOUND)
     message(STATUS "Fetching slick-orderbook...")
     set(BUILD_SLICK_ORDERBOOK_TESTS OFF CACHE BOOL "" FORCE)
@@ -82,7 +88,7 @@ if (NOT slick-orderbook_FOUND)
     FetchContent_Declare(
         slick-orderbook
         GIT_REPOSITORY https://github.com/SlickQuant/slick-orderbook.git
-        GIT_TAG v1.1.0
+        GIT_TAG v${SLICK_ORDERBOOK_MIN_VERSION}
     )
     FetchContent_MakeAvailable(slick-orderbook)
 else()
@@ -94,27 +100,27 @@ endif()
 # SLICK_TRADER_BUILD_STRATEGIES is ON.
 
 # Add coinbase-advanced-cpp dependency
-find_package(coinbase-advanced-cpp 2.0.1 CONFIG QUIET)
+find_package(coinbase-advanced-cpp ${COINBASE_ADVANCED_CPP_MIN_VERSION} CONFIG QUIET)
 if (NOT coinbase-advanced-cpp_FOUND)
     message(STATUS "Fetching coinbase-advanced-cpp...")
     set(BUILD_COINBASE_ADVANCED_TESTS OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
         coinbase-advanced-cpp
         GIT_REPOSITORY https://github.com/SlickQuant/coinbase-advanced-cpp.git
-        GIT_TAG v2.0.1
+        GIT_TAG v${COINBASE_ADVANCED_CPP_MIN_VERSION}
     )
     FetchContent_MakeAvailable(coinbase-advanced-cpp)
 else()
     message(STATUS "Found coinbase-advanced-cpp ${coinbase-advanced-cpp_VERSION}: ${coinbase-advanced-cpp_DIR}")
 endif()
 
-find_package(hyperliquid 0.4.0 CONFIG QUIET)
+find_package(hyperliquid ${HYPERLIQUID_MIN_VERSION} CONFIG QUIET)
 if (NOT hyperliquid_FOUND)
     message(STATUS "Fetching hyperliquid-cpp...")
     FetchContent_Declare(
         hyperliquid-cpp
         GIT_REPOSITORY https://github.com/SlickQuant/hyperliquid-cpp.git
-        GIT_TAG v0.4.0
+        GIT_TAG v${HYPERLIQUID_MIN_VERSION}
     )
     FetchContent_MakeAvailable(hyperliquid-cpp)
 else()
