@@ -126,6 +126,7 @@ public:
             order.client_order_id  = client_id;
             order.order_id         = order_id;
             order.instrument       = std::string(event.instrument);
+            order.broker_id        = event.broker_id;
             order.side             = event.side;
             order.type             = event.order_type;
             order.time_in_force    = event.time_in_force;
@@ -330,6 +331,7 @@ protected:
         Order pending;
         pending.client_order_id  = client_order_id;
         pending.instrument       = std::string(instrument);
+        pending.broker_id        = broker_id;
         pending.side             = side;
         pending.type             = type;
         pending.price            = price;
@@ -349,7 +351,15 @@ protected:
     }
 
     void cancel_order(const std::string& order_id, const std::string& client_order_id) {
+        const auto it = orders_by_client_id_.find(client_order_id);
         EventSerializer::publish<CancelOrderEvent>(*order_request_queue_, [&](CancelOrderEvent& ev) {
+            // Addressed to the broker that holds the order, with its instrument: every
+            // connector reads the queue, and only that one may act on the cancel.
+            if (it != orders_by_client_id_.end()) {
+                ev.broker_id = it->second.broker_id;
+                ev.set_instrument(it->second.instrument);
+                ev.side = it->second.side;
+            }
             ev.set_order_id(order_id.c_str());
             ev.set_client_order_id(client_order_id.c_str());
         });
@@ -367,6 +377,7 @@ protected:
 
     void modify_order(Order& order, price_t new_price, qty_t new_quantity, price_t new_stop_price = NULL_PRICE) {
         EventSerializer::publish<ModifyOrderEvent>(*order_request_queue_, [&order, new_price, new_quantity, new_stop_price](ModifyOrderEvent& ev) {
+            ev.broker_id          = order.broker_id;
             ev.set_order_id(order.order_id);
             ev.set_client_order_id(order.client_order_id);
             ev.set_instrument(order.instrument);
@@ -453,6 +464,7 @@ protected:
             Order pending;
             pending.client_order_id  = client_order_id;
             pending.instrument       = instrument;
+            pending.broker_id        = broker_id;
             pending.side             = close_side;
             pending.type             = OrderType::LIMIT;
             pending.price            = close_price;

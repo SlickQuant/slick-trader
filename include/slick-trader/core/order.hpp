@@ -11,6 +11,7 @@ struct Order {
     std::string order_id;
     std::string client_order_id;
     std::string instrument;
+    BrokerId broker_id{BrokerId::UNKNOWN};  // the broker the order was sent to; stamped on its modifies and cancels
     Side side{Side::BUY};
     OrderType type{OrderType::LIMIT};
     TimeInForce time_in_force{TimeInForce::GTC};

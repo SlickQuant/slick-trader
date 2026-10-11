@@ -3,8 +3,16 @@
 #include <memory>
 
 #include <slick/queue.hpp>
+#include <slick-trader/events/event.hpp>
 
 namespace slick::trader {
+
+// Whether an order request is addressed to `broker`. Every order connector reads every
+// request on the shared order queue, so each must act only on its own: without this
+// check an order for one broker is also sent to every other broker that is enabled.
+inline bool is_request_for(const Event& request, BrokerId broker) noexcept {
+    return request.broker_id == broker;
+}
 
 // Order connector interface
 // Each connector runs on its own thread

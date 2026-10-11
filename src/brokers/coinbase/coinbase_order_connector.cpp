@@ -191,6 +191,9 @@ void CoinbaseOrderConnector::process_order_requests() {
     }
 
     const auto *event = reinterpret_cast<const Event*>(data);
+    if (!is_request_for(*event, BrokerId::COINBASE)) {
+        return;   // another broker's order
+    }
     switch (event->type) {
         case EventType::NEW_ORDER:
             handle_order_request(*reinterpret_cast<NewOrderEvent*>(data));

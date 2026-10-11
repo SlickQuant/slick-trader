@@ -191,6 +191,9 @@ void HyperliquidOrderConnector::process_order_requests() {
     }
 
     const auto* event = reinterpret_cast<const Event*>(data);
+    if (!is_request_for(*event, BrokerId::HYPERLIQUID)) {
+        return;   // another broker's order
+    }
     switch (event->type) {
         case EventType::NEW_ORDER:
             handle_new_order(*reinterpret_cast<const NewOrderEvent*>(data));
