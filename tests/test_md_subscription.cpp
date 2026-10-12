@@ -11,14 +11,9 @@
 
 #include <gtest/gtest.h>
 
-#include <slick-trader/core/pnl_calculator.hpp>
-#include <slick-trader/core/position_tracker.hpp>
-#include <slick-trader/core/risk_manager.hpp>
-#include <slick-trader/core/strategy_manager.hpp>
+#include "strategy_manager_fixture.hpp"
+
 #include <slick-trader/events/md_subscription.hpp>
-#include <slick-trader/strategy/strategy_base.hpp>
-#include <slick/queue.hpp>
-#include <slick/stream_buffer_multiplexer.hpp>
 
 #include <memory>
 #include <string>
@@ -47,12 +42,10 @@ struct Request {
     std::vector<std::string> instruments;
 };
 
-class MdSubscriptionTest : public ::testing::Test {
+class MdSubscriptionTest : public ::testing::Test, protected test::StrategyManagerFixture {
 protected:
     void add(const std::string& name, std::vector<SubscriptionRequest> subscriptions) {
-        auto strategy = std::make_shared<SubscribingStrategy>(name, std::move(subscriptions));
-        strategy->initialize(nlohmann::json::object(), positions_, pnl_, risk_, md_q_, order_q_);
-        manager_.add_strategy(strategy);
+        add_strategy(std::make_shared<SubscribingStrategy>(name, std::move(subscriptions)));
     }
 
     // Every request published since the last call.
@@ -73,15 +66,7 @@ protected:
         }
     }
 
-    PositionTracker positions_;
-    PnLCalculator   pnl_{positions_};
-    RiskManager     risk_{positions_};
-    slick::stream_buffer_multiplexer mux_{1024};
-    slick::queue<uint8_t> md_q_{65536};
-    slick::queue<uint8_t> order_q_{4096};
     uint64_t cursor_ = md_q_.initial_reading_index();
-    StrategyManager manager_{nlohmann::json{{"TOB_queue_size", 65536}, {"TOB_control_size", 4096}},
-                             positions_, pnl_, risk_, mux_, md_q_, order_q_};
 };
 
 } // namespace

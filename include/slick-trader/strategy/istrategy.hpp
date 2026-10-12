@@ -6,6 +6,7 @@
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/order_book_event.hpp>
 #include <slick-trader/events/instrument_definition_event.hpp>
+#include <slick-trader/events/instrument_status_event.hpp>
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick-trader/utils/types.hpp>
 #include <slick/queue.hpp>
@@ -74,6 +75,11 @@ public:
     // strategy's own orders stands in the queue.
     virtual void on_order_book_l3(std::string_view /*instrument*/,
                                   const slick::orderbook::OrderBookL3& /*book*/) {}
+
+    // An instrument's trading state changed - it opened, halted, closed - as its broker
+    // publishes it. Optional: the default ignores it. Nothing is done about a halt on a
+    // strategy's behalf: whether to pull its orders is the strategy's decision.
+    virtual void on_instrument_status(const InstrumentStatusEvent& /*event*/) {}
 };
 
 } // namespace slick::trader

@@ -38,6 +38,7 @@ add_executable(slick-trader-tests
     test_order_request_routing.cpp
     test_md_subscription.cpp
     test_mbo_book.cpp
+    test_instrument_status.cpp
 )
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)

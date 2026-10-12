@@ -3,16 +3,11 @@
 
 #include <gtest/gtest.h>
 
+#include "strategy_manager_fixture.hpp"
+
 #include <slick-trader/core/broker_status.hpp>
-#include <slick-trader/core/pnl_calculator.hpp>
-#include <slick-trader/core/position_tracker.hpp>
-#include <slick-trader/core/risk_manager.hpp>
-#include <slick-trader/core/strategy_manager.hpp>
 #include <slick-trader/events/mbo_update_event.hpp>
 #include <slick-trader/market_data/queue_position.hpp>
-#include <slick-trader/strategy/strategy_base.hpp>
-#include <slick/queue.hpp>
-#include <slick/stream_buffer_multiplexer.hpp>
 
 #include <memory>
 #include <new>
@@ -60,15 +55,14 @@ MboOrder removal(uint64_t id) {
     return MboOrder{id, 0, 0, 0, Side::BUY, MboAction::REMOVE};
 }
 
-class MboBookTest : public ::testing::Test {
+class MboBookTest : public ::testing::Test, protected test::StrategyManagerFixture {
 protected:
     void SetUp() override {
         auto& reg = BrokerStatusRegistry::instance();
         reg.set_order_enabled(BrokerId::CME, true);
         reg.set_order_connected(BrokerId::CME, true);
-        strategy_->initialize(nlohmann::json::object(), positions_, pnl_, risk_, md_q_, order_q_);
+        add_strategy(strategy_);
         strategy_->start();
-        manager_.add_strategy(strategy_);
     }
 
     // Dispatches one record exactly as the worker thread would read it off the bus.
@@ -95,14 +89,6 @@ protected:
         return found ? *found : empty;
     }
 
-    PositionTracker positions_;
-    PnLCalculator   pnl_{positions_};
-    RiskManager     risk_{positions_};
-    slick::stream_buffer_multiplexer mux_{1024};
-    slick::queue<uint8_t> md_q_{4096};
-    slick::queue<uint8_t> order_q_{65536};
-    StrategyManager manager_{nlohmann::json{{"TOB_queue_size", 65536}, {"TOB_control_size", 4096}},
-                             positions_, pnl_, risk_, mux_, md_q_, order_q_};
     std::shared_ptr<BookStrategy> strategy_ = std::make_shared<BookStrategy>();
     uint64_t clock_ = 1'000;
 };

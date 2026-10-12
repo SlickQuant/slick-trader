@@ -9,6 +9,7 @@
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/strategy_config_event.hpp>
 #include <slick-trader/events/instrument_definition_event.hpp>
+#include <slick-trader/events/instrument_status_event.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick-trader/core/strategy_loader.hpp>
@@ -171,6 +172,7 @@ private:
     void dispatch_quote(const QuoteEvent& event);
     void dispatch_level2_updates(const Level2UpdateEvent& event);
     void dispatch_mbo_update(const MboUpdateEvent& event);
+    void dispatch_instrument_status(const InstrumentStatusEvent& event);
 
     void on_top_of_book_update(const std::string &instrument, const slick::orderbook::TopOfBook& tob);
     void on_order_book_update(const slick::orderbook::OrderBookL2& book);

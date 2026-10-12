@@ -502,6 +502,9 @@ void StrategyManager::process_event(const Event* event) {
         case EventType::INSTRUMENT_DEFINITION:
             dispatch_instrument_definition(*reinterpret_cast<const InstrumentDefinitionEvent*>(event));
             break;
+        case EventType::INSTRUMENT_STATUS:
+            dispatch_instrument_status(*reinterpret_cast<const InstrumentStatusEvent*>(event));
+            break;
         default:
             LOG_WARN("StrategyManager: Unknown event type: {}", static_cast<int>(event->type));
             break;
@@ -559,6 +562,15 @@ void StrategyManager::dispatch_instrument_definition(const InstrumentDefinitionE
              event.contract_multiplier, event.currency);
     for (auto& strategy : strategies_) {
         strategy->on_instrument_definition(event);
+    }
+}
+
+void StrategyManager::dispatch_instrument_status(const InstrumentStatusEvent& event) {
+    LOG_INFO("StrategyManager: instrument {} on {} is {}{}{}{}", event.instrument, to_string(event.broker_id),
+             to_string(event.status), event.cancel_allowed ? "" : " (no cancels)",
+             event.reason[0] != '\0' ? ": " : "", event.reason);
+    for (auto& strategy : strategies_) {
+        strategy->on_instrument_status(event);
     }
 }
 

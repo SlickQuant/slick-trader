@@ -79,6 +79,12 @@ Override `on_instrument_definition(const InstrumentDefinitionEvent&)` to learn a
 tick size, contract multiplier and quantity limits when its broker publishes them. Position, PnL
 and risk accounting apply the contract multiplier on their own, whether or not a strategy does.
 
+Override `on_instrument_status(const InstrumentStatusEvent&)` to learn that an instrument opened,
+halted or closed, where its broker reports that. `status` is `PRE_OPEN`, `OPEN`, `HALTED`, `CLOSED`
+or `UNKNOWN`; `cancel_allowed` is false while the exchange refuses cancels, as just before an
+opening cross. The framework only forwards it - a strategy that should pull its quotes on a halt
+does so here.
+
 ### Market data subscriptions
 
 `get_subscriptions()` declares what the strategy needs, one `SubscriptionRequest` per broker and

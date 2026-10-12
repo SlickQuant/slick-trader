@@ -38,6 +38,9 @@ dashboard for monitoring and manual control.
   book (`on_order_book_l3`). `queue_position()` reads from it where one of the strategy's own
   orders stands: how many orders and how much quantity trade before it. See
   [strategies/README.md](strategies/README.md#market-by-order-books-and-queue-position).
+- **Trading status** — a broker that reports it publishes each instrument's state (pre-open,
+  open, halted, closed) as an `InstrumentStatusEvent`, handed to strategies through
+  `on_instrument_status`.
 - **Live web dashboard** — a dependency-free vanilla-JS frontend (`web/static/`) served over
   uWebSockets, with a REST API and a price-ladder UI for manual order entry/cancellation.
 - **Manual + automated strategies side by side** — a built-in `ManualStrategy` owns orders placed
