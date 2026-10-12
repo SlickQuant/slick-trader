@@ -44,6 +44,7 @@ enum class EventType : uint8_t {
     UNSUBSCRIBE,
     STRATEGY_CONFIG,
     INSTRUMENT_DEFINITION,
+    MBO_UPDATE,
 };
 
 // Base event header - all events must be POD/trivially copyable for lock-free queue

@@ -11,6 +11,7 @@
 #include <slick/queue.hpp>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <nlohmann/json.hpp>
 
@@ -66,6 +67,13 @@ public:
     // limits - as its broker publishes it. Optional: the default ignores it. Position and
     // risk accounting already apply the contract multiplier, whatever a strategy does here.
     virtual void on_instrument_definition(const InstrumentDefinitionEvent& /*event*/) {}
+
+    // The market-by-order book of an instrument subscribed with SubscriptionType::MBO, after
+    // each exchange event has been applied to it. Optional: the default ignores it.
+    // queue_position() (market_data/queue_position.hpp) reads from it where one of the
+    // strategy's own orders stands in the queue.
+    virtual void on_order_book_l3(std::string_view /*instrument*/,
+                                  const slick::orderbook::OrderBookL3& /*book*/) {}
 };
 
 } // namespace slick::trader

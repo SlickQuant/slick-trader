@@ -5,6 +5,7 @@
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
+#include <slick-trader/events/mbo_update_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/strategy_config_event.hpp>
 #include <slick-trader/events/instrument_definition_event.hpp>
@@ -18,7 +19,10 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <map>
 #include <set>
+#include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <chrono>
@@ -119,10 +123,32 @@ public:
 
     void subscribe_book_update(std::vector<std::string>& instruments) {
         for (const auto& instrument : instruments) {
+            // One observer per book, however many subscription types feed it: a second
+            // one would hand every update to the strategies twice.
+            if (!observed_books_.insert(instrument).second) {
+                continue;
+            }
             auto *book = book_manager_.getOrCreateOrderBook(get_or_create_symbol_id(instrument));
             auto observer = std::make_shared<OrderBookObserverImpl>(this, *book, instrument);
             book->addObserver(observer);
+
+            // The L2 book is now this instrument's source of quotes.
+            if (auto it = mbo_books_.find(instrument); it != mbo_books_.end()) {
+                it->second->publishes_top = false;
+            }
         }
+    }
+
+    // Dispatches one event exactly as the worker thread does. While the manager runs the
+    // worker is the only caller; it is public so a replay or a test can drive the manager
+    // without the thread.
+    void process_event(const Event* event);
+
+    // The market-by-order book of an instrument, or nullptr when none was subscribed or
+    // published. Owned by the worker thread: read it from there (a strategy callback).
+    const slick::orderbook::OrderBookL3* get_order_book_l3(std::string_view instrument) const {
+        const auto it = mbo_books_.find(instrument);
+        return it != mbo_books_.end() ? &it->second->book : nullptr;
     }
 
 private:
@@ -137,17 +163,49 @@ private:
     void check_broker_status();
     void dispatch_strategy_config(const StrategyConfigEvent& event);
 
-    void process_event(const Event* event);
+    // Sends one SUBSCRIBE or UNSUBSCRIBE request for `instruments` to the request's broker.
+    void publish_subscription(EventType type, const SubscriptionRequest& sub,
+                              const std::vector<std::string>& instruments);
 
     void dispatch_trade(const TradeEvent& event);
     void dispatch_quote(const QuoteEvent& event);
     void dispatch_level2_updates(const Level2UpdateEvent& event);
+    void dispatch_mbo_update(const MboUpdateEvent& event);
 
     void on_top_of_book_update(const std::string &instrument, const slick::orderbook::TopOfBook& tob);
     void on_order_book_update(const slick::orderbook::OrderBookL2& book);
     void dispatch_order_book(const OrderBookEvent& event);
 
     slick::orderbook::SymbolId get_or_create_symbol_id(const std::string& instrument);
+
+    // One instrument's market-by-order book. Held here rather than in an OrderBookManager,
+    // whose lookup takes a shared lock: only the worker thread touches these.
+    struct MboBook {
+        MboBook(slick::orderbook::SymbolId symbol, std::string name, bool publishes_top_of_book)
+            : book(symbol, TOP_LEVELS, INITIAL_ORDERS, INITIAL_LEVELS)
+            , instrument(std::move(name))
+            , publishes_top(publishes_top_of_book)
+        {}
+
+        // Sized so a liquid futures book never grows on the dispatch path.
+        static constexpr std::size_t TOP_LEVELS = 10;
+        static constexpr std::size_t INITIAL_ORDERS = 16384;
+        static constexpr std::size_t INITIAL_LEVELS = 256;
+
+        slick::orderbook::OrderBookL3 book;
+        std::string instrument;
+        slick::orderbook::TopOfBook top;    // the last top of book published from this book
+        bool publishes_top;                 // false once an L2 book of the instrument publishes it
+    };
+    MboBook& get_or_create_mbo_book(std::string_view instrument);
+
+    // Lets the per-event lookup take the instrument as it arrives, without building a string.
+    struct InstrumentHash {
+        using is_transparent = void;
+        std::size_t operator()(std::string_view instrument) const noexcept {
+            return std::hash<std::string_view>{}(instrument);
+        }
+    };
 
     void dispatch_order_ack(const OrderAckEvent& event);
     void dispatch_order_fill(const OrderFillEvent& event);
@@ -161,7 +219,12 @@ private:
     slick::orderbook::OrderBookManager<slick::orderbook::OrderBookL2> book_manager_;
     std::unordered_map<std::string, slick::orderbook::SymbolId> symbol_ids_;
     std::unordered_map<slick::orderbook::SymbolId, std::string> symbol_names_;
-    std::unordered_map<std::string, uint8_t> subscriptions_;
+    // How many strategies hold each subscription. Keyed by all three of broker, type and
+    // instrument: trades and the book of one instrument are separate requests to the broker.
+    using SubscriptionKey = std::tuple<BrokerId, SubscriptionType, std::string>;
+    std::map<SubscriptionKey, uint32_t> subscriptions_;
+    std::unordered_set<std::string> observed_books_;    // instruments whose L2 book has its observer
+    std::unordered_map<std::string, std::unique_ptr<MboBook>, InstrumentHash, std::equal_to<>> mbo_books_;
     std::unordered_map<std::string, std::set<BrokerId>> strategy_md_brokers_;
     std::unordered_set<std::string> auto_paused_strategies_;
     std::unordered_map<std::string, std::string> auto_pause_reasons_;

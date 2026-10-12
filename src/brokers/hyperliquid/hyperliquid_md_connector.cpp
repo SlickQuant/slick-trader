@@ -146,6 +146,9 @@ bool HyperliquidMDConnector::subscribe(const MDSubscription& request) {
                     ch_type = "l2Book";
                     sub = {{"type", "l2Book"}, {"coin", instr}, {"fast", true}};
                     break;
+                case SubscriptionType::MBO:
+                    LOG_WARN("Hyperliquid MD: no market-by-order feed, MBO subscription of {} ignored", instr);
+                    continue;
             }
 
             int id = info_->subscribe(sub, [this, ch_type](const nlohmann::json& msg) {
@@ -175,6 +178,7 @@ bool HyperliquidMDConnector::unsubscribe(const MDSubscription& request) {
         case SubscriptionType::QUOTE:  remove_from(quote_instruments_); break;
         case SubscriptionType::LEVEL2:
         case SubscriptionType::ORDER_BOOK: remove_from(level2_instruments_); break;
+        case SubscriptionType::MBO:    break;
     }
 
     return true;

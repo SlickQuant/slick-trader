@@ -43,12 +43,13 @@ enum class SubscriptionType : uint8_t {
     QUOTE,
     LEVEL2,
     ORDER_BOOK,
+    MBO,            // market by order: every order of the book, for brokers whose feed carries it
 };
 
 // Subscription request from a strategy
 struct SubscriptionRequest {
     BrokerId broker_id;                   // Which broker to subscribe to
-    SubscriptionType type;                // Trade, Quote, or OrderBook
+    SubscriptionType type;                // Trade, Quote, Level2, OrderBook or MBO
     std::vector<std::string> instruments; // List of instruments
     int depth = 10;                       // Order book depth (for orderbook subscriptions)
 

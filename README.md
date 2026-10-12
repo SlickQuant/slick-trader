@@ -33,6 +33,11 @@ dashboard for monitoring and manual control.
   risk checks (ES moves $50 a point, not $1). Per-contract fees (`FeeType::PER_UNIT`), a `DAY` time
   in force, and zero or negative prices (calendar spreads) are supported; brokers that cannot
   express `DAY` (Coinbase, Hyperliquid) reject it.
+- **Market-by-order books and queue position** — for a broker whose feed carries every order,
+  a strategy subscribes `SubscriptionType::MBO` and is handed the instrument's order-by-order
+  book (`on_order_book_l3`). `queue_position()` reads from it where one of the strategy's own
+  orders stands: how many orders and how much quantity trade before it. See
+  [strategies/README.md](strategies/README.md#market-by-order-books-and-queue-position).
 - **Live web dashboard** — a dependency-free vanilla-JS frontend (`web/static/`) served over
   uWebSockets, with a REST API and a price-ladder UI for manual order entry/cancellation.
 - **Manual + automated strategies side by side** — a built-in `ManualStrategy` owns orders placed
@@ -126,7 +131,9 @@ build/tests/Debug/slick-trader-tests.exe
 The suite covers behaviour that only reproduces across a module boundary: that a plugin loaded
 through `StrategyLoader` observes the host's `BrokerStatusRegistry`, and that a strategy ignores
 order events belonging to other strategies. It also checks that every broker built into the binary
-is registered under its config name. Requires GTest (`find_package(GTest CONFIG)`).
+is registered under its config name, that each market data subscription a strategy declares
+reaches its broker, and the market-by-order book and queue position. Requires GTest
+(`find_package(GTest CONFIG)`).
 
 ### Build Options
 
@@ -243,8 +250,9 @@ include/slick-trader/   Public headers (.hpp), organized by domain:
                          RiskManager, BrokerRegistry, BrokerStatusRegistry, StrategyLoader
   brokers/               IBroker + per-venue implementations (coinbase/, hyperliquid/)
   strategy/              IStrategy, StrategyBase, ManualStrategy, plugin export macro
-  events/                Wire event types (trades, quotes, order book, order lifecycle)
-  market_data/           Order book types
+  events/                Wire event types (trades, quotes, order book, market by order,
+                         order lifecycle)
+  market_data/           Order book types, queue position
   web/                   WebServer
   utils/                 Fixed-point price/qty types, time helpers, fee structures
 src/                     Implementation (.cpp) mirroring include/, plus main.cpp

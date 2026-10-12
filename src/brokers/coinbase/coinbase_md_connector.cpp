@@ -119,6 +119,9 @@ bool CoinbaseMDConnector::subscribe(const MDSubscription& request) {
             }
             LOG_INFO("Coinbase MD: Order book depth set to {}", request.depth);
             break;
+        case SubscriptionType::MBO:
+            LOG_WARN("Coinbase MD: no market-by-order feed, MBO subscription ignored");
+            break;
     }
 
     return true;
@@ -156,6 +159,8 @@ bool CoinbaseMDConnector::unsubscribe(const MDSubscription& request) {
                 if (ws_client_) {
                     ws_client_->unsubscribe({instrument}, {coinbase::WebSocketChannel::LEVEL2});
                 }
+                break;
+            case SubscriptionType::MBO:
                 break;
         }
     }

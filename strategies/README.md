@@ -79,6 +79,53 @@ Override `on_instrument_definition(const InstrumentDefinitionEvent&)` to learn a
 tick size, contract multiplier and quantity limits when its broker publishes them. Position, PnL
 and risk accounting apply the contract multiplier on their own, whether or not a strategy does.
 
+### Market data subscriptions
+
+`get_subscriptions()` declares what the strategy needs, one `SubscriptionRequest` per broker and
+kind of data. Each kind is a separate request to the broker, so a strategy that wants the book
+and the trades of an instrument asks for both:
+
+| `SubscriptionType` | Callback | Notes |
+| --- | --- | --- |
+| `TRADE` | `on_trade` | |
+| `QUOTE` | `on_quote` | Top of book |
+| `LEVEL2`, `ORDER_BOOK` | `on_order_book`, `on_quote` | Price levels; `on_quote` on each change of the top |
+| `MBO` | `on_order_book_l3`, `on_quote` | Every order of the book. Only brokers whose feed carries it; the others log and ignore the request |
+
+### Market-by-order books and queue position
+
+With an `MBO` subscription the strategy is handed the instrument's order-by-order book after
+each exchange event has been applied to it - never half way through one:
+
+```cpp
+#include <slick-trader/market_data/queue_position.hpp>
+
+std::vector<SubscriptionRequest> get_subscriptions() const override {
+    return {SubscriptionRequest(broker_id_, SubscriptionType::MBO, {instrument_})};
+}
+
+void on_order_book_l3(std::string_view instrument, const slick::orderbook::OrderBookL3& book) override {
+    if (instrument != instrument_) return;   // every strategy sees every book
+
+    // One of this strategy's own working orders, by its client order id.
+    if (const auto position = get_queue_position(book, my_client_order_id_)) {
+        // position->orders_ahead, position->quantity_ahead: what trades before it at its price
+        // position->level_quantity, position->level_orders, position->level_index (0 = best)
+    }
+}
+```
+
+`get_queue_position()` answers nothing until the order is acknowledged *and* shows on the feed -
+the two arrive on different connections, in either order - and nothing again once it is filled or
+cancelled. It works for brokers that name an order on the market data feed by the id its
+acknowledgement carries. `queue_position(book, order_id)` is the same lookup for any order of the
+book. Both cost one hop per order ahead, and the book belongs to the worker thread: read it inside
+a callback, do not keep the reference.
+
+An instrument subscribed `MBO` and nothing else still gets `on_quote` and PnL marks, taken from
+the order-by-order book; with a `LEVEL2` or `ORDER_BOOK` subscription as well, those keep coming
+from the price-level book.
+
 ### 2. Export the Plugin
 
 Add the export macro at the end of your .cpp file:
@@ -431,8 +478,8 @@ the same `stream_buffer_multiplexer` the market data rides
 ([strategy_config_event.hpp](../include/slick-trader/events/strategy_config_event.hpp)), and
 `StrategyManager::dispatch_strategy_config()` parses it and calls `set_config()` from the worker
 loop. The parameters travel as JSON text in a trailing flexible array, the same idiom
-`Level2UpdateEvent` uses for its price levels — publish with `size_for(text.size())`, never
-`sizeof(StrategyConfigEvent)`.
+`Level2UpdateEvent` uses for its price levels and `MboUpdateEvent` for its orders — publish with
+`size_for(text.size())`, never `sizeof(StrategyConfigEvent)`.
 
 Two things still are not on the worker thread:
 

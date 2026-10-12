@@ -8,10 +8,12 @@
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/risk_manager.hpp>
+#include <slick-trader/market_data/queue_position.hpp>
 #include <slick-trader/utils/time.hpp>
 #include <slick/logger.hpp>
 #include <nlohmann/json.hpp>
 #include <atomic>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -488,6 +490,15 @@ protected:
     const Order* get_order(const std::string& client_order_id) const {
         auto it = orders_by_client_id_.find(client_order_id);
         return it != orders_by_client_id_.end() ? &it->second : nullptr;
+    }
+
+    // Where one of this strategy's working orders stands in the queue at its price, read
+    // from the market-by-order book on_order_book_l3() hands over. Nothing until the order
+    // is acknowledged and shows on the feed, and nothing once it is filled or cancelled.
+    std::optional<QueuePosition> get_queue_position(const slick::orderbook::OrderBookL3& book,
+                                                    const std::string& client_order_id) const {
+        const Order* order = get_order(client_order_id);
+        return order ? queue_position(book, std::string_view(order->order_id)) : std::nullopt;
     }
 
     // Lookup by broker-assigned order_id (available after on_order_ack)

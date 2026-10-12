@@ -301,72 +301,64 @@ void StrategyManager::stop() {
     LOG_INFO("StrategyManager: Stopped");
 }
 
+void StrategyManager::publish_subscription(EventType type, const SubscriptionRequest& sub,
+                                           const std::vector<std::string>& instruments) {
+    const auto size = static_cast<uint32_t>(sizeof(MDSubscription) + instruments.size() * sizeof(char [32]));
+    EventSerializer::publish<MDSubscription>(md_request_queue_, size, [&](MDSubscription &event) {
+        event.type = type;
+        event.broker_id = sub.broker_id;
+        event.subscription_type = sub.type;
+        event.depth = sub.depth;
+        event.num_instruments = static_cast<uint32_t>(instruments.size());
+        size_t i = 0;
+        for (const auto& inst : instruments) {
+            // One slot per instrument. Copy the name and no more - the string is rarely as
+            // long as the slot - and zero the rest, which the queue does not do.
+            auto& slot = event.instruments[i++];
+            assert(inst.size() < sizeof(slot));
+            const size_t len = std::min(inst.size(), sizeof(slot) - 1);
+            std::memcpy(slot, inst.data(), len);
+            std::memset(slot + len, 0, sizeof(slot) - len);
+        }
+    });
+}
+
 void StrategyManager::subscribe(const SubscriptionRequest& sub) {
+    // Only what nobody holds yet goes to the broker; the rest just gains a holder.
     std::vector<std::string> instruments;
     for (auto& inst : sub.instruments) {
-        auto iter = subscriptions_.find(inst);
-        if (iter == subscriptions_.end()) {
-            subscriptions_.emplace(std::make_pair(inst, 1));
+        if (++subscriptions_[SubscriptionKey{sub.broker_id, sub.type, inst}] == 1) {
             instruments.push_back(inst);
-        } else {
-            ++iter->second;
         }
     }
-    
-    // Remove duplicates
-    std::sort(instruments.begin(), instruments.end());
-    instruments.erase(
-        std::unique(instruments.begin(), instruments.end()),
-        instruments.end()
-    );
 
     if (!instruments.empty()) {
-        uint32_t size = sizeof(MDSubscription) + instruments.size() * sizeof(char [32]);
-        EventSerializer::publish<MDSubscription>(md_request_queue_, size, [&](MDSubscription &event) {
-            event.type = EventType::SUBSCRIBE;
-            event.broker_id = sub.broker_id;
-            event.subscription_type = sub.type;
-            event.depth = sub.depth;
-            event.num_instruments = instruments.size();
-            size_t i = 0;
-            for (const auto& inst : instruments) {
-                assert(inst.size() < sizeof(event.instruments[i]));
-                std::memcpy(event.instruments[i], inst.c_str(), sizeof(event.instruments[i]));
-            }
-        });
+        publish_subscription(EventType::SUBSCRIBE, sub, instruments);
 
         if (sub.type == SubscriptionType::LEVEL2 || sub.type == SubscriptionType::ORDER_BOOK) {
             subscribe_book_update(instruments);
+        } else if (sub.type == SubscriptionType::MBO) {
+            // Built now, not on the first event the worker dispatches.
+            for (const auto& inst : instruments) {
+                get_or_create_mbo_book(inst);
+            }
         }
     }
 }
 
 void StrategyManager::unsubscribe(const SubscriptionRequest& sub) {
+    // Only what its last holder lets go of is unsubscribed at the broker.
     std::vector<std::string> instruments;
     for (auto& inst : sub.instruments) {
-        auto iter = subscriptions_.find(inst);
-        if (iter != subscriptions_.end()) {
-            if (--iter->second == 0) {
-                subscriptions_.erase(iter);
-                instruments.push_back(inst);
-            }
+        auto iter = subscriptions_.find(SubscriptionKey{sub.broker_id, sub.type, inst});
+        if (iter != subscriptions_.end() && --iter->second == 0) {
+            subscriptions_.erase(iter);
+            instruments.push_back(inst);
         }
     }
 
-    if (instruments.empty()) {
-        uint32_t size = sizeof(MDSubscription) + instruments.size() * sizeof(char [32]);
-        EventSerializer::publish<MDSubscription>(md_request_queue_, size, [&](MDSubscription &event) {
-            event.type = EventType::UNSUBSCRIBE;
-            event.broker_id = sub.broker_id;
-            event.subscription_type = sub.type;
-            event.depth = sub.depth;
-            event.num_instruments = instruments.size();
-            size_t i = 0;
-            for (const auto& inst : instruments) {
-                assert(inst.size() < sizeof(event.instruments[i]));
-                std::memcpy(event.instruments[i], inst.c_str(), sizeof(event.instruments[i]));
-            }
-        });
+    if (!instruments.empty()) {
+        publish_subscription(EventType::UNSUBSCRIBE, sub, instruments);
     }
 }
 
@@ -481,6 +473,9 @@ void StrategyManager::process_event(const Event* event) {
             break;
         case EventType::LEVEL2_UPDATE:
             dispatch_level2_updates(*reinterpret_cast<const Level2UpdateEvent*>(event));
+            break;
+        case EventType::MBO_UPDATE:
+            dispatch_mbo_update(*reinterpret_cast<const MboUpdateEvent*>(event));
             break;
         case EventType::ORDER_BOOK:
             dispatch_order_book(*reinterpret_cast<const OrderBookEvent*>(event));
@@ -619,28 +614,85 @@ void StrategyManager::dispatch_level2_updates(const Level2UpdateEvent& event) {
 }
 
 void StrategyManager::on_top_of_book_update(const std::string &instrument, const slick::orderbook::TopOfBook& tob) {
-    if (tob.best_bid != NULL_PRICE && tob.best_ask != NULL_PRICE) {
-        pnl_calculator_.update_top_of_book(instrument, tob.best_bid, tob.best_ask, tob.timestamp);
+    // A side with nothing on it has no price. The book reports such a side as price 0 - a
+    // real price for a futures spread - so it is told apart by its quantity, and goes out as
+    // NULL_PRICE: marking a position against it would value it at zero, or at half the
+    // price of the side that is there.
+    const price_t bid = tob.bid_quantity > 0 ? static_cast<price_t>(tob.best_bid) : NULL_PRICE;
+    const price_t ask = tob.ask_quantity > 0 ? static_cast<price_t>(tob.best_ask) : NULL_PRICE;
+    if (bid != NULL_PRICE && ask != NULL_PRICE) {
+        pnl_calculator_.update_top_of_book(instrument, bid, ask, tob.timestamp);
     }
-
-    EventSerializer::publish<QuoteEvent>(*tob_producer_buffer_, [&](QuoteEvent& q) {
-        q.set_instrument(instrument);
-        q.bid_price = tob.best_bid;
-        q.bid_quantity = static_cast<qty_t>(tob.bid_quantity);
-        q.ask_price = tob.best_ask;
-        q.ask_quantity = static_cast<qty_t>(tob.ask_quantity);
-        q.event_time_ns = tob.timestamp;
-    });
 
     QuoteEvent event;
     event.set_instrument(instrument);
-    event.bid_price = tob.best_bid;
+    event.bid_price = bid;
     event.bid_quantity = static_cast<qty_t>(tob.bid_quantity);
-    event.ask_price = tob.best_ask;
+    event.ask_price = ask;
     event.ask_quantity = static_cast<qty_t>(tob.ask_quantity);
     event.event_time_ns = tob.timestamp;
+
+    EventSerializer::publish<QuoteEvent>(*tob_producer_buffer_, [&](QuoteEvent& q) { q = event; });
+
     for (auto& strategy : strategies_) {
         strategy->on_quote(event);
+    }
+}
+
+StrategyManager::MboBook& StrategyManager::get_or_create_mbo_book(std::string_view instrument) {
+    auto it = mbo_books_.find(instrument);
+    if (it == mbo_books_.end()) [[unlikely]] {
+        std::string name(instrument);
+        // Quotes come from this book unless an L2 book of the instrument already gives them.
+        auto entry = std::make_unique<MboBook>(get_or_create_symbol_id(name), name, !observed_books_.contains(name));
+        it = mbo_books_.emplace(std::move(name), std::move(entry)).first;
+    }
+    return *it->second;
+}
+
+void StrategyManager::dispatch_mbo_update(const MboUpdateEvent& event) {
+    MboBook& entry = get_or_create_mbo_book(event.instrument);
+    auto& book = entry.book;
+
+    if (event.is_snapshot) {
+        book.clear(event.event_time_ns);
+        LOG_DEBUG("StrategyManager: dispatch MBO snapshot {}", entry.instrument);
+    }
+
+    for (uint16_t i = 0; i < event.num_orders; ++i) {
+        const MboOrder& order = event.orders[i];
+        // The broker already put the feed in order, so the book checks no sequence numbers.
+        const bool is_last = event.is_last && i + 1 == event.num_orders;
+        if (order.action == MboAction::REMOVE) {
+            book.deleteOrder(order.order_id, event.event_time_ns, 0, is_last);
+        } else {
+            book.addOrModifyOrder(order.order_id,
+                                  order.side == Side::BUY ? slick::orderbook::Side::Buy : slick::orderbook::Side::Sell,
+                                  static_cast<slick::orderbook::Price>(order.price),
+                                  static_cast<slick::orderbook::Quantity>(order.quantity),
+                                  event.event_time_ns,
+                                  order.priority,
+                                  0,
+                                  is_last);
+        }
+    }
+
+    // Strategies see the book only when it is whole: at the end of the exchange event.
+    if (!event.is_last) {
+        return;
+    }
+
+    if (entry.publishes_top) {
+        const auto top = book.getTopOfBook();
+        if (top.best_bid != entry.top.best_bid || top.bid_quantity != entry.top.bid_quantity ||
+            top.best_ask != entry.top.best_ask || top.ask_quantity != entry.top.ask_quantity) {
+            entry.top = top;
+            on_top_of_book_update(entry.instrument, top);
+        }
+    }
+
+    for (auto& strategy : strategies_) {
+        strategy->on_order_book_l3(entry.instrument, book);
     }
 }
 
