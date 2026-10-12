@@ -471,6 +471,10 @@ void StrategyManager::process_event(const Event* event) {
         case EventType::QUOTE:
             dispatch_quote(*reinterpret_cast<const QuoteEvent*>(event));
             break;
+        case EventType::TOB:
+            // This manager's own top of book, back off the bus: the strategies were given
+            // it when it was published.
+            break;
         case EventType::LEVEL2_UPDATE:
             dispatch_level2_updates(*reinterpret_cast<const Level2UpdateEvent*>(event));
             break;
@@ -632,7 +636,13 @@ void StrategyManager::on_top_of_book_update(const std::string &instrument, const
     event.ask_quantity = static_cast<qty_t>(tob.ask_quantity);
     event.event_time_ns = tob.timestamp;
 
-    EventSerializer::publish<QuoteEvent>(*tob_producer_buffer_, [&](QuoteEvent& q) { q = event; });
+    // Published for readers outside this thread - the dashboard refreshes PnL on it - as a
+    // TOB record, not a QUOTE: this thread reads the same bus, and a QUOTE would come back
+    // and be handed to the strategies a second time.
+    EventSerializer::publish<QuoteEvent>(*tob_producer_buffer_, [&](QuoteEvent& q) {
+        q = event;
+        q.type = EventType::TOB;
+    });
 
     for (auto& strategy : strategies_) {
         strategy->on_quote(event);

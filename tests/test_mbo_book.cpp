@@ -296,6 +296,29 @@ TEST_F(MboBookTest, AOneSidedLevelBookMarksNothingEither) {
     EXPECT_FALSE(pnl_.has_mark_price("BTC-USD"));
 }
 
+// Regression test. The manager publishes each top of book on the event bus for the dashboard,
+// and reads that bus itself. The record went out typed QUOTE, so it came back and every
+// strategy was given every quote twice - while the dashboard, which waits for TOB, got none.
+TEST_F(MboBookTest, ATopOfBookReachesAStrategyOnceAndTheBusAsTob) {
+    uint64_t cursor = mux_.initial_reading_index();
+    publish({add(101, Side::BUY, 1000.00, 5, 1), add(201, Side::SELL, 1000.25, 4, 2)});
+    ASSERT_EQ(strategy_->quotes, 1);
+
+    // What the worker thread reads next is the manager's own record.
+    const auto record = mux_.read(cursor);
+    ASSERT_TRUE(static_cast<bool>(record)) << "the top of book was not published";
+    ASSERT_EQ(record.length, sizeof(QuoteEvent));
+    const QuoteEvent published = *reinterpret_cast<const QuoteEvent*>(record.data);
+    EXPECT_EQ(published.type, EventType::TOB) << "what the dashboard refreshes PnL on";
+    EXPECT_STREQ(published.instrument, "ESZ6");
+    EXPECT_EQ(published.bid_price, to_price_t(1000.00));
+    EXPECT_EQ(published.ask_price, to_price_t(1000.25));
+
+    manager_.process_event(reinterpret_cast<const Event*>(record.data));
+    EXPECT_EQ(strategy_->quotes, 1) << "the manager's own record was handed to the strategies again";
+    EXPECT_FALSE(static_cast<bool>(mux_.read(cursor))) << "and reading it back published nothing";
+}
+
 TEST_F(MboBookTest, AnInstrumentWithOnlyAnMboBookStillGetsQuotes) {
     // Nothing else publishes this instrument's top of book, so the order book does - once per
     // change of the top, not once per order.

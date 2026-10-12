@@ -1265,7 +1265,9 @@ void WebServer::process_events() {
                 break;
             }
             case EventType::TOB:
-                broadcast_pnl_update();
+                // A mark moved. Many arrive per pass on a busy book and a browser needs
+                // none of them individually, so they only raise a flag.
+                pnl_changed_ = true;
                 break;
             case EventType::ORDER_ACK: {
                 const auto* ack = reinterpret_cast<const OrderAckEvent*>(event);
@@ -1288,6 +1290,15 @@ void WebServer::process_events() {
                 break;
             }
 
+        }
+    }
+
+    if (pnl_changed_) {
+        const uint64_t now_ns = get_timestamp_ns();
+        if (now_ns - last_pnl_broadcast_ns_ >= PNL_BROADCAST_INTERVAL_NS) {
+            pnl_changed_ = false;
+            last_pnl_broadcast_ns_ = now_ns;
+            broadcast_pnl_update();
         }
     }
 

@@ -180,6 +180,12 @@ private:
     slick::stream_buffer_multiplexer& event_mux_;
     uint64_t event_cursor_{0};
 
+    // PnL goes to the dashboard when a top of book moved, at most this often. Touched only
+    // by the uWS event loop thread.
+    static constexpr uint64_t PNL_BROADCAST_INTERVAL_NS = 250'000'000;
+    bool pnl_changed_{false};
+    uint64_t last_pnl_broadcast_ns_{0};
+
     // Producer side of the same bus: strategy parameter updates are published here from the
     // uWS event loop thread and applied by the StrategyManager worker, so a strategy's
     // on_config() runs on the thread that owns its state. Registered in initialize(), which

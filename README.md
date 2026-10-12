@@ -227,8 +227,10 @@ endpoints rather than the real exchanges — check that file if you're running a
 ## Web Dashboard
 
 The dashboard (`web/static/`) is a build-tool-free HTML/CSS/vanilla-JS app that connects over
-WebSocket for live position/PnL/order updates and hits a REST API for everything else. Key
-endpoints (see [`web_server.cpp`](src/web/web_server.cpp)):
+WebSocket for live position/PnL/order updates and hits a REST API for everything else. PnL is
+pushed when a subscribed instrument's top of book moves - `StrategyManager` publishes it on the
+event bus as a `TOB` record - at most four times a second. Key endpoints (see
+[`web_server.cpp`](src/web/web_server.cpp)):
 
 - `GET /api/health`, `GET /api/brokers`, `GET /api/strategies`
 - `GET /api/positions[/:strategy_id]`, `GET /api/pnl[/:strategy_id]`
