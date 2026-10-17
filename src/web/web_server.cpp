@@ -1276,7 +1276,11 @@ void WebServer::process_events() {
             }
             case EventType::ORDER_FILL: {
                 const auto* fill = reinterpret_cast<const OrderFillEvent*>(event);
-                handle_order_fill(*fill);
+                // A broker's replay of its journal at startup is the run before's: the
+                // positions it may still book reach the dashboard with the PnL.
+                if (!fill->replayed) {
+                    handle_order_fill(*fill);
+                }
                 break;
             }
             case EventType::ORDER_CANCEL: {
@@ -1551,6 +1555,21 @@ void WebServer::handle_order_ack(const OrderAckEvent& ack) {
 
 void WebServer::handle_order_fill(const OrderFillEvent& fill) {
     std::string oid(fill.order_id);
+
+    if (fill.scope == FillScope::LEG) {
+        // One leg of a multi-leg order's fill: a position in the leg, and nothing new about
+        // the order, which its own fill already brought up to date.
+        json msg;
+        msg["type"]       = "order_update";
+        msg["event"]      = "leg_fill";
+        msg["order_id"]   = oid;
+        msg["instrument"] = std::string(fill.instrument);
+        msg["side"]       = (fill.side == Side::BUY) ? "buy" : "sell";
+        msg["fill_price"] = from_price_t(fill.fill_price);
+        msg["fill_qty"]   = from_qty_t(fill.fill_quantity);
+        broadcast_order_update(msg.dump());
+        return;
+    }
 
     // Capture tracked order fields before potential erasure
     std::string instrument, side, fill_status;

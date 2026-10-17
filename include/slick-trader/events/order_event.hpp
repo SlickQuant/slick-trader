@@ -110,6 +110,18 @@ struct OrderAckEvent : public OrderEvent {
     {}
 };
 
+// What a fill moves. An ordinary fill moves both the order - how much of it is done - and
+// the position in the order's instrument. An order for a multi-leg instrument, a futures
+// spread say, is different: the exchange fills it at the spread's own price, but what is
+// then held is a position in each leg, at the leg's price. Its broker reports that as one
+// ORDER fill followed by a LEG fill per leg.
+enum class FillScope : uint8_t {
+    ORDER_AND_POSITION,  // an ordinary fill
+    ORDER,               // a multi-leg order's fill, at the order's own price: the order moves, no position is booked
+    LEG,                 // one leg's share of it: `instrument`, `side`, price and quantity are the leg's, and only
+                         // the position moves. cumulative_filled and remaining_quantity are not set.
+};
+
 // OrderFillEvent
 struct OrderFillEvent : public OrderEvent {
     char fill_id[MAX_ORDER_ID_LENGTH];
@@ -118,6 +130,19 @@ struct OrderFillEvent : public OrderEvent {
     qty_t cumulative_filled;
     qty_t remaining_quantity;
     price_t fee_amount{0};  // actual fee for this fill (0 if broker doesn't report it)
+    FillScope scope{FillScope::ORDER_AND_POSITION};
+    // The number a broker gave the fill when it wrote it to a journal that outlives the
+    // process, or 0 for a fill that was not journaled. Increasing per broker and never
+    // reused. A broker that journals its fills replays them after a restart, and the
+    // strategy manager drops those the strategies had before it.
+    uint64_t journal_seq{0};
+    // Replayed from the broker's journal at startup: the fill may be one the strategies had
+    // before the restart.
+    bool replayed{false};
+    // The instrument's contract multiplier as the broker knew it when the fill was made; 0
+    // when it does not say. A fill that carries one is valued with it even before the
+    // instrument's definition has arrived - as one replayed at startup is.
+    double contract_multiplier{0.0};
 
     OrderFillEvent()
         : OrderEvent(EventType::ORDER_FILL)
@@ -127,6 +152,10 @@ struct OrderFillEvent : public OrderEvent {
         , cumulative_filled(0)
         , remaining_quantity(0)
         , fee_amount(0)
+        , scope(FillScope::ORDER_AND_POSITION)
+        , journal_seq(0)
+        , replayed(false)
+        , contract_multiplier(0.0)
     {}
 
     void set_fill_id(std::string_view id) {

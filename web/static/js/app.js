@@ -535,7 +535,7 @@ class Dashboard {
         console.log('[Dashboard] Order update received:', data);
         const level = data.event === 'reject' ? 'error'
                     : data.event === 'cancel'  ? 'warning'
-                    : data.event === 'fill'    ? 'success'
+                    : data.event === 'fill' || data.event === 'leg_fill' ? 'success'
                     : 'info';
         this.log(this._formatOrderLog(data), level);
         if (typeof ladderManager !== 'undefined') {
@@ -561,6 +561,12 @@ class Dashboard {
                 const rem = data.remaining_qty != null ? data.remaining_qty : 0;
                 const st  = rem > 0 ? 'PARTIALLY_FILLED' : 'FILLED';
                 return `${prefix} ${side} ${st} ${fq}@${fp}` + (rem > 0 ? ` (${rem} remaining)` : '');
+            }
+            case 'leg_fill': {
+                // One leg of a spread order's fill: the leg's own instrument, side and price.
+                const fp = data.fill_price != null ? data.fill_price : '';
+                const fq = data.fill_qty   != null ? data.fill_qty   : '';
+                return `${prefix} leg ${side} ${fq}@${fp}`;
             }
             case 'cancel':
                 return `${prefix} ${side} CANCELLED ${qty}@${price}`;

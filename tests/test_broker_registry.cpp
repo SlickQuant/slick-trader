@@ -10,6 +10,8 @@
 #include <slick-trader/core/broker_registry.hpp>
 #include <algorithm>
 #include <cctype>
+#include <stdexcept>
+#include <string>
 
 using namespace slick::trader;
 
@@ -50,6 +52,32 @@ TEST(BrokerRegistryTest, DuplicateRegistrationKeepsTheFirst) {
     EXPECT_FALSE(BrokerRegistry::instance().add(keys.front(), impostor));
     EXPECT_EQ(BrokerRegistry::instance().find(keys.front()), original);
     EXPECT_EQ(BrokerRegistry::instance().keys().size(), keys.size());
+}
+
+// Regression: a broker rejects a config it cannot run with by throwing from its
+// constructor. TradingEngine called the factory bare, so the exception left
+// initialize() unhandled - in a Debug build an abort() dialog that looked like a hang,
+// in Release a crash - and the reason never reached the log.
+TEST(BrokerRegistryTest, ABrokerWhoseConstructorThrowsIsReportedNotThrown) {
+    auto throwing = [](const json&, slick::stream_buffer_multiplexer&, slick::queue<uint8_t>&,
+                       slick::queue<uint8_t>&, slick::queue<uint8_t>&) -> std::shared_ptr<IBroker> {
+        throw std::runtime_error("\"sessions\" must list at least one session");
+    };
+    BrokerRegistry::instance().add("registry-test-throwing", throwing);
+
+    slick::stream_buffer_multiplexer mux(64);
+    slick::queue<uint8_t> control(1024), md(1024), orders(1024);
+    std::string error;
+    std::shared_ptr<IBroker> broker;
+    EXPECT_NO_THROW(broker = BrokerRegistry::instance().create("registry-test-throwing", json::object(), mux, control,
+                                                              md, orders, error));
+    EXPECT_EQ(broker, nullptr);
+    EXPECT_EQ(error, "\"sessions\" must list at least one session");
+
+    error.clear();
+    EXPECT_EQ(BrokerRegistry::instance().create("no-such-broker", json::object(), mux, control, md, orders, error),
+              nullptr);
+    EXPECT_NE(error.find("no-such-broker"), std::string::npos);
 }
 
 TEST(BrokerRegistryTest, KeysAreListedLowercase) {

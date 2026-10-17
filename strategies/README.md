@@ -132,6 +132,31 @@ An instrument subscribed `MBO` and nothing else still gets `on_quote` and PnL ma
 the order-by-order book; with a `LEVEL2` or `ORDER_BOOK` subscription as well, those keep coming
 from the price-level book.
 
+### Orders for multi-leg instruments
+
+An exchange fills an order for a spread at the spread's own price, but what is then held is a
+position in each leg, at the leg's price. A broker that trades such instruments reports the two
+separately, and `OrderFillEvent::scope` says which a fill is:
+
+| `FillScope` | What it is | `StrategyBase` does | Hook |
+| --- | --- | --- | --- |
+| `ORDER_AND_POSITION` | An ordinary fill | Updates the order and books the position | `on_fill` |
+| `ORDER` | The spread order's fill, at the spread's price | Updates the order; books nothing | `on_fill` |
+| `LEG` | One leg's share: the event's instrument, side, price and quantity are the leg's | Books the position in the leg; leaves the order alone | `on_leg_fill` |
+
+```cpp
+void on_fill(const OrderFillEvent& fill) override {
+    // fill.scope == FillScope::ORDER for a spread: the order moved, at the spread's price.
+}
+void on_leg_fill(const OrderFillEvent& leg) override {
+    // leg.instrument / leg.side / leg.fill_price: what is now held, where it clears.
+}
+```
+
+So a strategy trading a calendar spread sees its order fill at the spread price, and its positions
+and PnL in the two outright contracts. Nothing is held in the spread itself, which means a
+position limit set on the spread instrument limits nothing: set them on the legs.
+
 ### 2. Export the Plugin
 
 Add the export macro at the end of your .cpp file:
@@ -429,6 +454,19 @@ your `on_ack`/`on_fill`/`on_reject`/`on_cancel` hooks or the position tracker. T
   never updates.
 - Keep strategy names distinct enough that no name is a `<name>_` prefix of another
   (`MM` and `MM_Fast` collide; `MarketMaker` and `OrderStacker` do not).
+
+The same prefix is how a strategy gets its orders back. A broker that knows what was working
+before - after a reconnect, or after a restart for one that keeps its orders on disk - restates
+each order with an ack, and `StrategyBase` adopts an acked order it does not track when the id
+carries its prefix. Such an order appears in `get_orders()` with the quantity it had left, and
+its later fills are booked to the strategy. Decide in `on_ack` what a restarted strategy does
+with orders it did not place in this run: nothing cancels them for you. Positions come back
+separately, from the engine's [`position_store`](../README.md#positions-across-restarts).
+
+A fill can also arrive for one of your orders that is not restated - one that ended before the
+restart, such as a filled spread order whose leg fills are still to come, or a fill a broker
+replays from its journal. Its prefix makes it yours: the position is booked and `on_fill` /
+`on_leg_fill` is called, but there is no order in `get_orders()` for it to move.
 
 ### 3. Set Risk Limits
 Always configure risk limits for your strategy:

@@ -5,11 +5,13 @@ add_library(slick-trader-core STATIC
     core/broker_registry.cpp
     core/broker_status.cpp
     core/trading_engine.cpp
+    core/position_store.cpp
     core/position_tracker.cpp
     core/pnl_calculator.cpp
     core/risk_manager.cpp
     core/strategy_loader.cpp
     core/strategy_manager.cpp
+    utils/mapped_file.cpp
     web/web_server.cpp
 )
 

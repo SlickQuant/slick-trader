@@ -5,10 +5,11 @@ crypto exchanges over WebSocket/REST, routes market data and order events throug
 messaging core, runs trading strategies as hot-loadable plugins, and exposes a real-time web
 dashboard for monitoring and manual control.
 
-> **Status**: active development. The Coinbase and Hyperliquid brokers are wired up; order
-> execution against live exchanges requires broker credentials to be configured (see
-> [Broker Configuration](#broker-configuration) below) and is disabled by default in the sample
-> configs.
+> **Status**: first release, 0.1.0. The Coinbase and Hyperliquid brokers are built in, and more
+> can be built in from their own repositories (see
+> [Brokers and out-of-tree brokers](#brokers-and-out-of-tree-brokers)). Order execution needs
+> broker credentials (see [Broker configuration](#broker-configuration)). The sample config sends
+> Coinbase orders to a local simulator and leaves Hyperliquid order entry disabled.
 
 ## Features
 
@@ -41,6 +42,13 @@ dashboard for monitoring and manual control.
 - **Trading status** — a broker that reports it publishes each instrument's state (pre-open,
   open, halted, closed) as an `InstrumentStatusEvent`, handed to strategies through
   `on_instrument_status`.
+- **Positions that survive a restart** — with `position_store` configured, every position, with
+  the open lots FIFO accounting still has to close, is kept in a memory-mapped file: recording a
+  fill never waits for the disk, and a restart carries on from what was held. See
+  [Positions across restarts](#positions-across-restarts).
+- **Multi-leg fills** — a broker reports the fill of an order for a multi-leg instrument (a
+  futures spread) as the order's own fill followed by one fill per leg (`FillScope`), so the
+  order moves at the spread's price while the positions booked are the legs', where they clear.
 - **Live web dashboard** — a dependency-free vanilla-JS frontend (`web/static/`) served over
   uWebSockets, with a REST API and a price-ladder UI for manual order entry/cancellation.
 - **Manual + automated strategies side by side** — a built-in `ManualStrategy` owns orders placed
@@ -93,13 +101,12 @@ dashboard for monitoring and manual control.
 - **CMake** ≥ 3.28
 - **[vcpkg](https://github.com/microsoft/vcpkg)** — provides `uWebSockets` and `nlohmann_json`
   (both `find_package(... REQUIRED)`, not auto-fetched). Configure with vcpkg's toolchain file.
-- Everything else (`slick-logger`, `slick-orderbook`, `slick-net`, `coinbase-advanced-cpp`,
-  `hyperliquid-cpp`) is pulled automatically via CMake `FetchContent` if not already installed.
+- `slick-logger`, `slick-orderbook`, `coinbase-advanced-cpp` and `hyperliquid-cpp` are used as
+  installed packages when found, and fetched with CMake `FetchContent` otherwise; `slick-net`,
+  `slick-queue`, `slick-stream-buffer` and `slick-stream-buffer-multiplexer` come with them.
   `slick-stacker` is fetched too, but only when the strategy plugins are being built — it is
   needed solely by `order_stacker`.
-- Optional: a system **Lua 5.4** or **Python3** (dev headers) if you want to enable
-  `SLICK_TRADER_ENABLE_LUA_STRATEGY` / script-based strategies (Python auto-detection is on by
-  default; Lua is off by default).
+- **GTest** (vcpkg), for the tests only.
 
 ## Building
 
@@ -119,7 +126,7 @@ Build:
 ```
 
 This produces:
-- `build/Debug/slick-trader.exe` — the main engine executable
+- `build/src/Debug/slick-trader.exe` — the main engine executable
 - `build/strategies/Debug/*.dll` — strategy plugins (e.g. `market_maker.dll`, `order_stacker.dll`)
 - `build/tests/Debug/slick-trader-tests.exe` — the regression test suite
 
@@ -135,7 +142,9 @@ The suite covers behaviour that only reproduces across a module boundary: that a
 through `StrategyLoader` observes the host's `BrokerStatusRegistry`, and that a strategy ignores
 order events belonging to other strategies. It also checks that every broker built into the binary
 is registered under its config name, that each market data subscription a strategy declares
-reaches its broker, and the market-by-order book and queue position. Requires GTest
+reaches its broker, futures accounting, the market-by-order book and queue position, multi-leg
+fills, and positions across a restart - the position store, and a broker's fill journal replayed
+without a fill booked twice. An out-of-tree broker's own tests are compiled in too. Requires GTest
 (`find_package(GTest CONFIG)`).
 
 ### Build Options
@@ -146,8 +155,8 @@ reaches its broker, and the market-by-order book and queue position. Requires GT
 | `SLICK_TRADER_DISABLE_CXX_MODULE_SCAN` | ON | Skip C++ module dependency scanning for faster MSVC builds |
 | `SLICK_TRADER_FAST_FETCHCONTENT` | ON | Skip FetchContent update checks on every configure |
 | `SLICK_TRADER_SUPPRESS_VS_REGEN` | ON | Disable `ZERO_CHECK` auto-regeneration for Visual Studio generators |
-| `SLICK_TRADER_ENABLE_PYTHON_STRATEGY` | ON | Auto-detect Python3 for script-based strategies |
-| `SLICK_TRADER_ENABLE_LUA_STRATEGY` | OFF | Auto-detect Lua 5.4 for script-based strategies |
+| `SLICK_TRADER_ENABLE_PYTHON_STRATEGY` | ON | Look for Python3 (development headers) and, when found, define `SLICK_TRADER_PYTHON_SUPPORT`. Reserved for script-based strategies: nothing in this release uses it |
+| `SLICK_TRADER_ENABLE_LUA_STRATEGY` | OFF | The same for Lua 5.4 (`SLICK_TRADER_LUA_SUPPORT`) |
 | `SLICK_TRADER_BUILD_TESTS` | ON when top-level, OFF as a subproject | Build `slick-trader-tests` and its probe plugin. Requires GTest. |
 | `SLICK_TRADER_EXTERNAL_BROKERS` | *(empty)* | `;`-separated directories of out-of-tree brokers to build in. See below. |
 
@@ -177,8 +186,9 @@ cmake -S . -B build -DSLICK_TRADER_EXTERNAL_BROKERS=/path/to/slick-trader-mybrok
 ```
 
 Keep that setting in a `CMakeUserPresets.json`, which `.gitignore` excludes, so a local path never
-reaches the repository. A `brokers[]` config entry whose `name` has no adapter in the binary is a
-fatal startup error that lists the brokers the binary does carry.
+reaches the repository. Configure prints each one it adds, with the version its own `project()`
+declares, when it declares one. A `brokers[]` config entry whose `name` has no adapter in the binary
+is a fatal startup error that lists the brokers the binary does carry.
 
 See [strategies/README.md](strategies/README.md) for how to write and build your own strategy
 plugin.
@@ -186,7 +196,7 @@ plugin.
 ## Running
 
 ```bash
-build/Debug/slick-trader.exe config/config_example.json
+build/src/Debug/slick-trader.exe config/config_example.json
 ```
 
 The engine reads a single JSON config path as its only argument. Copy
@@ -212,6 +222,7 @@ Top-level keys in `config.json` ([example](config/config_example.json)):
 | `event_queue_size`, `order_request_queue_size`, `md_request_queue_size` | Lock-free queue capacities (entries) |
 | `brokers[]` | Per-broker `{name, enabled, market_data:{...}, order:{...}}` — see below |
 | `strategies` | `enabled`, `strategy_plugins_folder`, `strategy_configs_folder`, plus TOB (top-of-book) queue sizing |
+| `position_store` | Optional. `path` (default `state/positions.dat`) and `capacity` (positions, default `1024`): keeps positions across restarts — see [below](#positions-across-restarts) |
 | `web_service` | `enabled`, `web_server_port`, `web_server_cors`, `web_server_static_path`, `ladder_config` (default order size, per-instrument overrides), `config_queue_size`/`config_control_size` (event-bus producer the dashboard publishes strategy parameter updates through) |
 
 ### Broker configuration
@@ -226,6 +237,42 @@ Top-level keys in `config.json` ([example](config/config_example.json)):
 
 Both brokers' local dev config (`config/config.json`, gitignored) point at `localhost` mock
 endpoints rather than the real exchanges — check that file if you're running against simulators.
+
+### Positions across restarts
+
+Without `position_store` positions live in memory: a restart starts every strategy flat, whatever
+it holds at the broker. With it —
+
+```json
+"position_store": { "path": "state/positions.dat", "capacity": 1024 }
+```
+
+— each position (quantity, average price, realized PnL and fees, contract multiplier, and its open
+FIFO lots) is written to a slot of a memory-mapped file as its fills are booked, and read back at
+startup before any strategy runs. Realized PnL carries over with it, so a strategy's loss limit
+keeps counting across the restart.
+
+- **Cost.** Recording a fill is a copy into mapped memory on the thread that books it: no system
+  call, no wait for the disk.
+- **What survives.** A fill that was booked is in the file even if the process is killed the next
+  instant; only the machine going down can lose the last moments. A slot holds two copies of its
+  position and switches between them, so a process that dies mid-update leaves the position as
+  it was before the fill, never half written. A fill still on its way from a broker's thread to
+  the strategy thread when the process dies was not booked, and is not there - unless the broker
+  journals its fills (`OrderFillEvent::journal_seq`): it replays its journal at startup, and the
+  store keeps how far into each broker's journal the strategies had got, with each position
+  recording the fill it was last booked from. A replayed fill the strategies had is
+  dropped before it reaches them; one they never had is booked, once. Without a store a replay is
+  dropped whole: the positions started flat. A replay comes before the instruments' definitions
+  do, so a broker's fill can carry its contract multiplier (`OrderFillEvent::contract_multiplier`),
+  which values it - and the instrument from then on - whatever the tracker knew before.
+- **Limits.** A slot keeps 32 open lots; a position built from more keeps the oldest 31 as they
+  are and the rest as one lot at their average price. A file that is not a position store is
+  refused at startup, never overwritten, and startup stops if the store cannot be opened.
+- **Starting flat.** Stop the engine and delete the file.
+
+The store holds what the framework booked. It does not know what a broker holds: an order filled
+while the engine was down reaches it only if the broker reports that fill after the restart.
 
 ## Web Dashboard
 
@@ -251,16 +298,19 @@ and [web/static/FEATURES.md](web/static/FEATURES.md) for UI details.
 
 ```
 include/slick-trader/   Public headers (.hpp), organized by domain:
-  core/                  TradingEngine, StrategyManager, PositionTracker, PnLCalculator,
-                         RiskManager, BrokerRegistry, BrokerStatusRegistry, StrategyLoader
-  brokers/               IBroker + per-venue implementations (coinbase/, hyperliquid/)
+  core/                  TradingEngine, StrategyManager, PositionTracker, PositionStore,
+                         PnLCalculator, RiskManager, BrokerRegistry, BrokerStatusRegistry,
+                         StrategyLoader
+  brokers/               IBroker, the connector interfaces, and the built-in brokers' headers
+                         (coinbase/, hyperliquid/)
   strategy/              IStrategy, StrategyBase, ManualStrategy, plugin export macro
   events/                Wire event types (trades, quotes, order book, market by order,
                          order lifecycle)
   market_data/           Order book types, queue position
   web/                   WebServer
-  utils/                 Fixed-point price/qty types, time helpers, fee structures
-src/                     Implementation (.cpp) mirroring include/, plus main.cpp
+  utils/                 Fixed-point price/qty types, time helpers, fee structures, MappedFile
+src/                     Implementation (.cpp) mirroring include/ - each broker under
+                         src/brokers/<name>/ - plus main.cpp
 cmake/                   Build helpers: slick_trader_add_broker() and the external-broker hook
 strategies/              Strategy plugins, built as shared libraries (see its README)
 tests/                   GTest regression suite, plus a probe plugin for cross-module tests

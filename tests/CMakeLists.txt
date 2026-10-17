@@ -39,6 +39,8 @@ add_executable(slick-trader-tests
     test_md_subscription.cpp
     test_mbo_book.cpp
     test_instrument_status.cpp
+    test_position_store.cpp
+    test_spread_fills.cpp
 )
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)

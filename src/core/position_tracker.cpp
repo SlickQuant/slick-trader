@@ -5,10 +5,53 @@
 
 namespace slick::trader {
 
+void PositionTracker::attach_store(PositionStore& store) {
+    store_ = &store;
+    for (std::size_t broker = 0; broker < journaled_.size(); ++broker) {
+        journaled_[broker] = store.journaled(static_cast<BrokerId>(broker));
+    }
+    store.for_each([this](uint32_t slot, std::string_view strategy_id, const Position& position,
+                          std::span<const PositionLot> lots) {
+        auto& pos = positions_[std::string(strategy_id)][position.instrument];
+        pos.position = position;
+        pos.lots.assign(lots.begin(), lots.end());
+        pos.store_slot = slot;
+        // The multiplier the position was last valued with, until the instrument's
+        // definition says it again.
+        contract_multipliers_[position.instrument] = position.multiplier;
+        LOG_INFO("PositionTracker: restored {} {} pos: {} avg: {} realized_pnl: {} ({} open lot(s))",
+                 strategy_id, position.instrument, from_qty_t(position.quantity), from_price_t(position.avg_price),
+                 from_price_t(position.realized_pnl), lots.size());
+    });
+}
+
+void PositionTracker::persist(const std::string& strategy_id, PositionWithLots& pos, const OrderFillEvent* fill) {
+    if (store_) {
+        pos.store_slot = store_->save(pos.store_slot, strategy_id, pos.position, pos.lots,
+                                      fill ? fill->broker_id : BrokerId::UNKNOWN, fill ? fill->journal_seq : 0);
+    }
+}
+
+void PositionTracker::fill_dispatched(const OrderFillEvent& fill) noexcept {
+    const auto broker = static_cast<std::size_t>(fill.broker_id);
+    if (fill.journal_seq == 0 || broker >= journaled_.size() || fill.journal_seq <= journaled_[broker]) {
+        return;
+    }
+    journaled_[broker] = fill.journal_seq;
+    if (store_) {
+        store_->mark_journaled(fill.broker_id, fill.journal_seq);
+    }
+}
+
 void PositionTracker::on_fill(const std::string& strategy_id, const OrderFillEvent& fill) {
     // Single-writer: called only from StrategyManager thread
 
     const std::string instrument(fill.instrument);
+    // The fill says what a contract is worth: it may come before the instrument's definition
+    // does - replayed from a broker's journal at startup - and PnL realized now stays booked.
+    if (fill.contract_multiplier > 0.0 && fill.contract_multiplier != get_contract_multiplier(instrument)) {
+        set_contract_multiplier(instrument, fill.contract_multiplier);
+    }
     auto& strategy_positions = positions_[strategy_id];
     auto& pos_with_lots = strategy_positions[instrument];
 
@@ -29,6 +72,7 @@ void PositionTracker::on_fill(const std::string& strategy_id, const OrderFillEve
 
     apply_fill(pos_with_lots, is_buy, fill_qty, fill_price, timestamp, fee);
     pos_with_lots.position.last_update_time = timestamp;
+    persist(strategy_id, pos_with_lots, &fill);
 
     LOG_INFO("PositionTracker: {} {} fill: {} {}@{} fee:{} | pos: {} avg: {} realized_pnl: {} realized_fees: {} open_fees: {}",
              strategy_id, instrument,
@@ -69,7 +113,7 @@ void PositionTracker::apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_
 
         p.quantity += signed_fill;
         p.open_fees += fee_amount;  // entry fee reduces unrealized until position is closed
-        lots.emplace_back(fill_qty, fill_price, timestamp);
+        lots.push_back(Lot{fill_qty, fill_price, timestamp});
         return;
     }
 
@@ -122,7 +166,7 @@ void PositionTracker::apply_fill(PositionWithLots& pos, bool is_buy, qty_t fill_
         const qty_t signed_remaining = is_buy ? remaining_qty : -remaining_qty;
         p.quantity += signed_remaining;
         p.avg_price = fill_price;
-        lots.emplace_back(remaining_qty, fill_price, timestamp);
+        lots.push_back(Lot{remaining_qty, fill_price, timestamp});
 
         // Entry fee for the reversed position portion
         p.open_fees = (fill_qty > 0)
@@ -156,8 +200,9 @@ bool PositionTracker::set_contract_multiplier(std::string_view instrument, doubl
     // Positions already held revalue from now on; what they realized before stays as booked.
     for (auto& [strategy_id, strategy_positions] : positions_) {
         auto it = strategy_positions.find(key);
-        if (it != strategy_positions.end()) {
+        if (it != strategy_positions.end() && it->second.position.multiplier != multiplier) {
             it->second.position.multiplier = multiplier;
+            persist(strategy_id, it->second);
         }
     }
     return true;
@@ -217,11 +262,17 @@ PositionTracker::get_all_positions() const {
 
 void PositionTracker::clear_strategy_positions(const std::string& strategy_id) {
     positions_.erase(strategy_id);
+    if (store_) {
+        store_->erase_strategy(strategy_id);
+    }
     LOG_INFO("PositionTracker: Cleared positions for strategy {}", strategy_id);
 }
 
 void PositionTracker::clear_all() {
     positions_.clear();
+    if (store_) {
+        store_->clear();
+    }
     LOG_INFO("PositionTracker: Cleared all positions");
 }
 

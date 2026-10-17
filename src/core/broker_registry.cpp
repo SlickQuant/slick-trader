@@ -1,6 +1,7 @@
 #include <slick-trader/core/broker_registry.hpp>
 #include <algorithm>
 #include <cctype>
+#include <exception>
 
 namespace slick::trader {
 
@@ -39,6 +40,31 @@ BrokerRegistry::Factory BrokerRegistry::find(std::string_view key) const noexcep
             })) {
             return entry.factory;
         }
+    }
+    return nullptr;
+}
+
+std::shared_ptr<IBroker> BrokerRegistry::create(std::string_view key, const json& config,
+                                                slick::stream_buffer_multiplexer& event_mux,
+                                                slick::queue<uint8_t>& control_queue,
+                                                slick::queue<uint8_t>& md_request_queue,
+                                                slick::queue<uint8_t>& order_request_queue,
+                                                std::string& error) const {
+    const Factory factory = find(key);
+    if (factory == nullptr) {
+        error = "no adapter for '" + std::string(key) + "' is built into this binary";
+        return nullptr;
+    }
+    try {
+        auto broker = factory(config, event_mux, control_queue, md_request_queue, order_request_queue);
+        if (!broker) {
+            error = "its factory returned nothing";
+        }
+        return broker;
+    } catch (const std::exception& e) {
+        error = e.what();
+    } catch (...) {
+        error = "its constructor threw something that is not a std::exception";
     }
     return nullptr;
 }

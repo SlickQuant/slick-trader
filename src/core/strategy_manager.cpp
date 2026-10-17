@@ -773,6 +773,14 @@ void StrategyManager::dispatch_order_ack(const OrderAckEvent& event) {
 }
 
 void StrategyManager::dispatch_order_fill(const OrderFillEvent& event) {
+    // A broker replays its fill journal after a restart: what the strategies had before
+    // the process stopped - booked, or seen to be no one's - is not had twice.
+    if (position_tracker_.fill_handled(event)) {
+        LOG_DEBUG("StrategyManager: fill {} of {} (journal {}) was handled before a restart - dropped",
+                  std::string(event.fill_id), std::string(event.client_order_id), event.journal_seq);
+        return;
+    }
+
     // Update mark price for PnL calculation
     pnl_calculator_.update_mark_price(std::string(event.instrument),
                                         event.fill_price,
@@ -782,6 +790,7 @@ void StrategyManager::dispatch_order_fill(const OrderFillEvent& event) {
     for (auto& strategy : strategies_) {
         strategy->on_order_fill(event);
     }
+    position_tracker_.fill_dispatched(event);
 }
 
 void StrategyManager::dispatch_order_reject(const OrderRejectEvent& event) {

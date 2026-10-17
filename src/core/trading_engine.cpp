@@ -75,6 +75,23 @@ bool TradingEngine::initialize(const std::string& config_path) {
         }
     );
 
+    // Positions kept across restarts, if asked for. Restored here, before anything can
+    // book a fill or read a position.
+    if (config.contains("position_store")) {
+        const auto& store_config = config["position_store"];
+        const auto store_path = store_config.value<std::string>("path", "state/positions.dat");
+        try {
+            position_store_ = std::make_unique<PositionStore>(
+                store_path, store_config.value<size_t>("capacity", PositionStore::DEFAULT_CAPACITY));
+        } catch (const std::exception& e) {
+            // Trading on with positions that start flat, or that will not be kept, is not
+            // what was asked for: stop instead.
+            LOG_ERROR("Failed to open position store: {}", e.what());
+            return false;
+        }
+        position_tracker_.attach_store(*position_store_);
+    }
+
     // Create event queue
     auto event_queue_size = config.value("event_queue_size", 1u << 24 /* 16M */);
     const char* event_queue_shm_name = config.contains("event_queue_shm_name") ? config["event_queue_shm_name"].get_ref<std::string&>().c_str() : nullptr;
@@ -146,9 +163,11 @@ bool TradingEngine::initialize(const std::string& config_path) {
                 return false;
             }
 
-            auto broker = factory(broker_json, *event_mux_, *control_queue_, *md_request_queue_, *order_request_queue_);
+            std::string error;
+            auto broker = BrokerRegistry::instance().create(broker_name, broker_json, *event_mux_, *control_queue_,
+                                                            *md_request_queue_, *order_request_queue_, error);
             if (!broker) {
-                LOG_ERROR("Failed to create broker: {}", broker_name);
+                LOG_ERROR("Failed to create broker {}: {}", broker_name, error);
                 return false;
             }
 

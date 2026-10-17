@@ -58,6 +58,9 @@ private:
 
     std::vector<std::shared_ptr<IBroker>> brokers_;
 
+    // Positions on disk, when `position_store` is configured. Declared before the tracker
+    // that writes to it, so it outlives it.
+    std::unique_ptr<PositionStore> position_store_;
     PositionTracker position_tracker_;
     PnLCalculator pnl_calculator_;
     RiskManager risk_manager_;

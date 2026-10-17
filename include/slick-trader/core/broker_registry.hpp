@@ -41,6 +41,17 @@ public:
     /// nullptr when no adapter for this key was built into the binary.
     Factory find(std::string_view key) const noexcept;
 
+    /// Builds the broker registered under `key`. nullptr, with the reason in `error`,
+    /// when there is no such adapter or its constructor fails - a broker rejects a
+    /// config it cannot run with by throwing, and that has to reach the log rather
+    /// than end the process with nothing said.
+    std::shared_ptr<IBroker> create(std::string_view key, const json& config,
+                                    slick::stream_buffer_multiplexer& event_mux,
+                                    slick::queue<uint8_t>& control_queue,
+                                    slick::queue<uint8_t>& md_request_queue,
+                                    slick::queue<uint8_t>& order_request_queue,
+                                    std::string& error) const;
+
     /// Registered keys, lowercased, in registration order - for the startup log
     /// and for the error on an unknown key.
     std::vector<std::string> keys() const;

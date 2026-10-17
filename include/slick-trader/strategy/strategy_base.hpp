@@ -162,9 +162,13 @@ public:
 
     // Automatically track fills in position tracker and maintain order state
     void on_order_fill(const OrderFillEvent& event) override {
+        const std::string client_id(event.client_order_id);
         const std::string order_id(event.order_id);
         auto cid_it = order_id_to_client_id_.find(order_id);
-        if (cid_it == order_id_to_client_id_.end()) {
+        // An order this strategy does not track can still be its own: one that ended
+        // before a restart, whose fills arrive after it - a filled spread order's leg
+        // fills, or a fill replayed from the broker's journal. Its client_order_id says.
+        if (cid_it == order_id_to_client_id_.end() && !owns_order(client_id, order_id)) {
             // Fills fan out to every strategy; this one was placed by another.
             LOG_DEBUG("Strategy {}: ignoring fill for foreign order_id={}", name_, order_id);
             return;
@@ -174,22 +178,38 @@ public:
                  name_, order_id, from_qty_t(event.fill_quantity), from_price_t(event.fill_price),
                  event.side == Side::BUY ? "BUY" : "SELL");
 
-        auto& order = orders_by_client_id_.at(cid_it->second);
-        const qty_t new_filled = order.filled_qty + event.fill_quantity;
-        if (new_filled > 0) {
-            order.avg_fill_price = to_price_t(
-                (from_price_t(order.avg_fill_price) * from_qty_t(order.filled_qty)
-                 + from_price_t(event.fill_price) * from_qty_t(event.fill_quantity))
-                / from_qty_t(new_filled));
+        if (event.scope == FillScope::LEG) {
+            // One leg of a multi-leg order's fill: the position it leaves, in the leg's
+            // instrument. The order itself moved with the fill of the order that preceded it.
+            position_tracker_->on_fill(name_, event);
+            on_leg_fill(event);
+            return;
         }
-        order.filled_qty       = new_filled;
-        order.remaining_qty    = event.remaining_quantity;
-        order.last_update_time = event.timestamp_ns;
-        order.status = (order.remaining_qty == 0)
-                           ? OrderStatus::FILLED
-                           : OrderStatus::PARTIALLY_FILLED;
 
-        position_tracker_->on_fill(name_, event);
+        auto order_it = orders_by_client_id_.find(cid_it != order_id_to_client_id_.end() ? cid_it->second : client_id);
+        if (order_it != orders_by_client_id_.end()) {
+            auto& order = order_it->second;
+            const qty_t new_filled = order.filled_qty + event.fill_quantity;
+            if (new_filled > 0) {
+                order.avg_fill_price = to_price_t(
+                    (from_price_t(order.avg_fill_price) * from_qty_t(order.filled_qty)
+                     + from_price_t(event.fill_price) * from_qty_t(event.fill_quantity))
+                    / from_qty_t(new_filled));
+            }
+            order.filled_qty       = new_filled;
+            order.remaining_qty    = event.remaining_quantity;
+            order.last_update_time = event.timestamp_ns;
+            order.status = (order.remaining_qty == 0)
+                               ? OrderStatus::FILLED
+                               : OrderStatus::PARTIALLY_FILLED;
+        } else {
+            LOG_INFO("Strategy {}: fill for client_order_id={}, an order not tracked since a restart - booked",
+                     name_, client_id);
+        }
+
+        if (event.scope == FillScope::ORDER_AND_POSITION) {
+            position_tracker_->on_fill(name_, event);
+        }
         on_fill(event);  // Call derived class hook
     }
 
@@ -247,8 +267,14 @@ protected:
     virtual void on_reject(const OrderRejectEvent& event) {}
     virtual void on_cancel(const OrderCancelEvent& event) {}
 
-    // Fill hook (called after position tracking and order state update)
+    // Fill hook (called after position tracking and order state update). For an order in a
+    // multi-leg instrument event.scope is FillScope::ORDER: the order moved, at its own price,
+    // and its positions follow through on_leg_fill().
     virtual void on_fill(const OrderFillEvent& event) {}
+
+    // One leg's share of a multi-leg order's fill (FillScope::LEG), after its position has
+    // been booked: the event's instrument, side, price and quantity are the leg's.
+    virtual void on_leg_fill(const OrderFillEvent& event) {}
 
     virtual std::string generate_order_id() {
         return name_ + "_" + std::to_string(get_timestamp_ns());
