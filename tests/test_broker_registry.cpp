@@ -12,6 +12,7 @@
 #include <cctype>
 #include <stdexcept>
 #include <string>
+#include <memory>
 
 using namespace slick::trader;
 

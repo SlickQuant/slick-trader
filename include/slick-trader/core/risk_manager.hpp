@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <string>
 #include <chrono>
+#include <string_view>
 
 namespace slick::trader {
 

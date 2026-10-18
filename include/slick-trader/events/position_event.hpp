@@ -3,6 +3,8 @@
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/utils/types.hpp>
 #include <cstring>
+#include <string_view>
+#include <type_traits>
 
 namespace slick::trader {
 

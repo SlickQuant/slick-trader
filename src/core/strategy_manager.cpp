@@ -2,6 +2,10 @@
 #include <slick-trader/core/strategy_manager.hpp>
 #include <slick-trader/core/strategy_config.hpp>
 #include <slick-trader/strategy/manual_strategy.hpp>
+#include <algorithm>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 
 using namespace slick;
 using namespace slick::trader;

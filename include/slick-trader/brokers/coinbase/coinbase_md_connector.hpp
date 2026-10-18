@@ -11,6 +11,7 @@
 #include <thread>
 #include <vector>
 #include <nlohmann/json.hpp>
+#include <string_view>
 
 // Forward declarations
 namespace coinbase {

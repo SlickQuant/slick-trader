@@ -3,6 +3,7 @@
 #include "event.hpp"
 #include <limits>
 #include <slick-trader/utils/fee_structure.hpp>
+#include <string_view>
 
 namespace slick::trader {
 

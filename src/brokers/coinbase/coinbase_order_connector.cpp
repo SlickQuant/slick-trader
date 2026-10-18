@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <cstring>
+#include <string_view>
 
 namespace slick::trader {
 

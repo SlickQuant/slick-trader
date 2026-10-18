@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <string>
 #include <vector>
+#include <string_view>
 
 namespace slick::trader {
 

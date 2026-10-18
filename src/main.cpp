@@ -19,8 +19,11 @@
 #include <slick/logger.hpp>
 #include <slick-trader/core/trading_engine.hpp>
 
-#include <iostream>
+#include <atomic>
+#include <chrono>
 #include <csignal>
+#include <iostream>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>

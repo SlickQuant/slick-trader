@@ -10,6 +10,8 @@
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <sstream>
+#include <iostream>
+#include <thread>
 
 namespace slick::trader {
 

@@ -6,6 +6,7 @@
 #include <string_view>
 #include <algorithm>
 #include <slick-trader/utils/time.hpp>
+#include <string>
 
 namespace slick::trader {
 

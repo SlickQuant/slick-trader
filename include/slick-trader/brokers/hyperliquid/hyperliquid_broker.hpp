@@ -5,6 +5,7 @@
 #include <slick-trader/brokers/hyperliquid/hyperliquid_order_connector.hpp>
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace slick::trader {
 

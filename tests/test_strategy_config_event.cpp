@@ -16,6 +16,8 @@
 
 #include <nlohmann/json.hpp>
 #include <string>
+#include <cstring>
+#include <memory>
 
 namespace slick::trader {
 namespace {

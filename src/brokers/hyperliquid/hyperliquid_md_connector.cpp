@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <stdexcept>
+#include <cstring>
 
 namespace slick::trader {
 

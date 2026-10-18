@@ -2,6 +2,7 @@
 #include <slick-trader/core/position_tracker.hpp>
 #include <algorithm>
 #include <cmath>
+#include <span>
 
 namespace slick::trader {
 

@@ -9,6 +9,8 @@
 #include <atomic>
 #include <string>
 #include <nlohmann/json.hpp>
+#include <unordered_map>
+#include <vector>
 
 // Forward declarations
 namespace coinbase {

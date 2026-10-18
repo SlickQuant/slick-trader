@@ -13,6 +13,7 @@
 #include <new>
 #include <string>
 #include <vector>
+#include <string_view>
 
 using namespace slick::trader;
 

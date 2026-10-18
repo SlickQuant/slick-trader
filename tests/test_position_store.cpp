@@ -12,6 +12,9 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <span>
+#include <stdexcept>
+#include <string_view>
 
 using namespace slick::trader;
 

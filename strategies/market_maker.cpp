@@ -46,6 +46,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <vector>
 
 using namespace slick::trader;
 

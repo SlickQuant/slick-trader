@@ -1,6 +1,7 @@
 #pragma once
 
 #include <slick-trader/strategy/strategy_base.hpp>
+#include <vector>
 
 namespace slick::trader {
 

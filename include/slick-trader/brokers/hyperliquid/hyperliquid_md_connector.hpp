@@ -12,6 +12,7 @@
 #include <thread>
 #include <vector>
 #include <set>
+#include <unordered_map>
 
 namespace hyperliquid { class Info; }
 

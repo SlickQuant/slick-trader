@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <string>
+#include <vector>
 #include <slick-trader/events/event.hpp>
 
 namespace slick::trader {

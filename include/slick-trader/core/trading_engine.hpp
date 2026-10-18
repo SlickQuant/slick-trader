@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <atomic>
 #include <nlohmann/json.hpp>
+#include <chrono>
+#include <vector>
 
 namespace slick::trader {
 
