@@ -59,6 +59,16 @@ private:
 // Runs on its own thread, consuming from MD and order event queues
 class StrategyManager {
 public:
+    // The file extension of a strategy plugin: what CMake gives a shared library on this
+    // platform, and what load_strategies() looks for in the plugins folder.
+#if defined(_WIN32)
+    static constexpr std::string_view PLUGIN_EXTENSION = ".dll";
+#elif defined(__APPLE__)
+    static constexpr std::string_view PLUGIN_EXTENSION = ".dylib";
+#else
+    static constexpr std::string_view PLUGIN_EXTENSION = ".so";
+#endif
+
     StrategyManager(
         const json& config,
         PositionTracker& position_tracker,

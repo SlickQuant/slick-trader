@@ -10,6 +10,8 @@
 #include <gtest/gtest.h>
 #include <slick-trader/core/broker_status.hpp>
 #include <slick-trader/core/strategy_loader.hpp>
+#include <slick-trader/core/strategy_manager.hpp>
+#include <filesystem>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -97,4 +99,12 @@ TEST(BrokerStatusInjection, HostKeepsItsOwnRegistryWhenNothingIsInjected) {
     EXPECT_TRUE(b.is_order_enabled(BrokerId::SIMULATED));
     a.set_order_enabled(BrokerId::SIMULATED, false);
     EXPECT_FALSE(b.is_order_enabled(BrokerId::SIMULATED));
+}
+
+// The strategy manager finds plugins by their file extension, and that has to be the one
+// CMake gives a shared library here: macOS names them .dylib, and a manager that looked
+// for .so there loaded no strategy at all.
+TEST(BrokerStatusInjection, ThePluginExtensionIsTheOneThePlatformBuilds) {
+    EXPECT_EQ(std::filesystem::path(SLICK_TRADER_TEST_PLUGIN_PATH).extension().string(),
+              StrategyManager::PLUGIN_EXTENSION);
 }

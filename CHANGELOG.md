@@ -90,6 +90,11 @@ First release.
 
 ### Build
 
-- C++23, CMake 3.28 or later. Dependencies are used as installed packages when found and fetched
-  otherwise; uWebSockets and nlohmann_json come from vcpkg.
-- `slick-trader-tests`, a GTest regression suite.
+- C++23, CMake 3.28 or later, on Windows (MSVC), Linux (GCC 14) and macOS (Apple clang).
+  Dependencies are used as installed packages when found and fetched otherwise; uWebSockets and
+  nlohmann_json come from vcpkg.
+- `SLICK_TRADER_SANITIZER` builds with ASan and UBSan (`address,undefined`) or TSan (`thread`).
+- `slick-trader-tests`, a GTest regression suite, run by CI on all three platforms and under ASan,
+  UBSan and TSan on Linux. Each release
+  attaches a ready-to-run package for each: the engine, the strategy plugins, the dashboard and
+  the sample config.

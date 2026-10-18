@@ -32,6 +32,8 @@ protected:
 
 } // namespace
 
+// Events are packed: a field can sit at any address, and gtest takes what it compares by
+// reference - binding one to a packed field is undefined. Each is copied out first.
 TEST_F(InstrumentStatusTest, AHaltReachesTheStrategyWithItsReason) {
     InstrumentStatusEvent halt;
     halt.broker_id = BrokerId::CME;
@@ -49,7 +51,7 @@ TEST_F(InstrumentStatusTest, AHaltReachesTheStrategyWithItsReason) {
     EXPECT_EQ(seen.status, TradingStatus::HALTED);
     EXPECT_FALSE(seen.cancel_allowed);
     EXPECT_STREQ(seen.reason, "MARKET_EVENT");
-    EXPECT_EQ(seen.event_time_ns, 42u);
+    EXPECT_EQ(uint64_t{seen.event_time_ns}, 42u);
 }
 
 TEST_F(InstrumentStatusTest, AReasonLongerThanItsFieldIsCutNotOverrun) {

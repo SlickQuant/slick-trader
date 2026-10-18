@@ -8,6 +8,24 @@ project(SlickTrader
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Strategy plugins are shared libraries that link slick-trader-core - a static library -
+# and the dependencies it brings, slick-orderbook among them. On Linux and macOS a shared
+# library can only take in position-independent code, so all of it is built that way.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Sanitizers, for GCC and Clang: "address,undefined" (ASan with UBSan) or "thread" (TSan,
+# which cannot be combined with ASan). Applied to every target from here on - fetched
+# dependencies included, and the strategy plugins, which share the engine's runtime - and
+# in every build type, so a configure never quietly produces a build without them.
+set(SLICK_TRADER_SANITIZER "" CACHE STRING "Sanitizers to build with: address,undefined or thread")
+if(SLICK_TRADER_SANITIZER)
+    if(MSVC)
+        message(FATAL_ERROR "SLICK_TRADER_SANITIZER is for GCC and Clang")
+    endif()
+    message(STATUS "Building with -fsanitize=${SLICK_TRADER_SANITIZER}")
+    add_compile_options(-fsanitize=${SLICK_TRADER_SANITIZER} -fno-omit-frame-pointer -fno-sanitize-recover=all)
+    add_link_options(-fsanitize=${SLICK_TRADER_SANITIZER})
+endif()
 
 option(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN "Disable C++ module dependency scanning for faster MSVC builds" ON)
 option(SLICK_TRADER_FAST_FETCHCONTENT "Avoid FetchContent update checks on every configure" ON)

@@ -245,11 +245,13 @@ TEST_F(MboBookTest, AnOrderIdThatIsNotANumberHasNoQueuePosition) {
 // Regression test. A book reports a side with nothing on it as price 0, and since zero and
 // negative prices became valid marks (futures spreads) that 0 was taken for a price: a bid
 // alone marked the position at half the bid, an emptied book at zero.
+// Events are packed: a field can sit at any address, and gtest takes what it compares by
+// reference - binding one to a packed field is undefined. Each is copied out first.
 TEST_F(MboBookTest, ASideWithNothingOnItHasNoPriceAndMarksNothing) {
     publish({add(101, Side::BUY, 1000.00, 5, 1)});
     ASSERT_EQ(strategy_->quotes, 1);
-    EXPECT_EQ(strategy_->last_quote.bid_price, to_price_t(1000.00));
-    EXPECT_EQ(strategy_->last_quote.ask_price, NULL_PRICE) << "no offers is not an offer at 0";
+    EXPECT_EQ(price_t{strategy_->last_quote.bid_price}, to_price_t(1000.00));
+    EXPECT_EQ(price_t{strategy_->last_quote.ask_price}, NULL_PRICE) << "no offers is not an offer at 0";
     EXPECT_FALSE(pnl_.has_mark_price("ESZ6")) << "half a market is not a mark";
 
     publish({add(201, Side::SELL, 1000.50, 4, 2)});
@@ -258,8 +260,8 @@ TEST_F(MboBookTest, ASideWithNothingOnItHasNoPriceAndMarksNothing) {
 
     // The book empties: the last two-sided market stays the mark.
     publish({removal(101), removal(201)});
-    EXPECT_EQ(strategy_->last_quote.bid_price, NULL_PRICE);
-    EXPECT_EQ(strategy_->last_quote.ask_price, NULL_PRICE);
+    EXPECT_EQ(price_t{strategy_->last_quote.bid_price}, NULL_PRICE);
+    EXPECT_EQ(price_t{strategy_->last_quote.ask_price}, NULL_PRICE);
     EXPECT_EQ(pnl_.get_mark_price("ESZ6"), to_price_t(1000.25));
 }
 
@@ -277,8 +279,8 @@ TEST_F(MboBookTest, AOneSidedLevelBookMarksNothingEither) {
     manager_.process_event(event);
 
     ASSERT_EQ(strategy_->quotes, 1);
-    EXPECT_EQ(strategy_->last_quote.bid_price, to_price_t(60000.0));
-    EXPECT_EQ(strategy_->last_quote.ask_price, NULL_PRICE);
+    EXPECT_EQ(price_t{strategy_->last_quote.bid_price}, to_price_t(60000.0));
+    EXPECT_EQ(price_t{strategy_->last_quote.ask_price}, NULL_PRICE);
     EXPECT_FALSE(pnl_.has_mark_price("BTC-USD"));
 }
 
@@ -297,8 +299,8 @@ TEST_F(MboBookTest, ATopOfBookReachesAStrategyOnceAndTheBusAsTob) {
     const QuoteEvent published = *reinterpret_cast<const QuoteEvent*>(record.data);
     EXPECT_EQ(published.type, EventType::TOB) << "what the dashboard refreshes PnL on";
     EXPECT_STREQ(published.instrument, "ESZ6");
-    EXPECT_EQ(published.bid_price, to_price_t(1000.00));
-    EXPECT_EQ(published.ask_price, to_price_t(1000.25));
+    EXPECT_EQ(price_t{published.bid_price}, to_price_t(1000.00));
+    EXPECT_EQ(price_t{published.ask_price}, to_price_t(1000.25));
 
     manager_.process_event(reinterpret_cast<const Event*>(record.data));
     EXPECT_EQ(strategy_->quotes, 1) << "the manager's own record was handed to the strategies again";
@@ -310,15 +312,15 @@ TEST_F(MboBookTest, AnInstrumentWithOnlyAnMboBookStillGetsQuotes) {
     // change of the top, not once per order.
     publish({add(101, Side::BUY, 1000.00, 5, 1), add(201, Side::SELL, 1000.25, 4, 2)});
     ASSERT_EQ(strategy_->quotes, 1);
-    EXPECT_EQ(strategy_->last_quote.bid_price, to_price_t(1000.00));
-    EXPECT_EQ(strategy_->last_quote.bid_quantity, to_qty_t(5));
-    EXPECT_EQ(strategy_->last_quote.ask_price, to_price_t(1000.25));
-    EXPECT_EQ(strategy_->last_quote.ask_quantity, to_qty_t(4));
+    EXPECT_EQ(price_t{strategy_->last_quote.bid_price}, to_price_t(1000.00));
+    EXPECT_EQ(qty_t{strategy_->last_quote.bid_quantity}, to_qty_t(5));
+    EXPECT_EQ(price_t{strategy_->last_quote.ask_price}, to_price_t(1000.25));
+    EXPECT_EQ(qty_t{strategy_->last_quote.ask_quantity}, to_qty_t(4));
 
     publish({add(102, Side::BUY, 999.75, 7, 3)});
     EXPECT_EQ(strategy_->quotes, 1) << "the top of the book did not change";
 
     publish({add(103, Side::BUY, 1000.00, 2, 4)});
     ASSERT_EQ(strategy_->quotes, 2);
-    EXPECT_EQ(strategy_->last_quote.bid_quantity, to_qty_t(7));
+    EXPECT_EQ(qty_t{strategy_->last_quote.bid_quantity}, to_qty_t(7));
 }

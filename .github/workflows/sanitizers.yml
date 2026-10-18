@@ -1,0 +1,127 @@
+name: Sanitizers
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sanitize:
+    name: ${{ matrix.name }} (Linux, Debug)
+    runs-on: ubuntu-latest
+    # A sanitized test suite runs several times slower. This is a ceiling to stop a
+    # hung job burning the default six hours, not an expected duration.
+    timeout-minutes: 90
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ASan and UBSan together; TSan cannot share a build with ASan.
+          - name: ASan + UBSan
+            sanitizer: address,undefined
+            runtime_symbol: __asan_
+          - name: TSan
+            sanitizer: thread
+            runtime_symbol: __tsan_
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Clone vcpkg
+      shell: bash
+      run: git clone --depth 1 https://github.com/microsoft/vcpkg.git "${{ runner.temp }}/vcpkg"
+
+    # Same reasoning as ci.yml: the SlickQuant dependencies build their Release
+    # config with -march=native, so a cache restored onto a runner with a narrower
+    # instruction set dies with SIGILL inside the dependency.
+    - name: CPU signature for the vcpkg cache key
+      id: cpusig
+      shell: bash
+      run: |
+        raw=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2 | tr ' ' '\n' \
+              | grep -E '^(sse4_[12]|avx|avx2|avx512[a-z0-9_]*|bmi[12]|fma)$' | sort -u | tr '\n' ',')
+        echo "CPU signature source: $raw"
+        echo "sig=$(printf '%s' "$raw" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+    # The dependency set below is ci.yml's, so the restore-keys prefix deliberately
+    # matches the cache ci.yml writes: an exact-key miss here still warm-starts from
+    # ci.yml's Linux cache. Keep the two install lists in sync.
+    - name: Cache vcpkg
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ runner.temp }}/vcpkg/installed
+          ${{ runner.temp }}/vcpkg/downloads
+          ${{ runner.temp }}/vcpkg/packages
+        key: vcpkg-${{ runner.os }}-cpu${{ steps.cpusig.outputs.sig }}-${{ hashFiles('.github/workflows/ci.yml', '.github/workflows/sanitizers.yml') }}
+        restore-keys: |
+          vcpkg-${{ runner.os }}-cpu${{ steps.cpusig.outputs.sig }}-
+
+    - name: Bootstrap vcpkg
+      shell: bash
+      run: "${{ runner.temp }}/vcpkg/bootstrap-vcpkg.sh -disableMetrics"
+
+    - name: Install dependencies via vcpkg
+      shell: bash
+      run: |
+        "${{ runner.temp }}/vcpkg/vcpkg" install \
+          nlohmann-json \
+          gtest \
+          slick-logger \
+          slick-net \
+          slick-queue \
+          slick-shm \
+          slick-stream-buffer \
+          slick-stream-buffer-multiplexer \
+          slick-dynamic-buffer \
+          coinbase-advanced-cpp \
+          slickquant-hyperliquid-cpp \
+          "uwebsockets[core,ssl,zlib]"
+
+    # The runner's kernel randomises mmap addresses over more bits than the
+    # sanitizer runtimes' shadow memory layout allows for, and TSan in particular
+    # then fails at startup ("unexpected memory mapping"). 28 bits is what they
+    # were built for.
+    - name: Narrow mmap randomisation for the sanitizer runtimes
+      run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+    # SLICK_TRADER_SANITIZER instruments every target, the fetched dependencies and
+    # the strategy plugins included, whatever the build type.
+    - name: Configure CMake
+      shell: bash
+      run: >
+        cmake -B build
+        -DCMAKE_BUILD_TYPE=Debug
+        -DCMAKE_C_COMPILER=gcc-14
+        -DCMAKE_CXX_COMPILER=g++-14
+        -DSLICK_TRADER_SANITIZER=${{ matrix.sanitizer }}
+        -DCMAKE_TOOLCHAIN_FILE="${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+    - name: Build
+      run: cmake --build build --parallel
+
+    - name: Verify the sanitizer is actually linked
+      shell: bash
+      run: |
+        # A silently unsanitized binary would make every run below pass for the
+        # wrong reason, so fail loudly here instead.
+        if ! nm -C build/tests/slick-trader-tests 2>/dev/null | grep -q '${{ matrix.runtime_symbol }}'; then
+          echo "::error::slick-trader-tests contains no ${{ matrix.runtime_symbol }}* symbols - ${{ matrix.name }} did not apply"
+          exit 1
+        fi
+        echo "${{ matrix.name }} runtime present."
+
+    - name: Run tests under ${{ matrix.name }}
+      working-directory: build
+      env:
+        ASAN_OPTIONS: strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1
+        # UBSan only warns by default and would let a failure pass as a green run.
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+      run: ctest --output-on-failure

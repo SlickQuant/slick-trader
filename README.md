@@ -1,5 +1,11 @@
 # SlickTrader
 
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](https://en.cppreference.com/w/cpp/23)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/SlickQuant/slick-trader/actions/workflows/ci.yml/badge.svg)](https://github.com/SlickQuant/slick-trader/actions/workflows/ci.yml)
+[![Sanitizers](https://github.com/SlickQuant/slick-trader/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/SlickQuant/slick-trader/actions/workflows/sanitizers.yml)
+[![GitHub release](https://img.shields.io/github/v/release/SlickQuant/slick-trader)](https://github.com/SlickQuant/slick-trader/releases)
+
 A multi-broker algorithmic trading engine written in modern C++23. SlickTrader connects to
 crypto exchanges over WebSocket/REST, routes market data and order events through a lock-free
 messaging core, runs trading strategies as hot-loadable plugins, and exposes a real-time web
@@ -96,8 +102,9 @@ dashboard for monitoring and manual control.
 
 ## Requirements
 
-- **Compiler**: MSVC (Visual Studio 2022) with C++23 support. The project targets Windows
-  primarily; `CMakeLists.txt` also has Unix branches for `dlopen`-based plugin loading.
+- **Compiler**: a C++23 compiler - MSVC (Visual Studio 2022) on Windows, GCC 14 on Linux, Apple
+  clang (Xcode 16) on macOS. CI builds and tests all three; strategy plugins are `.dll`, `.so` and
+  `.dylib` respectively.
 - **CMake** ≥ 3.28
 - **[vcpkg](https://github.com/microsoft/vcpkg)** — provides `uWebSockets` and `nlohmann_json`
   (both `find_package(... REQUIRED)`, not auto-fetched). Configure with vcpkg's toolchain file.
@@ -158,6 +165,7 @@ without a fill booked twice. An out-of-tree broker's own tests are compiled in t
 | `SLICK_TRADER_ENABLE_PYTHON_STRATEGY` | ON | Look for Python3 (development headers) and, when found, define `SLICK_TRADER_PYTHON_SUPPORT`. Reserved for script-based strategies: nothing in this release uses it |
 | `SLICK_TRADER_ENABLE_LUA_STRATEGY` | OFF | The same for Lua 5.4 (`SLICK_TRADER_LUA_SUPPORT`) |
 | `SLICK_TRADER_BUILD_TESTS` | ON when top-level, OFF as a subproject | Build `slick-trader-tests` and its probe plugin. Requires GTest. |
+| `SLICK_TRADER_SANITIZER` | *(empty)* | GCC and Clang: `address,undefined` (ASan with UBSan) or `thread` (TSan). Instruments every target - fetched dependencies and strategy plugins included - in every build type. CI runs both on Linux |
 | `SLICK_TRADER_EXTERNAL_BROKERS` | *(empty)* | `;`-separated directories of out-of-tree brokers to build in. See below. |
 
 ### Brokers and out-of-tree brokers
@@ -198,6 +206,11 @@ plugin.
 ```bash
 build/src/Debug/slick-trader.exe config/config_example.json
 ```
+
+Each [release](https://github.com/SlickQuant/slick-trader/releases) also attaches a ready-to-run
+package for Windows, Linux and macOS: the engine, its strategy plugins under `strategies/`, the
+dashboard under `web/static/`, and `config/config_example.json` pointed at those plugins. Run it
+from the package directory: `./slick-trader config/config_example.json`.
 
 The engine reads a single JSON config path as its only argument. Copy
 [`config/config_example.json`](config/config_example.json) to `config/config.json` (gitignored —

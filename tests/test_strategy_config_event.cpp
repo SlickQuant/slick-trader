@@ -70,6 +70,8 @@ TEST_F(StrategyConfigEventTest, CarriesStrategyNameAndParametersIntact) {
 
 // The bug this format invites: sizing the record with sizeof() instead of size_for(), which
 // publishes the header and drops every byte of JSON behind it.
+// Events are packed: a field can sit at any address, and gtest takes what it compares by
+// reference - binding one to a packed field is undefined. Each is copied out first.
 TEST_F(StrategyConfigEventTest, PayloadSurvivesBeyondTheHeaderLength) {
     json params = json::object();
     for (int i = 0; i < 200; ++i) {
@@ -82,7 +84,7 @@ TEST_F(StrategyConfigEventTest, PayloadSurvivesBeyondTheHeaderLength) {
 
     const auto* event = read();
     ASSERT_NE(event, nullptr);
-    EXPECT_EQ(event->config_length, text.size());
+    EXPECT_EQ(uint32_t{event->config_length}, text.size());
     EXPECT_EQ(json::parse(event->config_text()), params);
 }
 

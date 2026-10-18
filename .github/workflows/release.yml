@@ -1,0 +1,130 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v0.1.0, v1.0.0, etc.
+
+permissions:
+  contents: write
+  actions: read  # needed to look up and download artifacts from the CI run for this commit
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Reuses the exact Release-config binaries ci.yml already built and tested
+      # for this commit, instead of rebuilding from scratch. Requires the tagged
+      # commit to already have a successful ci.yml run (e.g. tag a commit that's
+      # already on master and has passed CI).
+      - name: Find CI run for this commit
+        id: ci_run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow ci.yml --commit "${{ github.sha }}" --status success --json databaseId --jq '.[0].databaseId')
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" == "null" ]; then
+            echo "::error::No successful CI run found for commit ${{ github.sha }}. Tag a commit on master that has already passed CI before releasing."
+            exit 1
+          fi
+          echo "Found CI run $RUN_ID for commit ${{ github.sha }}"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Download Windows release build from CI
+        uses: actions/download-artifact@v4
+        with:
+          name: slick-trader-Windows-release
+          path: windows-build
+          run-id: ${{ steps.ci_run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download macOS release build from CI
+        uses: actions/download-artifact@v4
+        with:
+          name: slick-trader-macOS-release
+          path: macos-build
+          run-id: ${{ steps.ci_run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download Linux release build from CI
+        uses: actions/download-artifact@v4
+        with:
+          name: slick-trader-Linux-release
+          path: linux-build
+          run-id: ${{ steps.ci_run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Each package is laid out to run from its own directory with the sample
+      # config: the engine, its strategies/ plugins, the dashboard under
+      # web/static, and config/config_example.json - whose plugin folder, a build
+      # tree path in the repository, is pointed at the packaged strategies/.
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+
+          stage() {
+            local dir="$1" build="$2"
+            mkdir -p "$dir/config" "$dir/web"
+            cp -r "$build"/. "$dir/"
+            cp -r web/static "$dir/web/"
+            sed 's#"strategy_plugins_folder": "[^"]*"#"strategy_plugins_folder": "strategies"#' \
+              config/config_example.json > "$dir/config/config_example.json"
+            cp README.md LICENSE CHANGELOG.md "$dir/"
+          }
+
+          WIN_STAGE="slick-trader-${VERSION}-windows-x64"
+          stage "$WIN_STAGE" windows-build
+          zip -r "${WIN_STAGE}.zip" "$WIN_STAGE"
+
+          LINUX_STAGE="slick-trader-${VERSION}-linux-x64"
+          stage "$LINUX_STAGE" linux-build
+          chmod +x "$LINUX_STAGE/slick-trader"
+          tar -czf "${LINUX_STAGE}.tar.gz" "$LINUX_STAGE"
+
+          MACOS_STAGE="slick-trader-${VERSION}-macos-arm64"
+          stage "$MACOS_STAGE" macos-build
+          chmod +x "$MACOS_STAGE/slick-trader"
+          tar -czf "${MACOS_STAGE}.tar.gz" "$MACOS_STAGE"
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          if [ -f CHANGELOG.md ]; then
+            # The section for this version: from its "# vX.Y.Z" header to the next
+            # top-level header. Blank lines are kept - the section has subheadings
+            # and lists - and only the leading and trailing ones are trimmed.
+            VERSION="${{ github.ref_name }}"
+            VERSION_ESCAPED=$(echo "$VERSION" | sed 's/\./\\./g')
+            CHANGES=$(awk "BEGIN{p=0} /^# $VERSION_ESCAPED( |\$)/{p=1;next} /^# /{p=0} p" CHANGELOG.md \
+                      | sed -e '/./,$!d' | sed -e ':a' -e '/^\n*$/{$d;N;ba' -e '}')
+
+            if [ -z "$CHANGES" ]; then
+              echo "CHANGELOG_CONTENT=No changelog entry found for this version." >> $GITHUB_OUTPUT
+            else
+              echo "CHANGELOG_CONTENT<<EOF" >> $GITHUB_OUTPUT
+              echo "$CHANGES" >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "CHANGELOG_CONTENT=CHANGELOG.md not found." >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ github.ref_name }}
+          body: |
+            ## Changes
+
+            ${{ steps.changelog.outputs.CHANGELOG_CONTENT }}
+
+          draft: true
+          prerelease: false
+          generate_release_notes: false
+          files: |
+            slick-trader-*-windows-x64.zip
+            slick-trader-*-linux-x64.tar.gz
+            slick-trader-*-macos-arm64.tar.gz

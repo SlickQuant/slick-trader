@@ -87,12 +87,7 @@ void StrategyManager::load_strategies(const json& config) {
         LOG_WARN("Strategy configs folder does not exist: {}", strategy_configs_folder);
     }
 
-    // Determine plugin extension based on platform
-    #ifdef _WIN32
-        const std::string plugin_extension = ".dll";
-    #else
-        const std::string plugin_extension = ".so";
-    #endif
+    const std::string plugin_extension(PLUGIN_EXTENSION);
 
     // Scan folder for all plugin files
     std::vector<std::string> plugin_paths;

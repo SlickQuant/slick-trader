@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        build_type: [Debug, Release]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Clone vcpkg
+      shell: bash
+      run: git clone --depth 1 https://github.com/microsoft/vcpkg.git "${{ runner.temp }}/vcpkg"
+
+    # The SlickQuant dependency libraries (slick-net, hyperliquid-cpp, ...) build
+    # their Release config with -march=native, so the binaries vcpkg produces are
+    # tuned to the CPU of the runner that built them. Restored onto a runner with a
+    # narrower instruction set they die with SIGILL (slick-sim saw exactly that), so
+    # the cache is keyed on the runner's CPU features and only reused on compatible
+    # hardware.
+    - name: CPU signature for the vcpkg cache key
+      id: cpusig
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          raw=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2 | tr ' ' '\n' \
+                | grep -E '^(sse4_[12]|avx|avx2|avx512[a-z0-9_]*|bmi[12]|fma)$' | sort -u | tr '\n' ',')
+        elif [ "$RUNNER_OS" = "macOS" ]; then
+          raw=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)
+        else
+          raw=$(wmic cpu get Name /value 2>/dev/null | tr -d '\r' | grep '=' || echo "windows-unknown")
+        fi
+        echo "CPU signature source: $raw"
+        echo "sig=$(printf '%s' "$raw" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+    # No vcpkg.json manifest is committed in this repo by design, so dependencies
+    # are installed explicitly in classic mode below.
+    - name: Cache vcpkg
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ runner.temp }}/vcpkg/installed
+          ${{ runner.temp }}/vcpkg/downloads
+          ${{ runner.temp }}/vcpkg/packages
+        key: vcpkg-${{ runner.os }}-cpu${{ steps.cpusig.outputs.sig }}-${{ hashFiles('.github/workflows/ci.yml') }}
+
+    - name: Bootstrap vcpkg (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        & "${{ runner.temp }}\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+
+    - name: Bootstrap vcpkg (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        "${{ runner.temp }}/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+
+    # slick-orderbook and slick-stacker have no vcpkg port: CMake fetches them with
+    # FetchContent when find_package misses them.
+    - name: Install dependencies via vcpkg
+      shell: bash
+      run: |
+        "${{ runner.temp }}/vcpkg/vcpkg" install \
+          nlohmann-json \
+          gtest \
+          slick-logger \
+          slick-net \
+          slick-queue \
+          slick-shm \
+          slick-stream-buffer \
+          slick-stream-buffer-multiplexer \
+          slick-dynamic-buffer \
+          coinbase-advanced-cpp \
+          slickquant-hyperliquid-cpp \
+          "uwebsockets[core,ssl,zlib]"
+
+    # slick-trader is C++23; GCC 14 is the runner's newest, and the default (13)
+    # falls short of it.
+    - name: Configure CMake (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: >
+        cmake -B build
+        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        -DCMAKE_C_COMPILER=gcc-14
+        -DCMAKE_CXX_COMPILER=g++-14
+        -DCMAKE_TOOLCHAIN_FILE="${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+    # Apple clang, as the runner's Xcode has it; vcpkg picks the arm64-osx triplet.
+    - name: Configure CMake (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: >
+        cmake -B build
+        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        -DCMAKE_TOOLCHAIN_FILE="${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+    - name: Configure CMake (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: >
+        cmake -B build
+        -DCMAKE_TOOLCHAIN_FILE="${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+    - name: Build
+      run: cmake --build build --config ${{ matrix.build_type }} --parallel
+
+    - name: Run tests
+      working-directory: build
+      run: ctest -C ${{ matrix.build_type }} --output-on-failure
+
+    # Release-config artifacts are uploaded here so release.yml can reuse this
+    # exact, already-tested build instead of recompiling from scratch on tag push:
+    # the engine, the strategy plugins, and the shared libraries they load.
+    - name: Stage release artifact (Windows)
+      if: matrix.build_type == 'Release' && runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path release-stage/strategies | Out-Null
+        Copy-Item build/src/Release/slick-trader.exe -Destination release-stage
+        Copy-Item build/src/Release/*.dll -Destination release-stage -ErrorAction SilentlyContinue
+        Copy-Item "${{ runner.temp }}\vcpkg\installed\x64-windows\bin\*.dll" -Destination release-stage -ErrorAction SilentlyContinue
+        Copy-Item build/strategies/Release/*.dll -Destination release-stage/strategies
+
+    - name: Stage release artifact (Linux)
+      if: matrix.build_type == 'Release' && runner.os == 'Linux'
+      shell: bash
+      run: |
+        mkdir -p release-stage/strategies
+        cp build/src/slick-trader release-stage/
+        cp "${{ runner.temp }}/vcpkg/installed/x64-linux/lib/"*.so* release-stage/ 2>/dev/null || true
+        cp build/strategies/*.so release-stage/strategies/
+
+    - name: Stage release artifact (macOS)
+      if: matrix.build_type == 'Release' && runner.os == 'macOS'
+      shell: bash
+      run: |
+        mkdir -p release-stage/strategies
+        cp build/src/slick-trader release-stage/
+        cp "${{ runner.temp }}/vcpkg/installed/arm64-osx/lib/"*.dylib release-stage/ 2>/dev/null || true
+        cp build/strategies/*.dylib release-stage/strategies/
+
+    - name: Upload release build artifact
+      if: matrix.build_type == 'Release'
+      uses: actions/upload-artifact@v4
+      with:
+        name: slick-trader-${{ runner.os }}-release
+        path: release-stage/
