@@ -67,9 +67,17 @@ TEST(BrokerStatusInjection, StrategyLoaderRedirectsPluginRegistryAtHost) {
     ASSERT_NE(probe.connected, nullptr);
 
     // The bug, reproduced: opened on its own the plugin reads its private registry and
-    // sees a dead broker even though the host has it enabled and connected.
+    // sees a dead broker even though the host has it enabled and connected. Not on macOS:
+    // dyld coalesces the weak definitions of instance()'s statics across the executable
+    // and the plugins it loads, so there the plugin shares the host's registry from the
+    // start - and what follows still has to hold.
+#ifdef __APPLE__
+    EXPECT_TRUE(probe.enabled(kCoinbase));
+    EXPECT_TRUE(probe.connected(kCoinbase));
+#else
     EXPECT_FALSE(probe.enabled(kCoinbase));
     EXPECT_FALSE(probe.connected(kCoinbase));
+#endif
 
     // Loading it the way the engine does must hand it the host's registry.
     StrategyLoader loader;
