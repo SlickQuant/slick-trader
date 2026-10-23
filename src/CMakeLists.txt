@@ -35,6 +35,12 @@ endif()
 # cmake/slick_trader_broker.cmake. Also builds any SLICK_TRADER_EXTERNAL_BROKERS.
 add_subdirectory(brokers)
 
+# Enable the engine's slick-net log bridge when a broker requests it.
+get_property(_slick_trader_uses_slick_net GLOBAL PROPERTY SLICK_TRADER_USES_SLICK_NET)
+if(_slick_trader_uses_slick_net)
+    target_compile_definitions(slick-trader-core PRIVATE SLICK_TRADER_HAS_SLICK_NET=1)
+endif()
+
 # Synchronize PDB writes to avoid locking errors on Windows parallel builds
 if(MSVC)
     target_compile_options(slick-trader-core PRIVATE /FS)

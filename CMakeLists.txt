@@ -37,6 +37,9 @@ option(SLICK_TRADER_SUPPRESS_VS_REGEN "Disable ZERO_CHECK auto-regeneration for 
 option(SLICK_TRADER_ENABLE_LUA_STRATEGY "Enable Lua strategy support auto-detection" OFF)
 option(SLICK_TRADER_ENABLE_PYTHON_STRATEGY "Enable Python strategy support auto-detection" ON)
 option(SLICK_TRADER_BUILD_TESTS "Build the unit/regression tests" ${PROJECT_IS_TOP_LEVEL})
+# Disable an in-tree broker to skip building it and looking up or fetching its SDK.
+option(SLICK_TRADER_ENABLE_COINBASE "Build the Coinbase broker" ON)
+option(SLICK_TRADER_ENABLE_HYPERLIQUID "Build the Hyperliquid broker" ON)
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
     set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
@@ -117,39 +120,8 @@ endif()
 # plugin, so it is declared in strategies/CMakeLists.txt and fetched only when
 # SLICK_TRADER_BUILD_STRATEGIES is ON.
 
-# Add coinbase-advanced-cpp dependency
-find_package(coinbase-advanced-cpp ${COINBASE_ADVANCED_CPP_MIN_VERSION} CONFIG QUIET)
-if (NOT coinbase-advanced-cpp_FOUND)
-    message(STATUS "Fetching coinbase-advanced-cpp...")
-    set(BUILD_COINBASE_ADVANCED_TESTS OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        coinbase-advanced-cpp
-        GIT_REPOSITORY https://github.com/SlickQuant/coinbase-advanced-cpp.git
-        GIT_TAG v${COINBASE_ADVANCED_CPP_MIN_VERSION}
-    )
-    FetchContent_MakeAvailable(coinbase-advanced-cpp)
-else()
-    message(STATUS "Found coinbase-advanced-cpp ${coinbase-advanced-cpp_VERSION}: ${coinbase-advanced-cpp_DIR}")
-endif()
-
-find_package(hyperliquid ${HYPERLIQUID_MIN_VERSION} CONFIG QUIET)
-if (NOT hyperliquid_FOUND)
-    message(STATUS "Fetching hyperliquid-cpp...")
-    FetchContent_Declare(
-        hyperliquid-cpp
-        GIT_REPOSITORY https://github.com/SlickQuant/hyperliquid-cpp.git
-        GIT_TAG v${HYPERLIQUID_MIN_VERSION}
-    )
-    FetchContent_MakeAvailable(hyperliquid-cpp)
-else()
-    message(STATUS "Found hyperliquid ${hyperliquid_VERSION}: ${hyperliquid_DIR}")
-endif()
-
-# slick-net should be found or fetched by coinbase/hyperliquid
-find_package(slick-net CONFIG QUIET)
-if (slick-net_FOUND)
-    message(STATUS "Found slick-net ${slick-net_VERSION}: ${slick-net_DIR}")
-endif()
+# Enabled brokers resolve their SDKs (coinbase-advanced-cpp, hyperliquid-cpp)
+# and slick-net in their own directories under src/brokers/.
 
 find_package(slick-shm CONFIG QUIET)
 if (slick-shm_FOUND)

@@ -109,10 +109,11 @@ dashboard for monitoring and manual control.
 - **[vcpkg](https://github.com/microsoft/vcpkg)** — provides `uWebSockets` and `nlohmann_json`
   (both `find_package(... REQUIRED)`, not auto-fetched). Configure with vcpkg's toolchain file.
 - `slick-logger`, `slick-orderbook`, `coinbase-advanced-cpp` and `hyperliquid-cpp` are used as
-  installed packages when found, and fetched with CMake `FetchContent` otherwise; `slick-net`,
-  `slick-queue`, `slick-stream-buffer` and `slick-stream-buffer-multiplexer` come with them.
-  `slick-stacker` is fetched too, but only when the strategy plugins are being built — it is
-  needed solely by `order_stacker`.
+  installed packages when found, and fetched with CMake `FetchContent` otherwise. A broker SDK is
+  only looked up when its broker is enabled. `slick-net`, `slick-queue`, `slick-stream-buffer` and
+  `slick-stream-buffer-multiplexer` come with the SDKs. With no broker built, `slick-net` isn't
+  needed but the other three have to be installed. `slick-stacker` is fetched only for the strategy
+  plugins (`order_stacker` needs it).
 - **GTest** (vcpkg), for the tests only.
 
 ## Building
@@ -165,6 +166,8 @@ without a fill booked twice. An out-of-tree broker's own tests are compiled in t
 | `SLICK_TRADER_ENABLE_PYTHON_STRATEGY` | ON | Look for Python3 (development headers) and, when found, define `SLICK_TRADER_PYTHON_SUPPORT`. Reserved for script-based strategies: nothing in this release uses it |
 | `SLICK_TRADER_ENABLE_LUA_STRATEGY` | OFF | The same for Lua 5.4 (`SLICK_TRADER_LUA_SUPPORT`) |
 | `SLICK_TRADER_BUILD_TESTS` | ON when top-level, OFF as a subproject | Build `slick-trader-tests` and its probe plugin. Requires GTest. |
+| `SLICK_TRADER_ENABLE_COINBASE` | ON | Build the Coinbase broker. OFF skips its SDK too |
+| `SLICK_TRADER_ENABLE_HYPERLIQUID` | ON | Build the Hyperliquid broker. OFF skips its SDK too |
 | `SLICK_TRADER_SANITIZER` | *(empty)* | GCC and Clang: `address,undefined` (ASan with UBSan) or `thread` (TSan). Instruments every target - fetched dependencies and strategy plugins included - in every build type. CI runs both on Linux |
 | `SLICK_TRADER_EXTERNAL_BROKERS` | *(empty)* | `;`-separated directories of out-of-tree brokers to build in. See below. |
 

@@ -1,5 +1,9 @@
-add_subdirectory(coinbase)
-add_subdirectory(hyperliquid)
+if(SLICK_TRADER_ENABLE_COINBASE)
+    add_subdirectory(coinbase)
+endif()
+if(SLICK_TRADER_ENABLE_HYPERLIQUID)
+    add_subdirectory(hyperliquid)
+endif()
 
 # Out-of-tree brokers: directories that call slick_trader_add_broker() exactly like
 # the in-tree ones, kept in their own repositories. Each is built into the binary
@@ -28,4 +32,8 @@ foreach(dir IN LISTS SLICK_TRADER_EXTERNAL_BROKERS)
 endforeach()
 
 get_property(_slick_trader_brokers GLOBAL PROPERTY SLICK_TRADER_ENABLED_BROKERS)
-message(STATUS "slick-trader brokers: ${_slick_trader_brokers}")
+if(_slick_trader_brokers)
+    message(STATUS "slick-trader brokers: ${_slick_trader_brokers}")
+else()
+    message(STATUS "slick-trader brokers: none")
+endif()

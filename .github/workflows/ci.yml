@@ -161,3 +161,118 @@ jobs:
       with:
         name: slick-trader-${{ runner.os }}-release
         path: release-stage/
+
+  # Build with no in-tree broker and with each broker separately using SLICK_TRADER_ENABLE_COINBASE /
+  # _HYPERLIQUID. Install only the packages each build needs so accidental SDK or slick-net
+  # dependencies fail during configuration or linking.
+  broker-options:
+    name: broker options (${{ matrix.name }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no brokers
+            slug: none
+            cmake_flags: >-
+              -DSLICK_TRADER_ENABLE_COINBASE=OFF
+              -DSLICK_TRADER_ENABLE_HYPERLIQUID=OFF
+            broker_packages: ''
+            expect_brokers: 'none'
+          - name: coinbase only
+            slug: coinbase
+            cmake_flags: -DSLICK_TRADER_ENABLE_HYPERLIQUID=OFF
+            broker_packages: coinbase-advanced-cpp
+            expect_brokers: 'coinbase'
+          - name: hyperliquid only
+            slug: hyperliquid
+            cmake_flags: -DSLICK_TRADER_ENABLE_COINBASE=OFF
+            broker_packages: slickquant-hyperliquid-cpp
+            expect_brokers: 'hyperliquid'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Clone vcpkg
+      shell: bash
+      run: git clone --depth 1 https://github.com/microsoft/vcpkg.git "${{ runner.temp }}/vcpkg"
+
+    # Reuse cached vcpkg binaries only on compatible CPUs, as in build-and-test.
+    - name: CPU signature for the vcpkg cache key
+      id: cpusig
+      shell: bash
+      run: |
+        raw=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2 | tr ' ' '\n' \
+              | grep -E '^(sse4_[12]|avx|avx2|avx512[a-z0-9_]*|bmi[12]|fma)$' | sort -u | tr '\n' ',')
+        echo "sig=$(printf '%s' "$raw" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+    # Include the matrix entry in the cache key because each installs different packages.
+    - name: Cache vcpkg
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ runner.temp }}/vcpkg/installed
+          ${{ runner.temp }}/vcpkg/downloads
+          ${{ runner.temp }}/vcpkg/packages
+        key: vcpkg-brokers-${{ matrix.slug }}-${{ runner.os }}-cpu${{ steps.cpusig.outputs.sig }}-${{ hashFiles('.github/workflows/ci.yml') }}
+
+    - name: Bootstrap vcpkg
+      shell: bash
+      run: |
+        "${{ runner.temp }}/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+
+    # Install the core packages and this entry's broker SDK without adding slick-net explicitly.
+    - name: Install dependencies via vcpkg
+      shell: bash
+      run: |
+        "${{ runner.temp }}/vcpkg/vcpkg" install \
+          nlohmann-json \
+          gtest \
+          slick-logger \
+          slick-queue \
+          slick-shm \
+          slick-stream-buffer \
+          slick-stream-buffer-multiplexer \
+          slick-dynamic-buffer \
+          "uwebsockets[core,ssl,zlib]" \
+          ${{ matrix.broker_packages }}
+
+    - name: Configure CMake
+      shell: bash
+      run: |
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_C_COMPILER=gcc-14 \
+          -DCMAKE_CXX_COMPILER=g++-14 \
+          -DCMAKE_TOOLCHAIN_FILE="${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+          ${{ matrix.cmake_flags }} 2>&1 | tee configure.log
+
+    # Check the broker set so a misspelled option cannot pass by building the defaults.
+    - name: Assert the enabled broker set
+      shell: bash
+      env:
+        EXPECT: ${{ matrix.expect_brokers }}
+      run: |
+        grep -E "slick-trader brokers: ${EXPECT}( |\$)" configure.log
+
+    - name: Build
+      run: cmake --build build --parallel
+
+    - name: Run tests
+      working-directory: build
+      run: ctest --output-on-failure
+
+    # An enabled broker missing from the binary must stop startup.
+    - name: Assert an unbuilt broker is rejected at startup
+      if: matrix.slug == 'none'
+      shell: bash
+      run: |
+        mkdir -p logs
+        set +e
+        ./build/src/slick-trader config/config_example.json
+        status=$?
+        set -e
+        echo "exit status: $status"
+        test "$status" -ne 0
+        grep -rF "No broker adapter for 'coinbase'" logs/

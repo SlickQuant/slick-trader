@@ -19,7 +19,8 @@ First release.
 
 - **Coinbase Advanced Trade** (market data and order entry) and **Hyperliquid** (market data;
   order entry needs a wallet key wired in). Each broker is a market data connector and an order
-  connector, each on its own thread, behind `IBroker`.
+  connector, each on its own thread, behind `IBroker`. Setting `SLICK_TRADER_ENABLE_COINBASE` or
+  `SLICK_TRADER_ENABLE_HYPERLIQUID` to OFF leaves that broker and its SDK out of the build.
 - **Brokers register themselves by name.** `SLICK_TRADER_REGISTER_BROKER("name", Type)` puts a
   broker in `BrokerRegistry`, and a `brokers[]` config entry names the one it wants. An entry naming
   no broker in the binary stops startup with the list of those it carries. A broker whose

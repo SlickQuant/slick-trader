@@ -41,17 +41,23 @@ TEST(BrokerRegistryTest, UnknownBrokerIsNotFound) {
     EXPECT_EQ(BrokerRegistry::instance().find(""), nullptr);
 }
 
+// Register a broker for this test so it also works with SLICK_TRADER_ENABLE_*=OFF.
 TEST(BrokerRegistryTest, DuplicateRegistrationKeepsTheFirst) {
-    auto keys = BrokerRegistry::instance().keys();
-    ASSERT_FALSE(keys.empty()) << "no broker registered at all";
-    const auto original = BrokerRegistry::instance().find(keys.front());
-
+    auto first = [](const json&, slick::stream_buffer_multiplexer&, slick::queue<uint8_t>&,
+                    slick::queue<uint8_t>&, slick::queue<uint8_t>&) -> std::shared_ptr<IBroker> {
+        return nullptr;
+    };
     auto impostor = [](const json&, slick::stream_buffer_multiplexer&, slick::queue<uint8_t>&,
                        slick::queue<uint8_t>&, slick::queue<uint8_t>&) -> std::shared_ptr<IBroker> {
         return nullptr;
     };
-    EXPECT_FALSE(BrokerRegistry::instance().add(keys.front(), impostor));
-    EXPECT_EQ(BrokerRegistry::instance().find(keys.front()), original);
+    BrokerRegistry::instance().add("registry-test-duplicate", first);
+    const auto keys = BrokerRegistry::instance().keys();
+    const auto original = BrokerRegistry::instance().find("registry-test-duplicate");
+    ASSERT_NE(original, nullptr);
+
+    EXPECT_FALSE(BrokerRegistry::instance().add("registry-test-duplicate", impostor));
+    EXPECT_EQ(BrokerRegistry::instance().find("registry-test-duplicate"), original);
     EXPECT_EQ(BrokerRegistry::instance().keys().size(), keys.size());
 }
 

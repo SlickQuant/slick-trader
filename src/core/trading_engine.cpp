@@ -6,7 +6,9 @@
 #include <slick-trader/brokers/imarket_data_connector.hpp>
 #include <slick-trader/brokers/iorder_connector.hpp>
 #include <slick-trader/events/register_event.hpp>
+#ifdef SLICK_TRADER_HAS_SLICK_NET
 #include <slick/net/logging.hpp>
+#endif
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <sstream>
@@ -67,7 +69,8 @@ bool TradingEngine::initialize(const std::string& config_path) {
     logger.set_level(log_level);
     logger.init();
 
-    // Forward Coinbase library logs to slick-logger
+#ifdef SLICK_TRADER_HAS_SLICK_NET
+    // Route slick-net logs to slick-logger. The Coinbase and Hyperliquid SDKs use it for networking.
     slick::net::set_log_handler(
         [&logger](slick::net::LogLevel level, const char* format_text, std::format_args args) {
             logger.log(static_cast<slick::logger::LogLevel>(level), format_text, std::move(args));
@@ -76,6 +79,7 @@ bool TradingEngine::initialize(const std::string& config_path) {
             return static_cast<slick::net::LogLevel>(logger.get_level());
         }
     );
+#endif
 
     // Positions kept across restarts, if asked for. Restored here, before anything can
     // book a fill or read a position.

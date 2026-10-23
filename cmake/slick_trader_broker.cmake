@@ -44,6 +44,22 @@ function(slick_trader_add_broker name)
     endforeach()
 endfunction()
 
+# Brokers using slick-net call this to route its logs through the engine's logger.
+# Find slick-net if the broker's SDK has not already provided it. With no caller,
+# the build has no slick-net dependency.
+macro(slick_trader_use_slick_net)
+    get_property(_slick_trader_uses_slick_net GLOBAL PROPERTY SLICK_TRADER_USES_SLICK_NET)
+    if(NOT _slick_trader_uses_slick_net)
+        if(NOT TARGET slick::net)
+            find_package(slick-net CONFIG REQUIRED GLOBAL)
+            message(STATUS "Found slick-net ${slick-net_VERSION}: ${slick-net_DIR}")
+        endif()
+        # Link here so CMake can resolve SDK targets scoped to this broker's directory.
+        target_link_libraries(slick-trader-core PRIVATE slick::net)
+        set_property(GLOBAL PROPERTY SLICK_TRADER_USES_SLICK_NET ON)
+    endif()
+endmacro()
+
 # Links every broker into `target`. One function for the executable and the test
 # binary, so the two cannot end up with different broker sets.
 function(slick_trader_link_brokers target)
