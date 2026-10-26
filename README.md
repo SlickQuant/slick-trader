@@ -197,9 +197,10 @@ cmake -S . -B build -DSLICK_TRADER_EXTERNAL_BROKERS=/path/to/slick-trader-mybrok
 ```
 
 Keep that setting in a `CMakeUserPresets.json`, which `.gitignore` excludes, so a local path never
-reaches the repository. Configure prints each one it adds, with the version its own `project()`
-declares, when it declares one. A `brokers[]` config entry whose `name` has no adapter in the binary
-is a fatal startup error that lists the brokers the binary does carry.
+reaches the repository. Configure prints each directory as it adds it, then the brokers that
+directory registered and the version its own `project()` declares, if any. A directory that
+registers no broker gets a warning. A `brokers[]` config entry whose `name` has no adapter in the
+binary is a fatal startup error that lists the brokers the binary does carry.
 
 See [strategies/README.md](strategies/README.md) for how to write and build your own strategy
 plugin.

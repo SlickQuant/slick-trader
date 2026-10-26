@@ -27,8 +27,9 @@ First release.
   constructor throws is reported, not left to terminate the process.
 - **Out-of-tree brokers.** `-DSLICK_TRADER_EXTERNAL_BROKERS=<dir>[;<dir>...]` builds brokers kept in
   their own repositories into the binary. Each calls `slick_trader_add_broker()` as an in-tree
-  broker does, and its `TESTS` are compiled into `slick-trader-tests`. Configure prints each one,
-  with the version its own `project()` declares.
+  broker does, and its `TESTS` are compiled into `slick-trader-tests`. Configure prints each
+  directory as it is added, then the brokers it registered and the version its own `project()`
+  declares. A directory that registers none gets a warning.
 - `BrokerStatusRegistry`: each broker's market data and order connectors' enabled and connected
   state, lock-free. `StrategyBase::submit_order` checks it before queueing an order, and the
   dashboard shows it.
