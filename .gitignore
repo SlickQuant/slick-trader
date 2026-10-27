@@ -50,6 +50,7 @@ CMakeUserPresets.json
 *.log
 logs/
 node_modules/
+state/
 
 # Ignore all config files except the checked-in example
 config/*
