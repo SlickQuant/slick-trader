@@ -269,6 +269,7 @@ class Dashboard {
                 this.subscribeToMarketData();
             } else {
                 console.warn('[Dashboard] No strategies found for ladder initialization');
+                ladderManager.showEmptyState('No strategies loaded. Check "strategies.enabled" in the config.');
             }
         } catch (error) {
             console.error('[Dashboard] Failed to initialize ladders:', error);

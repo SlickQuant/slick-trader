@@ -36,6 +36,7 @@ class LadderManager {
 
         if (this.instruments.length === 0) {
             console.warn('[LadderManager] No instruments found in strategies');
+            this.showEmptyState('No instruments. The ladder shows what your strategies subscribe to.');
             return;
         }
 
@@ -53,6 +54,19 @@ class LadderManager {
         console.log('[LadderManager] Initialized ladders for instruments:', this.instruments);
 
         // Real market data now provided via WebSocket - simulated data removed
+    }
+
+    /**
+     * Replaces the loading placeholder with why there is no ladder. The server only
+     * streams books for instruments a strategy subscribed to.
+     */
+    showEmptyState(message) {
+        const container = document.getElementById('ladderContainer');
+        if (!container) return;
+        const div = document.createElement('div');
+        div.className = 'ladder-loading';
+        div.textContent = message;
+        container.replaceChildren(div);
     }
 
     /**
