@@ -67,10 +67,10 @@ public:
     // Initialize with configuration
     bool initialize(const json& config);
 
-    // Start web server thread
+    // Start web server thread. start() and stop() are for one controlling thread.
     void start();
 
-    // Stop web server
+    // Stop web server and join its thread
     void stop();
 
     // Check if running
@@ -83,6 +83,9 @@ public:
 
 private:
     void run();
+    // Closes the listen socket and every connection so the event loop can exit.
+    // Event loop thread only. stop() defers it there.
+    void close_connections();
 
     // REST API handlers
     void setup_routes(uWS::App &app);
@@ -175,7 +178,16 @@ private:
     Config config_;
     std::atomic_bool running_{false};
     std::thread worker_thread_;
-    us_listen_socket_t* listen_socket_{nullptr};
+    // The running app, for close_connections(). Touched only on the worker's event loop thread.
+    uWS::App* app_{nullptr};
+    // The worker's event loop, for stop() to hand the shutdown to. uWS may only be used from
+    // the thread running the loop. Loop::defer is the one call that is safe from another.
+    // The loop is thread local and is freed when the worker thread exits, so the pointer can
+    // only be used while loop_mutex_ is held. stop() holds the lock across defer(), and the
+    // worker takes it to clear loop_ before it exits, so the loop can't be freed in the middle
+    // of a defer().
+    std::mutex loop_mutex_;
+    uWS::Loop* loop_{nullptr};
 
     slick::stream_buffer_multiplexer& event_mux_;
     uint64_t event_cursor_{0};

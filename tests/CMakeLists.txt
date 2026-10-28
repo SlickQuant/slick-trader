@@ -41,6 +41,7 @@ add_executable(slick-trader-tests
     test_instrument_status.cpp
     test_position_store.cpp
     test_spread_fills.cpp
+    test_web_server_shutdown.cpp
 )
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)

@@ -14,6 +14,7 @@
 #include <sstream>
 #include <filesystem>
 #include <set>
+#include <vector>
 
 namespace slick::trader {
 
@@ -67,6 +68,12 @@ void WebServer::start() {
         return;
     }
 
+    // A worker whose listen failed cleared running_ itself and left its thread unjoined.
+    // Assigning a new thread over a joinable one calls std::terminate.
+    if (worker_thread_.joinable()) {
+        worker_thread_.join();
+    }
+
     LOG_INFO("WebServer: Starting on port {}", config_.port);
     running_.store(true, std::memory_order_release);
     worker_thread_ = std::thread(&WebServer::run, this);
@@ -82,23 +89,39 @@ void WebServer::start() {
 }
 
 void WebServer::stop() {
-    if (!running_.load(std::memory_order_acquire)) {
-        return;
-    }
+    // The worker clears running_ itself when the listen fails, so a false running_ doesn't
+    // mean there is no thread left. It still has to be joined, because ~std::thread calls
+    // std::terminate on a joinable thread.
+    const bool was_running = running_.exchange(false);
 
-    LOG_INFO("WebServer: Stopping");
-    running_.store(false, std::memory_order_release);
+    if (was_running) {
+        LOG_INFO("WebServer: Stopping");
 
-    // Close listen socket to unblock uWS loop
-    if (listen_socket_) {
-        us_listen_socket_close(0, listen_socket_);
+        // The loop runs while anything is open on it, so closing the listen socket isn't
+        // enough: an open dashboard WebSocket would keep app.run(), and the join below,
+        // waiting until the tab closed. Close everything on the loop thread, the only one
+        // uWS may be used from.
+        //
+        // The lock is held across defer(). The loop is freed when the worker thread exits,
+        // and the worker takes this lock to retire loop_ before it can get there, so the
+        // loop can't go away under defer(). Whichever side takes the lock second sees the
+        // other's write: either stop() finds the loop, or the worker's running_ check after
+        // it publishes the loop sees the false written above.
+        {
+            std::lock_guard lock(loop_mutex_);
+            if (loop_) {
+                loop_->defer([this]() { close_connections(); });
+            }
+        }
     }
 
     if (worker_thread_.joinable()) {
         worker_thread_.join();
     }
 
-    LOG_INFO("WebServer: Stopped");
+    if (was_running) {
+        LOG_INFO("WebServer: Stopped");
+    }
 }
 
 void WebServer::run() {
@@ -106,11 +129,15 @@ void WebServer::run() {
 
     try {
         uWS::App app;
+        // Clears app_ however this scope is left, and before app is destroyed.
+        struct AppRetire {
+            uWS::App*& slot_;
+            ~AppRetire() { slot_ = nullptr; }
+        } retire_app{app_};
         setup_routes(app);
 
         app.listen(config_.port, [this](auto* socket) {
             if (socket) {
-                listen_socket_ = socket;
                 LOG_INFO("WebServer: Listening on port {}", config_.port);
 
                 // Start polling market data and order events after listen succeeds
@@ -123,6 +150,17 @@ void WebServer::run() {
             }
         });
 
+        // stop() can reach the loop from here on. If it ran earlier it found no loop to
+        // defer to and only cleared running_, so act on that here.
+        app_ = &app;
+        {
+            std::lock_guard lock(loop_mutex_);
+            loop_ = uWS::Loop::get();
+        }
+        if (!running_.load()) {
+            close_connections();
+        }
+
         // Run event loop (blocking)
         app.run();
 
@@ -130,7 +168,30 @@ void WebServer::run() {
         LOG_ERROR("WebServer: Exception in worker thread: {}", e.what());
     }
 
+    // Wait out a stop() that is inside defer() on this loop. The loop is freed when this
+    // thread exits, just after this, so no one may use the pointer past this point.
+    {
+        std::lock_guard lock(loop_mutex_);
+        loop_ = nullptr;
+    }
     LOG_INFO("WebServer: Worker thread stopped");
+}
+
+void WebServer::close_connections() {
+    // end() sends the close frame and runs the close handler, which removes the socket from
+    // all_ws_clients_, so iterate over a copy.
+    const std::vector<uWS::WebSocket<false, true, void*>*> clients(all_ws_clients_.begin(),
+                                                                   all_ws_clients_.end());
+    for (auto* ws : clients) {
+        ws->end(1001, "server shutting down");
+    }
+
+    // Close whatever is left: the listen socket, idle keep-alive HTTP connections, and
+    // clients that ignore the close frame. Each would hold the loop, and the join in stop(),
+    // until its own timeout.
+    if (app_) {
+        app_->close();
+    }
 }
 
 void WebServer::setup_routes(uWS::App &app) {
