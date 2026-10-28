@@ -268,17 +268,30 @@ protected:
 class WebServerListenFailureTest : public WebServerTest {
 protected:
     void SetUp() override {
-        blocker_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        ASSERT_GE(blocker_, 0);
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        addr.sin_port = 0;
+        // Hold the port the way uSockets asks for it: [::] with IPV6_V6ONLY off, or 0.0.0.0
+        // without IPv6. An IPv4 blocker isn't enough. Linux refuses the server's dual-stack
+        // bind next to it, but macOS lets it through and the listen succeeds.
+        sockaddr_in6 addr{};
         socklen_t len = sizeof(addr);
-        ASSERT_EQ(::bind(blocker_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
+        blocker_ = ::socket(AF_INET6, SOCK_STREAM, 0);
+        if (blocker_ >= 0) {
+            const int off = 0;
+            ASSERT_EQ(::setsockopt(blocker_, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off)), 0);
+            addr.sin6_family = AF_INET6;
+            addr.sin6_addr = in6addr_any;
+        } else {
+            blocker_ = ::socket(AF_INET, SOCK_STREAM, 0);
+            ASSERT_GE(blocker_, 0);
+            auto& in4 = reinterpret_cast<sockaddr_in&>(addr);
+            in4.sin_family = AF_INET;
+            in4.sin_addr.s_addr = htonl(INADDR_ANY);
+            len = sizeof(sockaddr_in);
+        }
+        ASSERT_EQ(::bind(blocker_, reinterpret_cast<sockaddr*>(&addr), len), 0);
         ASSERT_EQ(::listen(blocker_, 1), 0);
         ASSERT_EQ(::getsockname(blocker_, reinterpret_cast<sockaddr*>(&addr), &len), 0);
-        port_ = ntohs(addr.sin_port);
+        // sin_port and sin6_port sit at the same offset.
+        port_ = ntohs(addr.sin6_port);
         ASSERT_TRUE(server_.initialize(nlohmann::json{{"web_server_port", port_}}));
     }
 
