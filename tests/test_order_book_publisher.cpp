@@ -296,12 +296,14 @@ TEST(MdEventWriterTest, ABookLargerThanOneRecordIsChunkedAndAnEmptySnapshotStill
     while (auto record = mux.read(cursor)) {
         const auto* event = reinterpret_cast<const Event*>(record.data);
         EXPECT_EQ(event->broker_id, BrokerId::ICE);
+        // Events are packed: a field is copied out, never bound to a reference
+        // (emplace_back's), which would point at a misaligned address.
         if (event->type == EventType::LEVEL2_UPDATE) {
             const auto* l2 = reinterpret_cast<const Level2UpdateEvent*>(event);
-            level_records.emplace_back(l2->num_levels, l2->is_snapshot);
+            level_records.emplace_back(uint16_t{l2->num_levels}, l2->is_snapshot);
         } else if (event->type == EventType::MBO_UPDATE) {
             const auto* mbo = reinterpret_cast<const MboUpdateEvent*>(event);
-            order_records.emplace_back(mbo->num_orders, mbo->is_snapshot && mbo->is_last);
+            order_records.emplace_back(uint16_t{mbo->num_orders}, mbo->is_snapshot && mbo->is_last);
         }
     }
     ASSERT_EQ(level_records.size(), 2u);

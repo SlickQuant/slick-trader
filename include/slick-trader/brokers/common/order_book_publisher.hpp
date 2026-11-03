@@ -315,8 +315,11 @@ private:
     }
 
     static PriceLevel to_level(const Instrument& instrument, const LevelBook::LevelChange& change, bool& ok) {
+        // PriceLevel is packed: to_price() gets a local, not a reference to its field.
+        price_t price = 0;
+        ok = instrument.scale.to_price(change.price, price);
         PriceLevel level;
-        ok = instrument.scale.to_price(change.price, level.price);
+        level.price = price;
         level.quantity = lots_to_qty(change.qty > 0 ? change.qty : 0);
         level.num_orders = change.qty > 0 ? change.orders : 0;
         level.side = change.side;

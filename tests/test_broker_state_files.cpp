@@ -75,7 +75,8 @@ TEST_F(BrokerStateFilesTest, JournalNumbersFillsKeepsThemAndRefusesAReportTwice)
         for (uint32_t seq = 1; seq <= 3; ++seq) {
             auto e = fill(std::to_string(seq).c_str());
             ASSERT_TRUE(journal.record(e, {1, 100, seq, 0}));
-            EXPECT_EQ(e.journal_seq, CREATED + seq - 1);
+            // A copy: EXPECT_EQ takes a reference, and the packed event's field is misaligned.
+            EXPECT_EQ(uint64_t{e.journal_seq}, CREATED + seq - 1);
         }
         auto again = fill("3");
         EXPECT_FALSE(journal.record(again, {1, 100, 3, 0})) << "the report handed over again";
