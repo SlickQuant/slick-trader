@@ -161,14 +161,17 @@ public:
     explicit GatedLine(std::unique_ptr<Receiver> receiver) : receiver_(std::move(receiver)) {}
 
     // While `wanted`, applies up to `max` packets with `apply(const uint8_t*, size_t)`;
-    // returns how many.
+    // returns how many. What piled up while it was not wanted is thrown away first and
+    // counted in discarded().
     template <typename Apply>
     uint32_t read(bool wanted, std::span<uint8_t> buffer, uint32_t max, Apply&& apply) {
+        discarded_ = 0;
         if (!receiver_) {
             return 0;
         }
         if (wanted && !reading_) {
             while (receiver_->receive(buffer) > 0) {
+                ++discarded_;
             }
         }
         reading_ = wanted;
@@ -191,9 +194,12 @@ public:
         reading_ = false;
     }
     [[nodiscard]] Receiver* receiver() noexcept { return receiver_.get(); }
+    // Packets the last read() threw away: they show the group is live, though unused.
+    [[nodiscard]] uint32_t discarded() const noexcept { return discarded_; }
 
 private:
     std::unique_ptr<Receiver> receiver_;
+    uint32_t discarded_ = 0;
     bool reading_ = false;
 };
 

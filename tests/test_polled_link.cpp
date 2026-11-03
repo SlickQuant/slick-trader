@@ -166,10 +166,13 @@ TEST(PolledLinkTest, AGatedLineThrowsAwayWhatPiledUpWhileItWasNotWanted) {
 
     r.packets = {1, 2};
     EXPECT_EQ(line.read(false, buffer, 10, apply), 0u);
+    EXPECT_EQ(line.discarded(), 0u) << "not wanted: left waiting";
     r.packets.push_back(3);
     EXPECT_EQ(line.read(true, buffer, 10, apply), 0u) << "stale: 1, 2 and 3 waited unread";
+    EXPECT_EQ(line.discarded(), 3u);
     r.packets = {4, 5, 6};
     EXPECT_EQ(line.read(true, buffer, 2, apply), 2u) << "at most max a pass";
+    EXPECT_EQ(line.discarded(), 0u) << "only the pass that starts reading throws away";
     EXPECT_EQ(applied, (std::vector<uint8_t>{4, 5}));
 }
 
