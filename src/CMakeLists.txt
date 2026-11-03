@@ -2,6 +2,9 @@
 
 # Core library (includes web server)
 add_library(slick-trader-core STATIC
+    brokers/common/fill_journal.cpp
+    brokers/common/order_entry.cpp
+    brokers/common/slot_store.cpp
     core/broker_registry.cpp
     core/broker_status.cpp
     core/trading_engine.cpp

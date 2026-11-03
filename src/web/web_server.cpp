@@ -716,7 +716,7 @@ void WebServer::handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpReques
         // Validate broker_id
         BrokerId broker_id = static_cast<BrokerId>(broker_id_raw);
         if (broker_id == BrokerId::UNKNOWN || broker_id >= BrokerId::_BROKER_ID_COUNT_) {
-            send_error_response(res, "Invalid broker_id: must be 1 (Coinbase), 2 (Alpaca), 3 (Hyperliquid), 4 (Simulated) or 5 (CME)", 400);
+            send_error_response(res, "Invalid broker_id: must be 1 (Coinbase), 2 (Alpaca), 3 (Hyperliquid), 4 (Simulated), 5 (CME) or 6 (ICE)", 400);
             return;
         }
 

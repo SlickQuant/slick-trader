@@ -42,6 +42,13 @@ add_executable(slick-trader-tests
     test_position_store.cpp
     test_spread_fills.cpp
     test_web_server_shutdown.cpp
+    # Building blocks under brokers/common, shared by out-of-tree brokers.
+    test_broker_state_files.cpp
+    test_level_book.cpp
+    test_order_book_publisher.cpp
+    test_order_entry.cpp
+    test_polled_link.cpp
+    test_price_scale.cpp
 )
 
 if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)

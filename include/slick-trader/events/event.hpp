@@ -19,6 +19,7 @@ enum class BrokerId : uint8_t {
     HYPERLIQUID,
     SIMULATED,
     CME,
+    ICE,
     _BROKER_ID_COUNT_,
 };
 
@@ -85,6 +86,8 @@ inline const char* to_string(BrokerId bid) {
             return "SIMULATED";
         case BrokerId::CME:
             return "CME";
+        case BrokerId::ICE:
+            return "ICE";
         default:
             return "UNKNOWN";
     }
@@ -96,6 +99,7 @@ inline BrokerId to_broker_id(const std::string& broker) {
     else if (broker == "HYPERLIQUID")   return BrokerId::HYPERLIQUID;
     else if (broker == "SIMULATED")     return BrokerId::SIMULATED;
     else if (broker == "CME")           return BrokerId::CME;
+    else if (broker == "ICE")           return BrokerId::ICE;
     else                                return BrokerId::UNKNOWN;
 }
 

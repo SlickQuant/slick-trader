@@ -199,11 +199,13 @@ TEST(FuturesAccountingTest, OrderValueOfNegativePriceIsItsMagnitude) {
 // ── Enums the web API and configs depend on ──────────────────────────────────
 
 TEST(FuturesAccountingTest, BrokerIdNamesRoundTrip) {
-    for (auto id : {BrokerId::COINBASE, BrokerId::ALPACA, BrokerId::HYPERLIQUID, BrokerId::SIMULATED, BrokerId::CME}) {
+    for (auto id : {BrokerId::COINBASE, BrokerId::ALPACA, BrokerId::HYPERLIQUID, BrokerId::SIMULATED, BrokerId::CME,
+                    BrokerId::ICE}) {
         EXPECT_EQ(to_broker_id(to_string(id)), id) << to_string(id);
     }
     EXPECT_STREQ(to_string(BrokerId::HYPERLIQUID), "HYPERLIQUID");
     EXPECT_STREQ(to_string(BrokerId::CME), "CME");
+    EXPECT_STREQ(to_string(BrokerId::ICE), "ICE");
 }
 
 TEST(FuturesAccountingTest, EnumValuesOnTheWireAreStable) {
@@ -212,6 +214,7 @@ TEST(FuturesAccountingTest, EnumValuesOnTheWireAreStable) {
     EXPECT_EQ(static_cast<int>(BrokerId::HYPERLIQUID), 3);
     EXPECT_EQ(static_cast<int>(BrokerId::SIMULATED), 4);
     EXPECT_EQ(static_cast<int>(BrokerId::CME), 5);
+    EXPECT_EQ(static_cast<int>(BrokerId::ICE), 6);
     EXPECT_EQ(static_cast<int>(TimeInForce::GTC), 0);
     EXPECT_EQ(static_cast<int>(TimeInForce::IOC), 1);
     EXPECT_EQ(static_cast<int>(TimeInForce::FOK), 2);

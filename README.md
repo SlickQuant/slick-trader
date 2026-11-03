@@ -202,6 +202,14 @@ directory registered and the version its own `project()` declares, if any. A dir
 registers no broker gets a warning. A `brokers[]` config entry whose `name` has no adapter in the
 binary is a fatal startup error that lists the brokers the binary does carry.
 
+`include/slick-trader/brokers/common/` holds the exchange-neutral parts of an exchange broker.
+On the market data side there is exact price scaling, a level book, an order-by-order publisher
+(subscriptions, per-event levels and orders, snapshots) and a top of book shared with the order
+worker for post-only checks. The order side gets a fill journal and a memory-mapped session store
+for restarts, event writers, polled socket links and the kill switch loop. In CMake,
+`slick_trader_find_codec()` and `slick_trader_require_slick_socket()` find a broker's codec library
+and slick-socket.
+
 See [strategies/README.md](strategies/README.md) for how to write and build your own strategy
 plugin.
 

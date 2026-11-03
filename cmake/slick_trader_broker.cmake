@@ -68,3 +68,82 @@ function(slick_trader_link_brokers target)
         target_link_libraries(${target} PRIVATE slick_trader_broker_${broker})
     endforeach()
 endfunction()
+
+# Finds a broker's codec library: an installed package first, then a source tree next to
+# the broker's own (overridable through the cache variable DIR_VAR), then its repository.
+# Brokers kept out of tree share their wire layouts with a simulator this way.
+#
+#   slick_trader_find_codec(cme-cpp TARGET cme-cpp::cme-cpp VERSION 0.1
+#       DIR_VAR SLICK_TRADER_CME_CPP_DIR GIT_REPOSITORY git@github.com:SlickQuant/cme-cpp.git)
+function(slick_trader_find_codec package)
+    cmake_parse_arguments(SFC "" "TARGET;VERSION;DIR_VAR;GIT_REPOSITORY;GIT_TAG" "" ${ARGN})
+    if(TARGET ${SFC_TARGET})
+        return()
+    endif()
+    find_package(${package} ${SFC_VERSION} CONFIG QUIET GLOBAL)
+    if(TARGET ${SFC_TARGET})
+        message(STATUS "${package} ${${package}_VERSION}: ${${package}_DIR}")
+        return()
+    endif()
+    set(${SFC_DIR_VAR} "${CMAKE_CURRENT_SOURCE_DIR}/../${package}" CACHE PATH
+        "${package} source tree, used when no installed ${package} package is found")
+    if(EXISTS "${${SFC_DIR_VAR}}/CMakeLists.txt")
+        message(STATUS "${package}: source tree ${${SFC_DIR_VAR}}")
+        add_subdirectory("${${SFC_DIR_VAR}}" "${CMAKE_BINARY_DIR}/${package}")
+    else()
+        if(NOT SFC_GIT_TAG)
+            set(SFC_GIT_TAG main)
+        endif()
+        message(STATUS "${package}: fetching ${SFC_GIT_REPOSITORY} (${SFC_GIT_TAG})")
+        include(FetchContent)
+        FetchContent_Declare(${package} GIT_REPOSITORY ${SFC_GIT_REPOSITORY} GIT_TAG ${SFC_GIT_TAG})
+        FetchContent_MakeAvailable(${package})
+    endif()
+    if(NOT TARGET ${SFC_TARGET})
+        message(FATAL_ERROR "${package} provides no ${SFC_TARGET}")
+    endif()
+endfunction()
+
+# slick-socket at `min_version` or later, for its caller-driven ("polled") sockets: an
+# installed package first, then a source tree next to the calling broker's
+# (SLICK_TRADER_SLICK_SOCKET_DIR), then its repository. GLOBAL: a broker's object library
+# is linked from slick-trader's src/ and tests/ directories, which must see the target too.
+function(slick_trader_require_slick_socket min_version)
+    if(TARGET slick::socket)
+        return()
+    endif()
+    find_package(slick-socket ${min_version} CONFIG QUIET GLOBAL)
+    if(TARGET slick::socket)
+        message(STATUS "slick-socket ${slick-socket_VERSION}: ${slick-socket_DIR}")
+        return()
+    endif()
+    set(SLICK_TRADER_SLICK_SOCKET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../slick-socket" CACHE PATH
+        "slick-socket source tree, used when no installed slick-socket ${min_version} or later is found")
+    set(dir "${SLICK_TRADER_SLICK_SOCKET_DIR}")
+    if(NOT EXISTS "${dir}/include/slick/socket/polled_tcp_client.h")
+        include(FetchContent)
+        set(SLICK_TRADER_SLICK_SOCKET_GIT_REPOSITORY "https://github.com/SlickQuant/slick-socket.git" CACHE STRING
+            "slick-socket repository, used when neither a package nor a source tree is found")
+        # Fetched only: SOURCE_SUBDIR names nothing, so it is not added here but below.
+        FetchContent_Declare(slick_socket_source
+            GIT_REPOSITORY ${SLICK_TRADER_SLICK_SOCKET_GIT_REPOSITORY}
+            GIT_TAG main
+            SOURCE_SUBDIR not-a-directory
+        )
+        FetchContent_MakeAvailable(slick_socket_source)
+        set(dir "${slick_socket_source_SOURCE_DIR}")
+    endif()
+    message(STATUS "slick-socket: source tree ${dir}")
+    if(WIN32 AND NOT TARGET wepoll::wepoll)
+        # Left to itself slick-socket finds wepoll as an imported target of its own
+        # directory. Found here first and made global, it is one slick-trader's src/ and
+        # tests/ can link too.
+        include("${dir}/cmake/FindWepoll.cmake")
+        if(TARGET wepoll::wepoll)
+            set_target_properties(wepoll::wepoll PROPERTIES IMPORTED_GLOBAL TRUE)
+        endif()
+    endif()
+    set(BUILD_SLICK_SOCKET_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(BUILD_SLICK_SOCKET_TESTING OFF CACHE BOOL "" FORCE)
+    add_subdirectory("${dir}" "${CMAKE_BINARY_DIR}/slick-socket")
+endfunction()

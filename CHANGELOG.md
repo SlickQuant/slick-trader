@@ -1,3 +1,19 @@
+# v0.2.0 - 11-02-2026
+
+## Added
+
+- **Broker building blocks** under `brokers/common`, for brokers kept out of tree: exact price
+  scaling, a level book, a top of book shared with the order worker, post-only policy, rate limit
+  and fees, a fill journal and a memory-mapped session store, an order-by-order book publisher,
+  market data and order event writers, polled socket links and the kill switch loop. CMake gains
+  `slick_trader_find_codec()` and `slick_trader_require_slick_socket()`.
+- `BrokerId::ICE` (6).
+
+## Fixed
+
+- A connector routed a modify or cancel to whichever of its sessions knew the client order id,
+  whatever broker the request was for. `dispatch_order_request()` checks the broker first.
+
 # v0.1.0 - 10-17-2026
 
 First release.
