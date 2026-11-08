@@ -24,6 +24,11 @@ class PositionTracker;
 class PnLCalculator;
 class RiskManager;
 
+// What a strategy plugin is built against: this interface, StrategyBase and BrokerStatus, whose
+// layouts the plugin and the host share. Raise it on any change to them; StrategyLoader loads no
+// plugin built against another.
+inline constexpr uint32_t STRATEGY_API_VERSION = 2;
+
 // Strategy interface
 // All strategies must implement this interface
 // Strategies receive market data and order events, and can submit orders
@@ -45,7 +50,6 @@ public:
         PositionTracker& position_tracker,
         PnLCalculator& pnl_calculator,
         RiskManager& risk_manager,
-        slick::queue<uint8_t>& md_request_queue,
         slick::queue<uint8_t>& order_request_queue
     ) = 0;
 
@@ -56,7 +60,9 @@ public:
     // Market data event handlers
     virtual void on_trade(const TradeEvent& event) = 0;
     virtual void on_quote(const QuoteEvent& event) = 0;
-    virtual void on_order_book(const slick::orderbook::OrderBookL2& book) = 0;
+    // The level 2 book of `instrument` after an update. Every strategy is handed the books any
+    // strategy subscribed, not only its own: check the name.
+    virtual void on_order_book(std::string_view instrument, const slick::orderbook::OrderBookL2& book) = 0;
 
     // Order event handlers
     virtual void on_order_ack(const OrderAckEvent& event) = 0;

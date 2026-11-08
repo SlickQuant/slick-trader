@@ -3,6 +3,7 @@
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/risk_manager.hpp>
+#include <slick-trader/core/md_request_queues.hpp>
 #include <slick-trader/core/strategy_manager.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
 #include <slick-trader/brokers/ibroker.hpp>
@@ -55,7 +56,7 @@ private:
     // Message queues
     std::unique_ptr<slick::stream_buffer_multiplexer> event_mux_;
     std::unique_ptr<slick::queue<uint8_t>> control_queue_;
-    std::unique_ptr<slick::queue<uint8_t>> md_request_queue_;
+    std::unique_ptr<MdRequestQueues> md_request_queues_;
     std::unique_ptr<slick::queue<uint8_t>> order_request_queue_;
 
     std::vector<std::shared_ptr<IBroker>> brokers_;

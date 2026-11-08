@@ -19,7 +19,7 @@ struct StrategyConfig {
 
     // Custom parameters (strategy-specific)
     // Strategies can access these via get_parameter()
-    nlohmann::json parameters;
+    nlohmann::json parameters = nlohmann::json::object();
 
     // Parse from JSON
     static StrategyConfig from_json(const nlohmann::json& j);
@@ -83,8 +83,8 @@ inline StrategyConfig StrategyConfig::from_json(const nlohmann::json& j) {
         }
     }
 
-    // Store custom parameters
-    if (j.contains("parameters")) {
+    // Store custom parameters: an object, empty when the file has none
+    if (j.contains("parameters") && j["parameters"].is_object()) {
         config.parameters = j["parameters"];
     }
 

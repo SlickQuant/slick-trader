@@ -1,3 +1,65 @@
+# v0.3.0 - 11-08-2026
+
+## Changed
+
+- `ManualStrategy` adopts the instruments its config lists as brokers define them and subscribes
+  their level 2 books, so the ladder works with no plugin loaded. The list is the `instruments`
+  parameter of a `<name>.config.json` that names `MANUAL`: symbols, or prefixes ending in `*`
+  (`"*"` for all). A list sent at runtime replaces it. The strategy manager keeps no book of these,
+  so strategies get no book or quote for them, and a position in one is marked at its fills.
+- `IStrategy::on_order_book()` takes the book's instrument. Every strategy is still handed the books
+  any strategy subscribed, so a plugin should check the name. `IStrategy::initialize()` drops
+  `md_request_queue`. `StrategyBase::submit_order()` takes an optional `refusal` string that gets
+  the reason when it refuses an order.
+- Plugins name the `STRATEGY_API_VERSION` they were built against (`SLICK_TRADER_EXPORT_STRATEGY`).
+  The loader refuses any other version, including every plugin built before this change, so
+  rebuild them.
+- The strategy manager keeps no L2 book of an instrument no strategy subscribed. Past 65,536 book
+  ids it refuses one rather than let two share a book.
+- Each broker has its own market data request queue (`MdRequestQueues`), in shared memory
+  `<md_request_queue_shm_name>_<BROKER>` if named, and its factory gets that one. A configured
+  broker whose name matches no `BrokerId` fails startup.
+- A market data connector reports how far it read its queue with
+  `BrokerStatusRegistry::set_md_request_cursor()`, as `process_md_request()` does for it. Its
+  requests wait until it does. `process_md_request()` now logs a request it cannot read before
+  dropping it.
+- The ladder's instruments, each with its broker, come over the WebSocket: all of them as
+  `instruments` on connect, then MANUAL's new ones as `instruments_added`, at most every 250 ms.
+  `/api/strategies` lists no instruments and gives MANUAL's type as `builtin`.
+- The web server reads the event bus for up to 1 ms a pass, not 100 events, and writes level 2
+  messages with no JSON tree.
+- Building needs slick-logger 2.4.0 and hyperliquid-cpp 0.4.2 or later.
+
+## Fixed
+
+- The Submit Order dialog listed Coinbase, Alpaca and Simulated whatever was built, and "Simulated"
+  sent to Hyperliquid. It now lists the brokers the engine registered. A ladder click sent every
+  order to Coinbase. It now goes to the instrument's broker, or to the `default_broker_id` of its
+  `per_instrument` entry. A `default_broker_id` at the top of `ladder_config` is ignored.
+- API errors went out as 200 OK, and no status line had a reason phrase. An order for a broker the
+  engine lacks, or one taking no orders now, is refused with the reason, and an order that risk
+  limits turn down gets a 422.
+- Browsers kept the dashboard's scripts for an hour, so a reload after a restart could run old ones.
+- An API request body that arrived in more than one piece was parsed from its last piece alone, so
+  a long one, such as a MANUAL list, was refused as invalid JSON or applied cut short.
+- A plugin whose config file had no `parameters` was never initialized, and its first order
+  crashed the engine.
+- A dashboard that subscribed after a book's snapshot got only later changes. The web server keeps
+  every streamed book and sends it whole on subscribe, empty while its broker's market data is
+  down. A client watches at most 1,024 books.
+- A dashboard too far behind lost the messages uWS dropped. uWS now buffers up to 16 MB per client.
+  Past that the server closes the connection, and the dashboard reconnects to a fresh list and book.
+- A subscription request bigger than the market data request queue threw, and a burst bigger than
+  the queue overwrote requests their connector had not read. Requests are now split and held until
+  their connector has room. A connector that reads nothing holds up only its own requests. It is
+  logged after `md_request_stall_timeout_ms` (5000), and only `stop()` gives up on it.
+- The dashboard built a hidden ladder for every instrument and streamed every book. It now builds
+  only the selected instrument's ladder and streams that one book.
+- A reconnected dashboard kept ladders for instruments the server no longer lists.
+- The strategy manager's worker never yielded its core once it had handled an event.
+- In `NLEVEL_WMID` mode, the market maker took its fair value from whichever book ticked last, for
+  any instrument. It now uses only its own instrument's book.
+
 # v0.2.0 - 11-02-2026
 
 ## Added

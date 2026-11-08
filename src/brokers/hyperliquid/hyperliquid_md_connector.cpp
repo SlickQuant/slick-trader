@@ -1,4 +1,5 @@
 #include <slick-trader/brokers/hyperliquid/hyperliquid_md_connector.hpp>
+#include <slick-trader/brokers/common/md_event_writer.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/trade_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
@@ -217,34 +218,23 @@ void HyperliquidMDConnector::run() {
 }
 
 void HyperliquidMDConnector::process_md_requests() {
-    auto [data, size] = request_queue_.read(request_cursor_);
-
-    if (!data) {
+    // Unlike Coinbase's, start() runs this loop when disabled too, so the handlers check.
+    const bool read = process_md_request(
+        request_queue_, request_cursor_, BrokerId::HYPERLIQUID,
+        [this](const MDSubscription& request) {
+            if (enabled_) {
+                subscribe(request);
+            } else {
+                LOG_WARN("Hyperliquid MD skip subscription, not enabled");
+            }
+        },
+        [this](const MDSubscription& request) {
+            if (enabled_) {
+                unsubscribe(request);
+            }
+        });
+    if (!read) {
         std::this_thread::yield();
-        return;
-    }
-
-    const auto *event = reinterpret_cast<const Event*>(data);
-    switch (event->type) {
-        case EventType::SUBSCRIBE: {
-            auto *sub = reinterpret_cast<const MDSubscription*>(event);
-            if (sub->broker_id == BrokerId::HYPERLIQUID && enabled_) {
-                subscribe(*sub);
-            } else if (sub->broker_id == BrokerId::HYPERLIQUID) {
-                LOG_WARN("Coinbase MD skip subscription, not enabled");
-            }
-            break;
-        }
-        case EventType::UNSUBSCRIBE: {
-            auto *sub = reinterpret_cast<const MDSubscription*>(event);
-            if (sub->broker_id == BrokerId::HYPERLIQUID && enabled_) {
-                unsubscribe(*sub);
-            }
-            break;
-        }
-        default:
-            LOG_ERROR("HYPERLIQUID MD: Unknown event type: {}", static_cast<int>(event->type));
-            break;
     }
 }
 

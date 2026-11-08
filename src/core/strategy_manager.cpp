@@ -2,10 +2,15 @@
 #include <slick-trader/core/strategy_manager.hpp>
 #include <slick-trader/core/strategy_config.hpp>
 #include <slick-trader/strategy/manual_strategy.hpp>
+#include <slick-trader/brokers/common/md_event_writer.hpp>
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <new>
+#include <ranges>
 
 using namespace slick;
 using namespace slick::trader;
@@ -16,14 +21,15 @@ StrategyManager::StrategyManager(
     PnLCalculator& pnl_calculator,
     RiskManager& risk_manager,
     slick::stream_buffer_multiplexer& event_mux,
-    slick::queue<uint8_t>& md_request_queue,
+    MdRequestQueues& md_request_queues,
     slick::queue<uint8_t>& order_request_queue
 )
-    : position_tracker_(position_tracker)
+    : reader_stall_timeout_(config.value("md_request_stall_timeout_ms", 5000))
+    , position_tracker_(position_tracker)
     , pnl_calculator_(pnl_calculator)
     , risk_manager_(risk_manager)
     , event_mux_(event_mux)
-    , md_request_queue_(md_request_queue)
+    , md_request_queues_(md_request_queues)
     , order_request_queue_(order_request_queue)
     , tob_producer_buffer_(
         event_mux.add_producer(
@@ -32,7 +38,15 @@ StrategyManager::StrategyManager(
             config.value("TOB_control_size", 65536),
             config.contains("TOB_shm_name") ? config["TOB_shm_name"].get_ref<const std::string&>().c_str() : nullptr
         ))
-{}
+{
+    // Each queue's write index. The connectors were made before this manager and nothing else
+    // publishes requests, so it is where each starts reading.
+    for (size_t i = 0; i < BROKER_COUNT; ++i) {
+        if (const auto* queue = md_request_queues_.find(static_cast<BrokerId>(i))) {
+            request_baseline_[i] = queue->initial_reading_index();
+        }
+    }
+}
 
 // ========================================================================
 // Strategy Loading (Dynamic Discovery)
@@ -138,36 +152,12 @@ void StrategyManager::load_strategies(const json& config) {
                     continue;
                 }
 
-                // Pass custom parameters to strategy if available
-                if (has_config) {
-                    const auto& params = iter->second.parameters;
-                    if (!params.empty()) {
-                        // Try to cast to StrategyBase to set config
-                        if (auto* base_strategy = dynamic_cast<StrategyBase*>(strategy.get())) {
-                            base_strategy->initialize(
-                                params,
-                                position_tracker_,
-                                pnl_calculator_,
-                                risk_manager_,
-                                md_request_queue_,
-                                order_request_queue_
-                            );
-                            LOG_INFO("  Passed {} custom parameter(s) to strategy {}", params.size(), strategy_name);
-                        }
-                    }
-                } else {
-                    if (auto* base_strategy = dynamic_cast<StrategyBase*>(strategy.get())) {
-                        base_strategy->initialize(
-                            {},
-                            position_tracker_,
-                            pnl_calculator_,
-                            risk_manager_,
-                            md_request_queue_,
-                            order_request_queue_
-                        );
-                        LOG_INFO("  Passed default parameters to strategy {}", strategy_name);
-                    }
-                }
+                // Initialized whatever its config holds: initialize() hands it the risk manager and
+                // order queue it trades through, and a config with no "parameters" left them null.
+                static const json no_parameters = json::object();
+                const json& params = has_config ? iter->second.parameters : no_parameters;
+                strategy->initialize(params, position_tracker_, pnl_calculator_, risk_manager_, order_request_queue_);
+                LOG_INFO("  Passed {} parameter(s) to strategy {}", params.size(), strategy_name);
 
                 add_strategy(strategy);
                 LOG_INFO("✓ Loaded strategy: {} from {}", strategy_name,
@@ -194,12 +184,15 @@ void StrategyManager::load_strategies(const json& config) {
         }
     }
 
-    // Always register ManualStrategy for orders placed through the Web UI
+    // Always register ManualStrategy for orders placed through the Web UI, configured by a
+    // <name>.config.json naming it if there is one: its "instruments" are what it ladders.
     {
         auto manual = std::make_shared<ManualStrategy>();
-        manual->initialize({}, position_tracker_, pnl_calculator_, risk_manager_,
-                           md_request_queue_, order_request_queue_);
-        risk_manager_.set_limits(ManualStrategy::ID, RiskLimits{});
+        const auto config = strategy_configs.find(ManualStrategy::ID);
+        const bool has_config = config != strategy_configs.end();
+        manual->initialize(has_config ? config->second.parameters : json::object(), position_tracker_,
+                           pnl_calculator_, risk_manager_, order_request_queue_);
+        risk_manager_.set_limits(ManualStrategy::ID, has_config ? config->second.risk_limits : RiskLimits{});
         add_strategy(manual);
         LOG_INFO("✓ Registered ManualStrategy for web UI orders");
     }
@@ -215,6 +208,9 @@ void StrategyManager::load_strategies(const json& config) {
 void StrategyManager::add_strategy(std::shared_ptr<IStrategy> strategy) {
     strategies_.push_back(strategy);
     strategy_map_[strategy->name()] = strategy;
+    if (auto manual = std::dynamic_pointer_cast<ManualStrategy>(strategy)) {
+        manual_ = std::move(manual);
+    }
 
     // Track which MD brokers this strategy depends on (for auto-pause on MD disconnect)
     for (const auto& sub : strategy->get_subscriptions()) {
@@ -257,14 +253,26 @@ void StrategyManager::start() {
 
     LOG_INFO("StrategyManager: Starting");
 
+    // Requests wait only on the connectors enabled in this module's BrokerStatusRegistry: say
+    // which, since one that enabled itself in another module's is not waited on.
+    std::string readers;
+    for (size_t i = 1; i < BROKER_COUNT; ++i) {
+        if (BrokerStatusRegistry::instance().is_md_enabled(static_cast<BrokerId>(i))) {
+            readers += readers.empty() ? "" : ", ";
+            readers += to_string(static_cast<BrokerId>(i));
+        }
+    }
+    LOG_INFO("StrategyManager: market data requests wait on the connectors of: {}", readers.empty() ? "none" : readers);
+
     // Start all strategies
     for (auto& strategy : strategies_) {
         strategy->start();
 
-        // subscribe MD update
+        // subscribe MD update. MANUAL's stream to the Web UI alone, with no book kept here.
+        const bool book = strategy.get() != manual_.get();
         auto subscriptions = strategy->get_subscriptions();
         for (const auto &subscription : subscriptions) {
-            subscribe(subscription);
+            subscribe(subscription, book);
         }
     }
 
@@ -283,6 +291,17 @@ void StrategyManager::stop() {
 
     running_.store(false, std::memory_order_release);
 
+    // Join the worker before unsubscribing: it subscribes at runtime (MANUAL adopting an
+    // instrument), so the subscription map is its state until it stops.
+    if (worker_thread_.joinable()) {
+        worker_thread_.join();
+    }
+    // Adopted but never subscribed: no broker holds them, so there is nothing to undo.
+    for (auto& instruments : adoptions_) {
+        instruments.clear();
+    }
+    adoptions_pending_ = false;
+
     // Stop all strategies
     for (auto& strategy : strategies_) {
         auto subscriptions = strategy->get_subscriptions();
@@ -292,37 +311,169 @@ void StrategyManager::stop() {
 
         strategy->stop();
     }
-
-    if (worker_thread_.joinable()) {
-        worker_thread_.join();
-    }
+    drain_requests();
 
     LOG_INFO("StrategyManager: Stopped");
 }
 
+// One instrument's slot in an MDSubscription.
+static constexpr size_t REQUEST_SLOT_SIZE = sizeof(MDSubscription::instruments[0]);
+
+size_t StrategyManager::max_instruments_per_request(const slick::queue<uint8_t>& queue) {
+    // A quarter of the queue: send_requests() asks for twice a request's size, and that has
+    // to fit with room left for the requests still unread. A queue too small for even one
+    // instrument that way gets requests of one, which go out once its connector has caught up.
+    const size_t budget = queue.size() / 4;
+    constexpr size_t header = sizeof(MDSubscription);
+    return budget > header + REQUEST_SLOT_SIZE ? (budget - header) / REQUEST_SLOT_SIZE : 1;
+}
+
 void StrategyManager::publish_subscription(EventType type, const SubscriptionRequest& sub,
                                            const std::vector<std::string>& instruments) {
-    const auto size = static_cast<uint32_t>(sizeof(MDSubscription) + instruments.size() * sizeof(char [32]));
-    EventSerializer::publish<MDSubscription>(md_request_queue_, size, [&](MDSubscription &event) {
-        event.type = type;
-        event.broker_id = sub.broker_id;
-        event.subscription_type = sub.type;
-        event.depth = sub.depth;
-        event.num_instruments = static_cast<uint32_t>(instruments.size());
-        size_t i = 0;
-        for (const auto& inst : instruments) {
-            // One slot per instrument. Copy the name and no more - the string is rarely as
-            // long as the slot - and zero the rest, which the queue does not do.
-            auto& slot = event.instruments[i++];
-            assert(inst.size() < sizeof(slot));
-            const size_t len = std::min(inst.size(), sizeof(slot) - 1);
-            std::memcpy(slot, inst.data(), len);
-            std::memset(slot + len, 0, sizeof(slot) - len);
+    auto* queue = md_request_queues_.find(sub.broker_id);
+    if (queue == nullptr) {
+        // Held all the same: no broker of this engine reads them.
+        if (type == EventType::SUBSCRIBE) {
+            LOG_WARN("StrategyManager: no {} broker was built, so {} instrument(s) are not subscribed there",
+                     to_string(sub.broker_id), instruments.size());
+        }
+        return;
+    }
+    const auto broker = static_cast<size_t>(sub.broker_id);
+    auto& outbox = request_outbox_[broker];
+    for_each_part(instruments.size(), max_instruments_per_request(*queue), [&](size_t offset, size_t n) {
+        const auto size = static_cast<uint32_t>(sizeof(MDSubscription) + n * REQUEST_SLOT_SIZE);
+        const auto write = [&](uint8_t* record) {
+            // Zeroed, so each name's slot is padded with zeros: the queue does not clear what
+            // it hands out.
+            std::memset(record, 0, size);
+            auto& event = *new (record) MDSubscription();
+            event.type = type;
+            event.broker_id = sub.broker_id;
+            event.subscription_type = sub.type;
+            event.depth = sub.depth;
+            event.num_instruments = static_cast<uint32_t>(n);
+            for (size_t i = 0; i < n; ++i) {
+                const auto& inst = instruments[offset + i];
+                auto& slot = event.instruments[i];
+                assert(inst.size() < sizeof(slot));
+                std::memcpy(slot, inst.data(), std::min(inst.size(), sizeof(slot) - 1));
+            }
+        };
+        if (outbox.empty() && has_room(broker, *queue, size)) {
+            const uint64_t index = queue->reserve(size);
+            write((*queue)[index]);
+            queue->publish(index, size);
+        } else {
+            // Out from run(), or from stop()'s drain. start(), the worker and stop() never
+            // run at once, so the outbox takes no lock.
+            write(outbox.emplace_back(size).data());
+            ++requests_queued_;
         }
     });
 }
 
-void StrategyManager::subscribe(const SubscriptionRequest& sub) {
+uint64_t StrategyManager::request_cursor(size_t i) const {
+    const uint64_t cursor = BrokerStatusRegistry::instance().md_request_cursor(static_cast<BrokerId>(i));
+    // None reported: it has read none of what this manager published.
+    return cursor == BrokerStatus::NO_MD_REQUEST_CURSOR ? request_baseline_[i] : cursor;
+}
+
+bool StrategyManager::has_room(size_t i, const slick::queue<uint8_t>& queue, uint32_t size) const {
+    // Enabled is taken for reading. A disabled connector that reads anyway, as Hyperliquid's
+    // does, drops its requests, so nothing is lost by not waiting on it.
+    if (!BrokerStatusRegistry::instance().is_md_enabled(static_cast<BrokerId>(i))) {
+        return true;
+    }
+    // Where the request ends at worst: a record that would cross the end of the ring is written
+    // from its start instead. Capped at the queue, which any request fits once the connector
+    // has caught up.
+    const uint64_t capacity = queue.size();
+    const uint64_t end = queue.initial_reading_index() + std::min<uint64_t>(2ull * size, capacity);
+    return end <= request_cursor(i) + capacity;
+}
+
+bool StrategyManager::send_requests(std::chrono::steady_clock::time_point now) {
+    last_request_send_ = now;
+    for (size_t i = 0; i < BROKER_COUNT; ++i) {
+        auto& outbox = request_outbox_[i];
+        if (outbox.empty()) {
+            continue;
+        }
+        const auto broker = static_cast<BrokerId>(i);
+        auto& queue = *md_request_queues_.find(broker);   // nothing is queued for a broker without one
+        while (!outbox.empty()) {
+            const auto& record = outbox.front();
+            const auto size = static_cast<uint32_t>(record.size());
+            if (!has_room(i, queue, size)) {
+                break;
+            }
+            const uint64_t index = queue.reserve(size);
+            std::memcpy(queue[index], record.data(), size);
+            queue.publish(index, size);
+            outbox.pop_front();
+            --requests_queued_;
+        }
+
+        const uint64_t cursor = request_cursor(i);
+        auto& wait = request_waits_[i];
+        if (outbox.empty() || wait.since == std::chrono::steady_clock::time_point{} || cursor != wait.cursor) {
+            if (wait.reported) {
+                LOG_INFO("StrategyManager: {} market data connector is reading requests again", to_string(broker));
+            }
+            wait = outbox.empty() ? RequestWait{} : RequestWait{cursor, now, false};
+        } else if (!wait.reported && now - wait.since >= reader_stall_timeout_) {
+            wait.reported = true;
+            LOG_WARN("StrategyManager: {} market data connector has read no request in {} ms, with {} of its "
+                     "own waiting for it",
+                     to_string(broker), reader_stall_timeout_.count(), outbox.size());
+        }
+    }
+    return requests_queued_ == 0;
+}
+
+void StrategyManager::drain_requests() {
+    // A connector still reading takes the rest. One that has read nothing in
+    // md_request_stall_timeout_ms is given up on, here alone: its broker is stopping too.
+    while (!send_requests(std::chrono::steady_clock::now())) {
+        const bool any_reading = std::ranges::any_of(std::views::iota(size_t{0}, BROKER_COUNT), [&](size_t i) {
+            return !request_outbox_[i].empty() && !request_waits_[i].reported;
+        });
+        if (!any_reading) {
+            for (size_t i = 0; i < BROKER_COUNT; ++i) {
+                auto& outbox = request_outbox_[i];
+                if (!outbox.empty()) {
+                    LOG_WARN("StrategyManager: {} market data request(s) to {} dropped at stop: its connector reads none",
+                             outbox.size(), to_string(static_cast<BrokerId>(i)));
+                    requests_queued_ -= outbox.size();
+                    outbox.clear();
+                    request_waits_[i] = {};   // or, started again, it would never be reported nor waited on
+                }
+            }
+            return;
+        }
+        std::this_thread::yield();
+    }
+}
+
+void StrategyManager::flush_adoptions(std::chrono::steady_clock::time_point now) {
+    if (!adoptions_pending_ || now - last_adoption_flush_ < ADOPTION_FLUSH_INTERVAL) {
+        return;
+    }
+    last_adoption_flush_ = now;
+    adoptions_pending_ = false;
+
+    for (size_t i = 0; i < BROKER_COUNT; ++i) {
+        if (adoptions_[i].empty()) {
+            continue;
+        }
+        SubscriptionRequest request(static_cast<BrokerId>(i), ManualStrategy::SUBSCRIPTION, {});
+        request.instruments.swap(adoptions_[i]);
+        subscribe(request, false);
+    }
+}
+
+void StrategyManager::subscribe(const SubscriptionRequest& sub, bool book) {
     // Only what nobody holds yet goes to the broker; the rest just gains a holder.
     std::vector<std::string> instruments;
     for (auto& inst : sub.instruments) {
@@ -330,17 +481,24 @@ void StrategyManager::subscribe(const SubscriptionRequest& sub) {
             instruments.push_back(inst);
         }
     }
-
     if (!instruments.empty()) {
         publish_subscription(EventType::SUBSCRIBE, sub, instruments);
+    }
+    if (!book) {
+        return;
+    }
 
-        if (sub.type == SubscriptionType::LEVEL2 || sub.type == SubscriptionType::ORDER_BOOK) {
-            subscribe_book_update(instruments);
-        } else if (sub.type == SubscriptionType::MBO) {
-            // Built now, not on the first event the worker dispatches.
-            for (const auto& inst : instruments) {
-                get_or_create_mbo_book(inst);
-            }
+    // Every instrument of the request, not only those new to the broker: MANUAL may hold one
+    // already, with no book kept. Books are made in start() alone, before the worker reads the
+    // bus, so each takes in its broker's snapshot, which no SUBSCRIBE before start() has had
+    // read yet. One made later, for one MANUAL streams, would be built from increments alone.
+    assert(!is_running());
+    if (sub.type == SubscriptionType::LEVEL2 || sub.type == SubscriptionType::ORDER_BOOK) {
+        subscribe_book_update(sub.instruments);
+    } else if (sub.type == SubscriptionType::MBO) {
+        // Built now, not on the first event the worker dispatches.
+        for (const auto& inst : sub.instruments) {
+            get_or_create_mbo_book(inst);
         }
     }
 }
@@ -366,23 +524,28 @@ void StrategyManager::run() {
 
     auto last_periodic_check = std::chrono::steady_clock::now();
     constexpr auto check_interval = std::chrono::seconds(1);
-    bool has_event = false;
 
     while (running_.load(std::memory_order_relaxed)) {
+        bool busy = false;
         if (auto record = event_mux_.read(event_cursor_)) {
             process_event(reinterpret_cast<const Event*>(record.data));
-            has_event = true;
+            busy = true;
         }
 
         auto now = std::chrono::steady_clock::now();
+        flush_adoptions(now);
+        // Retried at an interval, not on every event: a connector frees room a request at a time.
+        if (requests_queued_ != 0 && now - last_request_send_ >= REQUEST_RETRY_INTERVAL) {
+            send_requests(now);
+        }
         if (now - last_periodic_check >= check_interval) {
             check_loss_limits();
             check_broker_status();
             last_periodic_check = now;
-            has_event = true;
+            busy = true;
         }
 
-        if (!has_event) {
+        if (!busy) {
             std::this_thread::yield();
         }
     }
@@ -422,6 +585,16 @@ void StrategyManager::dispatch_strategy_config(const StrategyConfigEvent& event)
 
     base->set_config(params);
     LOG_INFO("StrategyManager: Applied config update to strategy {}", strategy_id);
+
+    // A list MANUAL is given now names instruments brokers defined already, and they may not
+    // define them again.
+    if (strategy == manual_) {
+        for (size_t i = 0; i < BROKER_COUNT; ++i) {
+            for (const auto& instrument : defined_[i]) {
+                adopt(static_cast<BrokerId>(i), instrument);
+            }
+        }
+    }
 }
 
 void StrategyManager::check_broker_status() {
@@ -552,7 +725,7 @@ void StrategyManager::check_loss_limits() {
 }
 
 // Every strategy is added by load_strategies() before brokers publish anything, so a
-// definition reaches all of them as it arrives - there is nothing to replay.
+// definition reaches all of them as it arrives. defined_ keeps it for a list MANUAL is given later.
 void StrategyManager::dispatch_instrument_definition(const InstrumentDefinitionEvent& event) {
     const std::string_view instrument(event.instrument);
     position_tracker_.set_contract_multiplier(instrument, event.contract_multiplier);
@@ -561,6 +734,23 @@ void StrategyManager::dispatch_instrument_definition(const InstrumentDefinitionE
              event.contract_multiplier, event.currency);
     for (auto& strategy : strategies_) {
         strategy->on_instrument_definition(event);
+    }
+
+    // A replay, as a venue loops its definitions, was adopted or not the first time it came: MANUAL
+    // takes a new list over defined_ itself. Only a first one goes to it.
+    const auto broker = static_cast<size_t>(event.broker_id);
+    if (broker < BROKER_COUNT && !defined_[broker].contains(instrument)) {
+        defined_[broker].emplace(instrument);
+        adopt(event.broker_id, instrument);
+    }
+}
+
+void StrategyManager::adopt(BrokerId broker, std::string_view instrument) {
+    // MANUAL takes on the instruments its config lists, so the Web UI can ladder and trade
+    // them. While running, flush_adoptions() subscribes it; before that, start() does.
+    if (manual_ && manual_->adopt(broker, instrument) && is_running()) {
+        adoptions_[static_cast<size_t>(broker)].emplace_back(instrument);
+        adoptions_pending_ = true;
     }
 }
 
@@ -599,13 +789,15 @@ void StrategyManager::dispatch_quote(const QuoteEvent& event) {
 }
 
 void StrategyManager::dispatch_level2_updates(const Level2UpdateEvent& event) {
-    const std::string instrument(event.instrument);
-    slick::orderbook::SymbolId sid = get_or_create_symbol_id(instrument);
-    slick::orderbook::OrderBookL2* book = book_manager_.getOrCreateOrderBook(sid);
+    // Only the books strategies subscribed. MANUAL's instruments stream to the Web UI alone.
+    slick::orderbook::OrderBookL2* book = find_l2_book(event.instrument);
+    if (book == nullptr) {
+        return;
+    }
 
     if (event.is_snapshot) {
         book->clear();
-        LOG_DEBUG("StrategyManager: dispatch snapshot {}", instrument);
+        LOG_DEBUG("StrategyManager: dispatch snapshot {}", event.instrument);
     }
 
     for (uint16_t i = 0, last = event.num_levels - 1; i < event.num_levels; ++i) {
@@ -665,7 +857,9 @@ StrategyManager::MboBook& StrategyManager::get_or_create_mbo_book(std::string_vi
     if (it == mbo_books_.end()) [[unlikely]] {
         std::string name(instrument);
         // Quotes come from this book unless an L2 book of the instrument already gives them.
-        auto entry = std::make_unique<MboBook>(get_or_create_symbol_id(name), name, !observed_books_.contains(name));
+        // Found by name, so its id only labels it: with every id taken, 0 shares no book.
+        auto entry = std::make_unique<MboBook>(get_or_create_symbol_id(name).value_or(0), name,
+                                               !l2_books_.contains(name));
         it = mbo_books_.emplace(std::move(name), std::move(entry)).first;
     }
     return *it->second;
@@ -717,16 +911,17 @@ void StrategyManager::dispatch_mbo_update(const MboUpdateEvent& event) {
     }
 }
 
-void StrategyManager::on_order_book_update(const slick::orderbook::OrderBookL2& book) {
+void StrategyManager::on_order_book_update(const std::string& instrument, const slick::orderbook::OrderBookL2& book) {
     for (auto& strategy : strategies_) {
-        strategy->on_order_book(book);
+        strategy->on_order_book(instrument, book);
     }
 }
 
 void StrategyManager::dispatch_order_book(const OrderBookEvent& event) {
-    const std::string instrument(event.instrument);
-    slick::orderbook::SymbolId sid = get_or_create_symbol_id(instrument);
-    slick::orderbook::OrderBookL2* book = book_manager_.getOrCreateOrderBook(sid);
+    slick::orderbook::OrderBookL2* book = find_l2_book(event.instrument);
+    if (book == nullptr) {
+        return;
+    }
 
     if (event.is_snapshot) {
         book->clear();
@@ -751,16 +946,18 @@ void StrategyManager::dispatch_order_book(const OrderBookEvent& event) {
     }
 }
 
-slick::orderbook::SymbolId StrategyManager::get_or_create_symbol_id(const std::string& instrument) {
-    auto it = symbol_ids_.find(instrument);
-    if (it == symbol_ids_.end()) {
-        slick::orderbook::SymbolId sid = next_symbol_id_++;
-        symbol_ids_.emplace(instrument, sid);
-        symbol_names_.emplace(sid, instrument);
-        LOG_INFO("StrategyManager: Assigned symbol_id={} for {}", sid, instrument);
-        return sid;
+std::optional<slick::orderbook::SymbolId> StrategyManager::get_or_create_symbol_id(std::string_view instrument) {
+    if (const auto it = symbol_ids_.find(instrument); it != symbol_ids_.end()) {
+        return it->second;
     }
-    return it->second;
+    if (symbol_ids_.size() > std::numeric_limits<slick::orderbook::SymbolId>::max()) {
+        LOG_ERROR("StrategyManager: no book for {}: all {} book ids are taken", instrument, symbol_ids_.size());
+        return std::nullopt;
+    }
+    const slick::orderbook::SymbolId sid = next_symbol_id_++;
+    symbol_ids_.emplace(std::string(instrument), sid);
+    LOG_DEBUG("StrategyManager: Assigned symbol_id={} for {}", sid, instrument);
+    return sid;
 }
 
 void StrategyManager::dispatch_order_ack(const OrderAckEvent& event) {

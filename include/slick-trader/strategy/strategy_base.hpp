@@ -45,14 +45,12 @@ public:
         PositionTracker& position_tracker,
         PnLCalculator& pnl_calculator,
         RiskManager& risk_manager,
-        slick::queue<uint8_t>& md_request_queue,
         slick::queue<uint8_t>& order_request_queue
     ) override {
         LOG_INFO("Strategy {}: Initializing", name_);
         position_tracker_ = &position_tracker;
         pnl_calculator_ = &pnl_calculator;
         risk_manager_ = &risk_manager;
-        md_request_queue_ = &md_request_queue;
         order_request_queue_ = &order_request_queue;
         config_params_ = config;
         on_config(config);
@@ -95,7 +93,7 @@ public:
     // Default implementations - strategies can override if needed
     void on_trade(const TradeEvent& event) override {}
     void on_quote(const QuoteEvent& event) override {}
-    void on_order_book(const slick::orderbook::OrderBookL2& book) override {}
+    void on_order_book(std::string_view /*instrument*/, const slick::orderbook::OrderBookL2& /*book*/) override {}
 
     // Maintains order tracking state, then calls on_ack() hook for derived classes
     void on_order_ack(const OrderAckEvent& event) override {
@@ -306,7 +304,9 @@ protected:
     }
 
     // Helper methods for order submission
-    std::string submit_order(std::string_view instrument, BrokerId broker_id, Side side, qty_t quantity, OrderType type, price_t price = NULL_PRICE, TimeInForce tif = TimeInForce::FOK, bool post_only = true) {
+    // The order's client id, or empty when it is turned down here, before it leaves the engine,
+    // with the reason in `refusal` if given one.
+    std::string submit_order(std::string_view instrument, BrokerId broker_id, Side side, qty_t quantity, OrderType type, price_t price = NULL_PRICE, TimeInForce tif = TimeInForce::FOK, bool post_only = true, std::string* refusal = nullptr) {
         auto client_order_id = generate_order_id();
 
         // Track which broker handles each instrument (used by close_all_positions)
@@ -325,21 +325,23 @@ protected:
             reject.set_client_order_id(client_order_id.data());
             reject.set_reason(reject_reason.c_str());
             on_order_reject(reject);
+            if (refusal) {
+                *refusal = std::move(reject_reason);
+            }
             return {};
         }
 
         // Check broker connectivity before enqueuing — avoids orders stuck in PENDING_NEW
-        auto& br = BrokerStatusRegistry::instance();
-        if (!br.is_order_enabled(broker_id) || !br.is_order_connected(broker_id)) {
-            const std::string reason = !br.is_order_enabled(broker_id)
-                ? "Broker order connector disabled"
-                : "Broker order connector disconnected";
+        if (const char* reason = BrokerStatusRegistry::instance().order_unavailable_reason(broker_id)) {
             OrderRejectEvent broker_reject;
             broker_reject.timestamp_ns = get_timestamp_ns();
             broker_reject.set_instrument(instrument);
             broker_reject.set_client_order_id(client_order_id.data());
-            broker_reject.set_reason(reason.c_str());
+            broker_reject.set_reason(reason);
             on_order_reject(broker_reject);
+            if (refusal) {
+                *refusal = reason;
+            }
             return {};
         }
 
@@ -584,7 +586,6 @@ private:
     std::string name_;
     std::string version_;
     std::atomic_bool running_{false};
-    slick::queue<uint8_t>* md_request_queue_{nullptr};
     slick::queue<uint8_t>* order_request_queue_{nullptr};
 
     // Configuration parameters

@@ -89,7 +89,7 @@ protected:
         reg.set_order_enabled(BrokerId::COINBASE, true);
         reg.set_order_connected(BrokerId::COINBASE, true);
 
-        stacker_.initialize(base_params(), positions_, pnl_, risk_, md_q_, order_q_);
+        stacker_.initialize(base_params(), positions_, pnl_, risk_, order_q_);
         stacker_.start();
     }
 
@@ -249,7 +249,6 @@ protected:
     PositionTracker positions_;
     PnLCalculator   pnl_{positions_};
     RiskManager     risk_{positions_};
-    slick::queue<uint8_t> md_q_{4096};
     slick::queue<uint8_t> order_q_{65536};
     std::map<std::string, Resting> venue_;
     uint64_t order_cursor_{0};

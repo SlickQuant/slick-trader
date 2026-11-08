@@ -10,6 +10,8 @@
 #include <slick/net/logging.hpp>
 #endif
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -116,14 +118,14 @@ bool TradingEngine::initialize(const std::string& config_path) {
 
     control_queue_ = std::make_unique<slick::queue<uint8_t>>(control_queue_size, control_queue_shm_name);
 
-    // Create MD request queue
+    // MD request queues, one per broker, made as each broker is
     auto md_request_queue_size = config.value("md_request_queue_size", 1u << 20 /* 1M */);
-    const char* md_request_queue_shm_name = config.contains("md_request_queue_shm_name") ? config["md_request_queue_shm_name"].get_ref<std::string&>().c_str() : nullptr;
+    const std::string md_request_queue_shm_name = config.value("md_request_queue_shm_name", "");
 
-    LOG_INFO("md request queue size: {}", md_request_queue_size);
-    LOG_INFO("md request queue shm name: {}", md_request_queue_shm_name ? md_request_queue_shm_name : "");
+    LOG_INFO("md request queue size: {} per broker", md_request_queue_size);
+    LOG_INFO("md request queue shm name: {}", md_request_queue_shm_name.empty() ? "" : md_request_queue_shm_name + "_<BROKER>");
 
-    md_request_queue_ = std::make_unique<slick::queue<uint8_t>>(md_request_queue_size, md_request_queue_shm_name);
+    md_request_queues_ = std::make_unique<MdRequestQueues>(md_request_queue_size, md_request_queue_shm_name);
 
     // Create order request queue
     auto order_request_queue_size = config.value("order_request_queue_size", 1u << 24 /* 16M */);
@@ -169,9 +171,20 @@ bool TradingEngine::initialize(const std::string& config_path) {
                 return false;
             }
 
+            // Its market data requests come on a queue of its own, found by its BrokerId.
+            std::string upper(broker_name);
+            std::transform(upper.begin(), upper.end(), upper.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            const BrokerId broker_id = to_broker_id(upper);
+            if (broker_id == BrokerId::UNKNOWN) {
+                LOG_ERROR("Broker '{}' names no BrokerId, so no market data request can reach it", broker_name);
+                return false;
+            }
+
             std::string error;
             auto broker = BrokerRegistry::instance().create(broker_name, broker_json, *event_mux_, *control_queue_,
-                                                            *md_request_queue_, *order_request_queue_, error);
+                                                            md_request_queues_->get(broker_id), *order_request_queue_,
+                                                            error);
             if (!broker) {
                 LOG_ERROR("Failed to create broker {}: {}", broker_name, error);
                 return false;
@@ -193,7 +206,7 @@ bool TradingEngine::initialize(const std::string& config_path) {
 
     // Load strategies if configured
     if (config.contains("strategies")) {
-        strategy_manager_ = std::make_unique<StrategyManager>(config["strategies"], position_tracker_, pnl_calculator_, risk_manager_, *event_mux_, *md_request_queue_, *order_request_queue_);
+        strategy_manager_ = std::make_unique<StrategyManager>(config["strategies"], position_tracker_, pnl_calculator_, risk_manager_, *event_mux_, *md_request_queues_, *order_request_queue_);
         if (config["strategies"].value("enabled", true)) {
             LOG_INFO("");
             LOG_INFO("==================================================");

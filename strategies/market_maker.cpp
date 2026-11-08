@@ -261,8 +261,8 @@ protected:
         update_quotes();
     }
 
-    void on_order_book(const slick::orderbook::OrderBookL2& book) override {
-        if (fair_value_mode_ != FairValueMode::NLEVEL_WMID) return;
+    void on_order_book(std::string_view instrument, const slick::orderbook::OrderBookL2& book) override {
+        if (fair_value_mode_ != FairValueMode::NLEVEL_WMID || instrument != instrument_) return;
 
         const int depth_bid = std::min(static_cast<int>(book.levelCount(slick::orderbook::Side::Buy)), nlevel_depth_);
         const int depth_ask = std::min(static_cast<int>(book.levelCount(slick::orderbook::Side::Sell)), nlevel_depth_);

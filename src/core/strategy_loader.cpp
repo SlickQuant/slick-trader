@@ -1,6 +1,7 @@
 #include <slick-trader/core/strategy_loader.hpp>
 #include <slick-trader/core/broker_status.hpp>
 #include <slick/logger.hpp>
+#include <format>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -34,6 +35,7 @@ std::shared_ptr<IStrategy> StrategyLoader::load(const std::string& library_path)
     }
 
     // Get function pointers
+    auto get_api_version_func = reinterpret_cast<GetApiVersionFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "get_strategy_api_version"));
     create_func_ = reinterpret_cast<CreateStrategyFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "create_strategy"));
     destroy_func_ = reinterpret_cast<DestroyStrategyFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "destroy_strategy"));
     auto get_name_func = reinterpret_cast<GetNameFunc>(GetProcAddress(static_cast<HMODULE>(handle_), "get_strategy_name"));
@@ -53,6 +55,7 @@ std::shared_ptr<IStrategy> StrategyLoader::load(const std::string& library_path)
     dlerror();
 
     // Get function pointers
+    auto get_api_version_func = reinterpret_cast<GetApiVersionFunc>(dlsym(handle_, "get_strategy_api_version"));
     create_func_ = reinterpret_cast<CreateStrategyFunc>(dlsym(handle_, "create_strategy"));
     destroy_func_ = reinterpret_cast<DestroyStrategyFunc>(dlsym(handle_, "destroy_strategy"));
     auto get_name_func = reinterpret_cast<GetNameFunc>(dlsym(handle_, "get_strategy_name"));
@@ -64,6 +67,20 @@ std::shared_ptr<IStrategy> StrategyLoader::load(const std::string& library_path)
     // Verify required functions exist
     if (!create_func_ || !destroy_func_) {
         LOG_ERROR("StrategyLoader: Library missing required functions (create_strategy/destroy_strategy)");
+        unload();
+        return nullptr;
+    }
+
+    // Built against another interface, the plugin would call and index this host's types by its
+    // own layout of them: refused here rather than crashing on the first call.
+    const uint32_t api_version = get_api_version_func ? get_api_version_func() : 0;
+    if (api_version != STRATEGY_API_VERSION) {
+        last_error_ = api_version == 0
+            ? std::format("built before plugins named their API version; this host takes version {}. "
+                          "Rebuild it against this slick-trader", STRATEGY_API_VERSION)
+            : std::format("built against strategy API version {}; this host takes version {}. "
+                          "Rebuild it against this slick-trader", api_version, STRATEGY_API_VERSION);
+        LOG_ERROR("StrategyLoader: {} {}", library_path, last_error_);
         unload();
         return nullptr;
     }

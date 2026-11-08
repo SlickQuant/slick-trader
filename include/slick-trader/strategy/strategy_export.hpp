@@ -16,11 +16,17 @@
 // Usage in strategy .cpp:
 //   SLICK_TRADER_EXPORT_STRATEGY(MyStrategy)
 //
+// get_strategy_api_version() is the STRATEGY_API_VERSION it was built against: StrategyLoader
+// loads only its own.
+//
 // The set_* entry points exist because a plugin links slick-trader-core statically
 // and therefore owns private copies of the host's singletons. StrategyLoader calls
 // them before create_strategy() to redirect the plugin at the host's instances.
 #define SLICK_TRADER_EXPORT_STRATEGY(StrategyClass) \
     extern "C" { \
+        SLICK_TRADER_EXPORT uint32_t get_strategy_api_version() { \
+            return slick::trader::STRATEGY_API_VERSION; \
+        } \
         SLICK_TRADER_EXPORT slick::trader::IStrategy* create_strategy() { \
             return new StrategyClass(); \
         } \

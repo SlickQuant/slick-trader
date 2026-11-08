@@ -1,5 +1,6 @@
 #pragma once
 
+#include <slick-trader/utils/string_hash.hpp>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -46,12 +47,8 @@ public:
     }
 
 private:
-    struct Hash {
-        using is_transparent = void;
-        size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
-    };
     std::unordered_map<Id, Instrument> by_id_;   // node-based: addresses stay valid
-    std::unordered_map<std::string, Id, Hash, std::equal_to<>> by_symbol_;
+    std::unordered_map<std::string, Id, StringHash, std::equal_to<>> by_symbol_;
 };
 
 } // namespace slick::trader

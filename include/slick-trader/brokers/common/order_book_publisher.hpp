@@ -277,11 +277,6 @@ protected:
     }
 
 private:
-    struct SymbolHash {
-        using is_transparent = void;
-        size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
-    };
-
     [[nodiscard]] Derived& derived() noexcept { return static_cast<Derived&>(*this); }
     [[nodiscard]] const Derived& derived() const noexcept { return static_cast<const Derived&>(*this); }
 
@@ -406,7 +401,7 @@ private:
     std::string who_;
     bool instruments_known_ = false;
     std::unordered_map<Key, InstrumentState> states_;
-    std::unordered_map<std::string, Key, SymbolHash, std::equal_to<>> by_symbol_;
+    std::unordered_map<std::string, Key, StringHash, std::equal_to<>> by_symbol_;
     // Subscriptions made before the instruments were known.
     std::vector<std::pair<std::string, SubscriptionType>> pending_;
     std::vector<Key> touched_;

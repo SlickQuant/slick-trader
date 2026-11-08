@@ -29,7 +29,10 @@ buy you:
 
 The one exception is `ManualStrategy` ([manual_strategy.hpp](../include/slick-trader/strategy/manual_strategy.hpp)):
 it's a built-in core strategy, not a plugin, and is always registered at startup to own orders
-placed manually through the Web UI.
+placed manually through the Web UI. As brokers define instruments, it adopts the ones its
+`instruments` parameter lists (symbols, or prefixes ending in `*`) and subscribes their level 2
+books, so the ladder can trade them with no plugin loaded. CME and ICE publish definitions. With
+no list, it adopts nothing.
 
 ## Building Strategy Plugins
 
@@ -97,6 +100,9 @@ and the trades of an instrument asks for both:
 | `QUOTE` | `on_quote` | Top of book |
 | `LEVEL2`, `ORDER_BOOK` | `on_order_book`, `on_quote` | Price levels; `on_quote` on each change of the top |
 | `MBO` | `on_order_book_l3`, `on_quote` | Every order of the book. Only brokers whose feed carries it; the others log and ignore the request |
+
+Every strategy is handed the books and quotes any strategy subscribed, not only its own. Each
+callback names its instrument, so check it. MANUAL's instruments stream to the Web UI only.
 
 ### Market-by-order books and queue position
 
@@ -167,6 +173,8 @@ SLICK_TRADER_EXPORT_STRATEGY(MyStrategy)
 ```
 
 This macro creates the required C functions:
+- `get_strategy_api_version()` - The `STRATEGY_API_VERSION` it was built against. The engine refuses
+  a plugin built against another version, so rebuild plugins along with the engine
 - `create_strategy()` - Creates strategy instance
 - `destroy_strategy()` - Destroys strategy instance
 - `get_strategy_name()` - Returns strategy name
@@ -561,6 +569,10 @@ before reconciling, so an update to a paused strategy cannot put orders back on 
 - Make sure `SLICK_TRADER_EXPORT_STRATEGY(ClassName)` is present
 - Check for typos in class name
 - Rebuild plugin completely
+
+### "built against strategy API version N" or "built before plugins named their API version"
+- Rebuild the plugin against this slick-trader. The strategy interface has changed since the plugin
+  was built.
 
 ### "create_strategy() returned nullptr"
 - Check strategy constructor doesn't throw

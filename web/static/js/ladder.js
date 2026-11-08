@@ -1,23 +1,25 @@
 /**
  * Price Ladder Manager
- * Manages multiple price ladders for different instruments
+ * Lists the instruments strategies hold, as the server sends them over the WebSocket, and shows
+ * one ladder, the selected instrument's: only it is built, and only its book streams. A server
+ * listing thousands costs a selector option each.
  */
 class LadderManager {
     constructor() {
-        this.ladders = new Map();
-        this.instruments = [];
+        this.ladder = null;                   // the selected instrument's ladder, when there is one
+        this.instruments = [];                // in order, as the selector lists them
+        this.instrumentBrokers = new Map();   // instrument -> id of the broker streaming it
         this.selectedInstrument = null;
+        // Called with the instrument whose book to stream, or null for none, as the selection changes
+        this.onSelect = null;
         // Maps order_id -> { instrument, price, sideEnum } for clearing hasOwnOrders on fill/cancel
         this.pendingOrders = new Map();
     }
 
     /**
-     * Initialize ladders for loaded strategies
+     * Loads the ladder config the ladder is built with. Before the server lists instruments.
      */
-    async init(strategies) {
-        console.log('[LadderManager] Initializing with strategies:', strategies);
-
-        // Load ladder config from server
+    async loadConfig() {
         try {
             this.ladderConfig = await api.getLadderConfig();
             console.log('[LadderManager] Loaded ladder config:', this.ladderConfig);
@@ -30,30 +32,127 @@ class LadderManager {
                 per_instrument: {}
             };
         }
+    }
 
-        // Extract unique instruments from strategies
-        this.instruments = this.extractInstruments(strategies);
+    /**
+     * The server's whole list, instrument -> broker id, as it sends it on every connect. A
+     * restarted server may have dropped some, or all: those that stay keep the ladder and selection.
+     */
+    setInstruments(instrumentBrokers) {
+        this.instrumentBrokers = new Map(Object.entries(instrumentBrokers ?? {}));
+        const instruments = Array.from(this.instrumentBrokers.keys()).sort();
+        if (instruments.length === 0) {
+            this.showEmptyState('No instruments yet. The ladder lists what strategies subscribe to, and the "instruments" MANUAL\'s config lists.');
+        } else if (this.instruments.length === 0) {
+            this.build(instruments);
+        } else {
+            this.reconcileInstruments(instruments);
+        }
+    }
 
+    /**
+     * What the server listed since, instrument -> broker id. Each new one goes into the selector
+     * in order; the rest stays as it is.
+     */
+    addInstruments(instrumentBrokers) {
+        const added = Object.keys(instrumentBrokers ?? {}).filter(inst => !this.instrumentBrokers.has(inst)).sort();
+        if (added.length === 0) return;
+        added.forEach(inst => this.instrumentBrokers.set(inst, instrumentBrokers[inst]));
         if (this.instruments.length === 0) {
-            console.warn('[LadderManager] No instruments found in strategies');
-            this.showEmptyState('No instruments. The ladder shows what your strategies subscribe to.');
+            this.build(added);
             return;
         }
 
-        // Select first instrument by default
-        this.selectedInstrument = this.instruments[0];
+        // Both in order: each new one goes before the first listed one past it.
+        const select = document.getElementById('instrumentSelect');
+        if (!select) return;
+        const listed = Array.from(select.options);
+        const merged = [];
+        let next = 0;
+        added.forEach(inst => {
+            while (next < this.instruments.length && this.instruments[next] < inst) {
+                merged.push(this.instruments[next++]);
+            }
+            select.insertBefore(new Option(inst, inst), listed[next] ?? null);
+            merged.push(inst);
+        });
+        this.instruments = merged.concat(this.instruments.slice(next));
+        console.log(`[LadderManager] ${added.length} instrument(s) added`);
+    }
 
-        // Create ladder containers in the UI
+    /**
+     * Builds the selector, and the ladder of the first of `instruments`.
+     */
+    build(instruments) {
+        this.instruments = instruments;
+        this.selectedInstrument = instruments[0];
         this.createLadderUI();
+        this.showLadder(this.selectedInstrument);
+        console.log(`[LadderManager] Built the ladder, listing ${instruments.length} instrument(s)`);
+    }
 
-        // Initialize ladders
-        this.instruments.forEach(instrument => {
-            this.createLadder(instrument);
+    /**
+     * Matches the selector to the server's list, in its order: drops what it no longer lists and
+     * adds what is new. Linear, as MANUAL's list can take in a venue.
+     */
+    reconcileInstruments(instruments) {
+        const select = document.getElementById('instrumentSelect');
+        if (!select) return;
+
+        // A static list: walking the live select.options can cost a lookup per index.
+        const allOptions = () => Array.from(select.querySelectorAll('option'));
+        const wanted = new Set(instruments);
+        const options = new Map(allOptions().map(option => [option.value, option]));
+        this.instruments.filter(inst => !wanted.has(inst)).forEach(inst => {
+            options.get(inst)?.remove();
+            options.delete(inst);
         });
 
-        console.log('[LadderManager] Initialized ladders for instruments:', this.instruments);
+        // Into the selector at once, not an option at a time.
+        const added = instruments.filter(inst => !options.has(inst));
+        const fresh = document.createDocumentFragment();
+        added.forEach(inst => options.set(inst, fresh.appendChild(new Option(inst, inst))));
+        select.appendChild(fresh);
 
-        // Real market data now provided via WebSocket - simulated data removed
+        // New ones went to the end: put the selector back in the server's order.
+        if (allOptions().some((option, i) => option.value !== instruments[i])) {
+            const ordered = document.createDocumentFragment();
+            instruments.forEach(inst => ordered.appendChild(options.get(inst)));
+            select.appendChild(ordered);
+        }
+        this.instruments = instruments;
+        if (wanted.has(this.selectedInstrument)) {
+            select.value = this.selectedInstrument;   // moving options can move the selection
+        } else {
+            this.switchInstrument(instruments[0]);
+        }
+        console.log(`[LadderManager] Instruments matched to the server: ${added.length} added`);
+    }
+
+    destroyLadder() {
+        try {
+            this.ladder?.destroy();
+        } catch (error) {
+            console.error('[LadderManager] Error destroying the ladder:', error);
+        }
+        this.ladder = null;
+    }
+
+    /**
+     * The ladder of `instrument`: none unless it is the one shown.
+     */
+    ladderOf(instrument) {
+        return instrument === this.selectedInstrument ? this.ladder : null;
+    }
+
+    /**
+     * Builds the ladder of `instrument` in place of the one shown, and has its book streamed.
+     */
+    showLadder(instrument) {
+        this.destroyLadder();
+        document.getElementById('ladderCanvas')?.replaceChildren();
+        this.createLadder(instrument);
+        this.onSelect?.(instrument);
     }
 
     /**
@@ -61,6 +160,8 @@ class LadderManager {
      * streams books for instruments a strategy subscribed to.
      */
     showEmptyState(message) {
+        // Drops the ladders with the UI they draw in: the next init builds both again.
+        this.clear();
         const container = document.getElementById('ladderContainer');
         if (!container) return;
         const div = document.createElement('div');
@@ -70,96 +171,12 @@ class LadderManager {
     }
 
     /**
-     * Start simulated orderbook data for testing
-     * TODO: Remove this when real market data is integrated
+     * The broker an order for `instrument` goes to: the one its own ladder config names, else
+     * the broker streaming it. Undefined when neither is known. A default_broker_id at the top
+     * of the config is not read: it sent every instrument's orders to one broker.
      */
-    startSimulatedData() {
-        const basePrice = 100000; // Base price for BTC-USD
-
-        const updateSimulatedOrderbook = () => {
-            this.instruments.forEach(instrument => {
-                const ladder = this.ladders.get(instrument);
-                if (!ladder) return;
-
-                const midPrice = instrument.includes('BTC') ? basePrice + (Math.random() - 0.5) * 100 :
-                                 instrument.includes('ETH') ? 3500 + (Math.random() - 0.5) * 50 :
-                                 100 + (Math.random() - 0.5) * 1;
-
-                // Generate bids (prices below mid)
-                const bidUpdates = [];
-                for (let i = 0; i < 20; i++) {
-                    const offset = (i + 1) * (instrument.includes('BTC') ? 0.01 : 0.01);
-                    bidUpdates.push({
-                        side: SlickLadder.Side.BID,
-                        price: midPrice - offset,
-                        quantity: Math.random() * 10,
-                        numOrders: Math.floor(Math.random() * 5) + 1
-                    });
-                }
-
-                // Generate asks (prices above mid)
-                const askUpdates = [];
-                for (let i = 0; i < 20; i++) {
-                    const offset = (i + 1) * (instrument.includes('BTC') ? 0.01 : 0.01);
-                    askUpdates.push({
-                        side: SlickLadder.Side.ASK,
-                        price: midPrice + offset,
-                        quantity: Math.random() * 10,
-                        numOrders: Math.floor(Math.random() * 5) + 1
-                    });
-                }
-
-                // Update ladder
-                ladder.processBatch([...bidUpdates, ...askUpdates]);
-            });
-        };
-
-        // Update every 100ms
-        this.simulationInterval = setInterval(updateSimulatedOrderbook, 100);
-        console.log('[LadderManager] Started simulated data updates');
-    }
-
-    /**
-     * Stop simulated data
-     */
-    stopSimulatedData() {
-        if (this.simulationInterval) {
-            clearInterval(this.simulationInterval);
-            this.simulationInterval = null;
-            console.log('[LadderManager] Stopped simulated data updates');
-        }
-    }
-
-    /**
-     * Extract instruments from strategy configurations
-     */
-    extractInstruments(strategies) {
-        const instrumentSet = new Set();
-
-        if (Array.isArray(strategies)) {
-            strategies.forEach(strategy => {
-                // Check if strategy has instruments array (from API)
-                if (strategy.instruments && Array.isArray(strategy.instruments)) {
-                    strategy.instruments.forEach(inst => {
-                        instrumentSet.add(inst);
-                    });
-                }
-                // Also check if strategy has risk_limits with instruments (from config file)
-                else if (strategy.risk_limits && strategy.risk_limits.instruments) {
-                    Object.keys(strategy.risk_limits.instruments).forEach(inst => {
-                        instrumentSet.add(inst);
-                    });
-                }
-                // Also check parameters for instruments
-                if (strategy.parameters && strategy.parameters.instruments) {
-                    if (Array.isArray(strategy.parameters.instruments)) {
-                        strategy.parameters.instruments.forEach(inst => instrumentSet.add(inst));
-                    }
-                }
-            });
-        }
-
-        return Array.from(instrumentSet);
+    brokerFor(instrument) {
+        return this.ladderConfig?.per_instrument?.[instrument]?.default_broker_id ?? this.instrumentBrokers.get(instrument);
     }
 
     /**
@@ -259,22 +276,18 @@ class LadderManager {
             });
         }
 
-        // Create ladder container for each instrument (no canvas - library creates it)
-        this.instruments.forEach(instrument => {
-            const ladderContainer = document.createElement('div');
-            ladderContainer.id = `ladder-${instrument}`;
-            ladderContainer.className = 'ladder-canvas-container';
-            ladderContainer.style.display = instrument === this.selectedInstrument ? 'block' : 'none';
-
-            container.appendChild(ladderContainer);
-        });
+        // The one div the ladder draws into (no canvas - library creates it)
+        const ladderContainer = document.createElement('div');
+        ladderContainer.id = 'ladderCanvas';
+        ladderContainer.className = 'ladder-canvas-container';
+        container.appendChild(ladderContainer);
     }
 
     /**
      * Create a price ladder for an instrument
      */
     createLadder(instrument) {
-        const ladderContainer = document.getElementById(`ladder-${instrument}`);
+        const ladderContainer = document.getElementById('ladderCanvas');
         if (!ladderContainer) {
             console.error(`[LadderManager] Container not found for ${instrument}`);
             return;
@@ -310,7 +323,7 @@ class LadderManager {
                 }
             });
 
-            this.ladders.set(instrument, ladder);
+            this.ladder = ladder;
             console.log(`[LadderManager] Created JavaScript ladder for ${instrument}`);
         } catch (error) {
             console.error(`[LadderManager] Failed to create ladder for ${instrument}:`, error);
@@ -342,19 +355,13 @@ class LadderManager {
     switchInstrument(instrument) {
         if (this.selectedInstrument === instrument) return;
 
-        // Hide current ladder
-        if (this.selectedInstrument) {
-            const currentContainer = document.getElementById(`ladder-${this.selectedInstrument}`);
-            if (currentContainer) {
-                currentContainer.style.display = 'none';
-            }
-        }
-
-        // Show new ladder
         this.selectedInstrument = instrument;
-        const newContainer = document.getElementById(`ladder-${instrument}`);
-        if (newContainer) {
-            newContainer.style.display = 'block';
+        this.showLadder(instrument);
+
+        // Keep the selector in step when code switches, as after the selected instrument is removed
+        const select = document.getElementById('instrumentSelect');
+        if (select) {
+            select.value = instrument;
         }
 
         // Update qty input to reflect per-instrument or global default
@@ -376,11 +383,9 @@ class LadderManager {
      * Update ladder with level2 data
      */
     updateOrderbookWithLevelUpdate(instrument, data) {
-        const ladder = this.ladders.get(instrument);
-        if (!ladder) {
-            console.warn(`[LadderManager] No ladder found for ${instrument}`);
-            return;
-        }
+        // None for an instrument no longer shown: its updates were on the way when it was switched from.
+        const ladder = this.ladderOf(instrument);
+        if (!ladder) return;
 
         // console.log(`[LadderManager] Updating orderbook with level update for ${instrument}:`, {
         //     levels: data.levels?.length || 0,
@@ -388,6 +393,10 @@ class LadderManager {
         // });
 
         try {
+            // A snapshot is the whole book: what the ladder held before is gone.
+            if (data.is_snapshot) {
+                ladder.clear();
+            }
             if (data.levels && Array.isArray(data.levels)) {
                 const levelUpdates = data.levels.map(([price, qty, side]) => ({
                     side: side == 0 ? SlickLadder.Side.BID : SlickLadder.Side.ASK,
@@ -406,134 +415,25 @@ class LadderManager {
     }
 
     /**
-     * Update ladder with orderbook data
-     */
-    updateOrderbook(instrument, data) {
-        const ladder = this.ladders.get(instrument);
-        if (!ladder) {
-            console.warn(`[LadderManager] No ladder found for ${instrument}`);
-            return;
-        }
-
-        console.log(`[LadderManager] Updating orderbook for ${instrument}:`, {
-            bids: data.bids?.length || 0,
-            asks: data.asks?.length || 0,
-            is_snapshot: data.is_snapshot
-        });
-
-        try {
-            // Process bid updates
-            if (data.bids && Array.isArray(data.bids)) {
-                const bidUpdates = data.bids.map(([price, qty]) => ({
-                    side: SlickLadder.Side.BID,
-                    price: parseFloat(price),
-                    quantity: parseFloat(qty),
-                    numOrders: 1
-                }));
-                ladder.processBatch(bidUpdates);
-            }
-
-            // Process ask updates
-            if (data.asks && Array.isArray(data.asks)) {
-                const askUpdates = data.asks.map(([price, qty]) => ({
-                    side: SlickLadder.Side.ASK,
-                    price: parseFloat(price),
-                    quantity: parseFloat(qty),
-                    numOrders: 1
-                }));
-                ladder.processBatch(askUpdates);
-            }
-        } catch (error) {
-            console.error(`[LadderManager] Error updating ladder for ${instrument}:`, error);
-        }
-    }
-
-    /**
-     * Update ladder with individual price level
-     */
-    updateLevel(instrument, side, price, quantity, numOrders = 1) {
-        const ladder = this.ladders.get(instrument);
-        if (!ladder) return;
-
-        try {
-            ladder.processUpdate({
-                side: side === 0 ? SlickLadder.Side.BID : SlickLadder.Side.ASK,
-                price: parseFloat(price),
-                quantity: parseFloat(quantity),
-                numOrders: numOrders
-            });
-        } catch (error) {
-            console.error(`[LadderManager] Error updating level:`, error);
-        }
-    }
-
-    /**
-     * Clear order book data on all ladders without destroying them
+     * Clear the ladder's order book without destroying it
      */
     clearBooks() {
-        this.ladders.forEach((ladder, instrument) => {
-            try {
-                ladder.clear();
-            } catch (error) {
-                console.error(`[LadderManager] Error clearing ladder for ${instrument}:`, error);
-            }
-        });
-        console.log('[LadderManager] Cleared all ladder order books');
+        try {
+            this.ladder?.clear();
+        } catch (error) {
+            console.error('[LadderManager] Error clearing the ladder:', error);
+        }
+        console.log('[LadderManager] Cleared the ladder order book');
     }
 
     /**
-     * Clear all ladders
+     * Drop the ladder and the list
      */
     clear() {
-        this.stopSimulatedData();
-        this.ladders.forEach((ladder, instrument) => {
-            try {
-                ladder.destroy();
-            } catch (error) {
-                console.error(`[LadderManager] Error destroying ladder for ${instrument}:`, error);
-            }
-        });
-        this.ladders.clear();
+        this.destroyLadder();
         this.instruments = [];
         this.selectedInstrument = null;
-    }
-
-    /**
-     * Get metrics for a specific ladder
-     */
-    getMetrics(instrument) {
-        const ladder = this.ladders.get(instrument);
-        if (!ladder) return null;
-
-        try {
-            return ladder.getMetrics();
-        } catch (error) {
-            console.error(`[LadderManager] Error getting metrics:`, error);
-            return null;
-        }
-    }
-
-    /**
-     * Resize a ladder
-     */
-    resize(instrument, width, height) {
-        const ladder = this.ladders.get(instrument);
-        if (!ladder) return;
-
-        try {
-            ladder.resize(width, height);
-        } catch (error) {
-            console.error(`[LadderManager] Error resizing ladder:`, error);
-        }
-    }
-
-    /**
-     * Resize all ladders
-     */
-    resizeAll(width, height) {
-        this.ladders.forEach((ladder, instrument) => {
-            this.resize(instrument, width, height);
-        });
+        this.onSelect?.(null);
     }
 
     /**
@@ -606,7 +506,13 @@ class LadderManager {
         }
 
         // Build order payload
-        const brokerId = config.default_broker_id ?? 1;
+        const brokerId = this.brokerFor(instrument);
+        if (brokerId === undefined) {
+            const msg = `Order not sent: no broker known for ${instrument}`;
+            if (window.modalManager) window.modalManager.showNotification(msg, 'error');
+            console.error('[LadderManager]', msg);
+            return;
+        }
         const tifSelectEl = document.getElementById('tifSelect');
         // If TIF is still at the default (IOC/market default), auto-set based on order type.
         // This handles the case where the ladder price is used (priceInput is empty so the
@@ -664,7 +570,7 @@ class LadderManager {
      * @param {boolean} value
      */
     setOwnOrder(instrument, price, sideEnum, value) {
-        const ladder = this.ladders.get(instrument);
+        const ladder = this.ladderOf(instrument);
         if (!ladder) return;
         ladder.setHasOwnOrders(price, sideEnum, value);
     }

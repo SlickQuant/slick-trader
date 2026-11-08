@@ -1,5 +1,6 @@
 #include <slick/logger.hpp>
 #include <slick-trader/brokers/coinbase/coinbase_md_connector.hpp>
+#include <slick-trader/brokers/common/md_event_writer.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/register_event.hpp>
 #include <slick-trader/events/event_serializer.hpp>
@@ -210,34 +211,11 @@ void CoinbaseMDConnector::process_md_requests() {
         reconnecting_.store(false, std::memory_order_release);
     }
 
-    auto [data, size] = request_queue_.read(request_cursor_);
-
-    if (!data) {
+    // Only an enabled connector runs this loop: start() returns early otherwise.
+    if (!process_md_request(request_queue_, request_cursor_, BrokerId::COINBASE,
+                            [this](const MDSubscription& request) { subscribe(request); },
+                            [this](const MDSubscription& request) { unsubscribe(request); })) {
         std::this_thread::yield();
-        return;
-    }
-
-    const auto *event = reinterpret_cast<const Event*>(data);
-    switch (event->type) {
-        case EventType::SUBSCRIBE: {
-            auto *sub = reinterpret_cast<const MDSubscription*>(event);
-            if (sub->broker_id == BrokerId::COINBASE && enabled_) {
-                subscribe(*sub);
-            } else if (sub->broker_id == BrokerId::COINBASE) {
-                LOG_WARN("Coinbase MD skip subscription, not enabled");
-            }
-            break;
-        }
-        case EventType::UNSUBSCRIBE: {
-            auto *sub = reinterpret_cast<const MDSubscription*>(event);
-            if (sub->broker_id == BrokerId::COINBASE && enabled_) {
-                unsubscribe(*sub);
-            }
-            break;
-        }
-        default:
-            LOG_ERROR("Coinbase MD: Unknown event type: {}", static_cast<int>(event->type));
-            break;
     }
 }
 

@@ -71,6 +71,7 @@ public:
     const std::string& get_last_error() const { return last_error_; }
 
 private:
+    using GetApiVersionFunc = uint32_t (*)();
     using CreateStrategyFunc = IStrategy* (*)();
     using DestroyStrategyFunc = void (*)(IStrategy*);
     using GetNameFunc = const char* (*)();

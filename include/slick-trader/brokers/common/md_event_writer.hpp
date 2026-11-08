@@ -1,5 +1,6 @@
 #pragma once
 
+#include <slick-trader/core/broker_status.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/instrument_definition_event.hpp>
 #include <slick-trader/events/instrument_status_event.hpp>
@@ -9,6 +10,7 @@
 #include <slick-trader/events/register_event.hpp>
 #include <slick-trader/events/trade_event.hpp>
 #include <slick-trader/utils/time.hpp>
+#include <slick/logger.hpp>
 #include <slick/queue.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
 #include <nlohmann/json.hpp>
@@ -183,9 +185,14 @@ private:
     std::shared_ptr<slick::stream_buffer_multiplexer::producer_buffer> buffer_;
 };
 
-// Reads one request off the market data request queue and, if it is for `broker`, hands
-// a subscribe to `on_subscribe(const MDSubscription&)` and an unsubscribe to
-// `on_unsubscribe`. Returns whether a request was read, for whatever broker.
+// Reads one request off `broker`'s market data request queue (MdRequestQueues) and hands a
+// subscribe to `on_subscribe(const MDSubscription&)` and an unsubscribe to `on_unsubscribe`.
+// Returns whether a request was read.
+//
+// The handlers get the request where it lies in the queue, valid until they return: keep what
+// outlives the call. It is reported read to BrokerStatusRegistry after they return, and
+// StrategyManager writes nothing over what this connector has not reported read. A connector
+// reading the queue without this helper reports the same way, or its requests wait on it.
 template <typename Subscribe, typename Unsubscribe>
 bool process_md_request(slick::queue<uint8_t>& queue, uint64_t& cursor, BrokerId broker, Subscribe&& on_subscribe,
                         Unsubscribe&& on_unsubscribe) {
@@ -193,20 +200,29 @@ bool process_md_request(slick::queue<uint8_t>& queue, uint64_t& cursor, BrokerId
     if (!data) {
         return false;
     }
-    const auto* event = reinterpret_cast<const Event*>(data);
-    if (event->broker_id != broker) {
-        return true;
+    const auto& request = *reinterpret_cast<const MDSubscription*>(data);
+    // Only a connector that is not waited on, with market data off, can be lapped: what it read
+    // then is dropped, not read past its end.
+    if (size >= sizeof(MDSubscription) && request.broker_id == broker &&
+        size == sizeof(MDSubscription) + uint64_t{request.num_instruments} * sizeof(request.instruments[0])) {
+        switch (request.type) {
+        case EventType::SUBSCRIBE:
+            on_subscribe(request);
+            break;
+        case EventType::UNSUBSCRIBE:
+            on_unsubscribe(request);
+            break;
+        default:
+            LOG_ERROR("{} market data request dropped: unknown type {}", to_string(broker),
+                      static_cast<int>(request.type));
+            break;
+        }
+    } else {
+        LOG_WARN("{} market data request dropped: {} bytes that read as no request of its own, as when "
+                 "lapped while not waited on",
+                 to_string(broker), size);
     }
-    switch (event->type) {
-    case EventType::SUBSCRIBE:
-        on_subscribe(*reinterpret_cast<const MDSubscription*>(event));
-        break;
-    case EventType::UNSUBSCRIBE:
-        on_unsubscribe(*reinterpret_cast<const MDSubscription*>(event));
-        break;
-    default:
-        break;
-    }
+    BrokerStatusRegistry::instance().set_md_request_cursor(broker, cursor);
     return true;
 }
 

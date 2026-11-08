@@ -169,7 +169,7 @@ without a fill booked twice. An out-of-tree broker's own tests are compiled in t
 | `SLICK_TRADER_ENABLE_COINBASE` | ON | Build the Coinbase broker. OFF skips its SDK too |
 | `SLICK_TRADER_ENABLE_HYPERLIQUID` | ON | Build the Hyperliquid broker. OFF skips its SDK too |
 | `SLICK_TRADER_SANITIZER` | *(empty)* | GCC and Clang: `address,undefined` (ASan with UBSan) or `thread` (TSan). Instruments every target - fetched dependencies and strategy plugins included - in every build type. CI runs both on Linux |
-| `SLICK_TRADER_EXTERNAL_BROKERS` | *(empty)* | `;`-separated directories of out-of-tree brokers to build in. See below. |
+| `SLICK_TRADER_EXTERNAL_BROKERS` | *(empty)* | `;`-separated directories of out-of-tree brokers to build in. Quote the argument when passing several. See below. |
 
 ### Brokers and out-of-tree brokers
 
@@ -194,6 +194,14 @@ slick_trader_add_broker(mybroker
 
 ```bash
 cmake -S . -B build -DSLICK_TRADER_EXTERNAL_BROKERS=/path/to/slick-trader-mybroker
+```
+
+Separate several directories with `;` and quote the whole argument. Bash and PowerShell treat a bare
+`;` as the end of the command, so CMake gets only the first directory and the shell tries to run the
+second one:
+
+```bash
+cmake -S . -B build "-DSLICK_TRADER_EXTERNAL_BROKERS=/path/to/broker-a;/path/to/broker-b"
 ```
 
 Keep that setting in a `CMakeUserPresets.json`, which `.gitignore` excludes, so a local path never
@@ -244,9 +252,9 @@ Top-level keys in `config.json` ([example](config/config_example.json)):
 | Key | Purpose |
 |---|---|
 | `log_file_path`, `log_level` | Log output path and verbosity (`trace`/`debug`/`info`/...) |
-| `event_queue_size`, `order_request_queue_size`, `md_request_queue_size` | Lock-free queue capacities (entries) |
+| `event_queue_size`, `order_request_queue_size`, `md_request_queue_size` | Lock-free queue capacities (entries). `md_request_queue_size` is per broker |
 | `brokers[]` | Per-broker `{name, enabled, market_data:{...}, order:{...}}` — see below |
-| `strategies` | `enabled`, `strategy_plugins_folder`, `strategy_configs_folder`, plus TOB (top-of-book) queue sizing |
+| `strategies` | `enabled`, `strategy_plugins_folder`, `strategy_configs_folder`, plus TOB (top-of-book) queue sizing, and `md_request_stall_timeout_ms` (5000): how long a market data connector can go without reading a request before it is logged, and before `stop()` gives up on it |
 | `position_store` | Optional. `path` (default `state/positions.dat`) and `capacity` (positions, default `1024`): keeps positions across restarts — see [below](#positions-across-restarts) |
 | `web_service` | `enabled`, `web_server_port`, `web_server_cors`, `web_server_static_path`, `ladder_config` (default order size, per-instrument overrides), `config_queue_size`/`config_control_size` (event-bus producer the dashboard publishes strategy parameter updates through) |
 
@@ -316,7 +324,18 @@ event bus as a `TOB` record - at most four times a second. Key endpoints (see
 
 It includes a price-ladder view (`slick-ladder`, an `@slickquant` npm package — see
 [package.json](package.json)) for click-to-trade manual order entry; manual orders are attributed
-to the built-in `ManualStrategy`. See [web/static/CONTROLS_GUIDE.md](web/static/CONTROLS_GUIDE.md)
+to the built-in `ManualStrategy`, which also subscribes the instruments its config lists so the
+ladder shows them. For example, in `config/manual.config.json`:
+
+```json
+{ "name": "MANUAL", "parameters": { "instruments": ["ZNZ6", "ZB*"] } }
+```
+
+Entries are symbols, or prefixes ending in `*`, and each is subscribed once a broker defines it
+(CME and ICE publish definitions). A list sent through `PUT /api/strategies/MANUAL/config`
+replaces the old one and picks up what brokers have already defined. A dashboard gets the
+ladder's list over the WebSocket when it connects, then MANUAL's new instruments at most every
+250 ms. See [web/static/CONTROLS_GUIDE.md](web/static/CONTROLS_GUIDE.md)
 and [web/static/FEATURES.md](web/static/FEATURES.md) for UI details.
 
 ## Project Layout

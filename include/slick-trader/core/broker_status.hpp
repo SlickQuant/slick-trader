@@ -3,11 +3,17 @@
 #include <slick-trader/events/event.hpp>
 #include <atomic>
 #include <array>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 
 namespace slick::trader {
 
+// Plugins index the host's registry with their own build of this struct: a change to its
+// layout is a change to STRATEGY_API_VERSION.
 struct BrokerStatus {
+    static constexpr uint64_t NO_MD_REQUEST_CURSOR = std::numeric_limits<uint64_t>::max();
+
     std::atomic<bool> md_enabled{false};
     std::atomic<bool> md_connected{false};
     std::atomic<bool> order_enabled{false};
@@ -53,6 +59,31 @@ public:
     bool is_order_enabled(BrokerId id) const { return slot(id).order_enabled.load(std::memory_order_acquire); }
     bool is_order_connected(BrokerId id) const { return slot(id).order_connected.load(std::memory_order_acquire); }
 
+    // A broker this process built: its connectors name it when they are made.
+    bool is_registered(BrokerId id) const { return slot(id).name[0] != '\0'; }
+
+    // Why `id` cannot take an order now, or nullptr when it can.
+    const char* order_unavailable_reason(BrokerId id) const {
+        if (!is_order_enabled(id)) {
+            return "Broker order connector disabled";
+        }
+        if (!is_order_connected(id)) {
+            return "Broker order connector disconnected";
+        }
+        return nullptr;
+    }
+
+    // How far the market data connector has read its request queue, NO_MD_REQUEST_CURSOR until
+    // it first reads. The queue is lossy, so StrategyManager writes no further ahead of it than
+    // the queue holds. Release: the connector is done with every request before `cursor` once it
+    // says so, and the next write may land on them. process_md_request() calls it.
+    void set_md_request_cursor(BrokerId id, uint64_t cursor) noexcept {
+        request_cursors_[static_cast<size_t>(id)].value.store(cursor, std::memory_order_release);
+    }
+    uint64_t md_request_cursor(BrokerId id) const noexcept {
+        return request_cursors_[static_cast<size_t>(id)].value.load(std::memory_order_acquire);
+    }
+
     const BrokerStatus& get(BrokerId id) const { return slot(id); }
 
     const std::array<BrokerStatus, static_cast<size_t>(BrokerId::_BROKER_ID_COUNT_)>& all() const {
@@ -74,6 +105,11 @@ private:
     static inline std::atomic<BrokerStatusRegistry*> shared_{nullptr};
 
     std::array<BrokerStatus, static_cast<size_t>(BrokerId::_BROKER_ID_COUNT_)> statuses_;
+    // A line each: every connector writes its own, and the status flags beside are read often.
+    struct alignas(64) RequestCursor {
+        std::atomic<uint64_t> value{BrokerStatus::NO_MD_REQUEST_CURSOR};
+    };
+    std::array<RequestCursor, static_cast<size_t>(BrokerId::_BROKER_ID_COUNT_)> request_cursors_;
 };
 
 } // namespace slick::trader

@@ -28,6 +28,11 @@ class ModalManager {
 
         submitBtn.addEventListener('click', () => this.submitOrder(form));
 
+        const brokerSelect = form.querySelector('#brokerId');
+        const instrumentInput = form.querySelector('#instrument');
+        this.loadBrokers(brokerSelect, instrumentInput);
+        instrumentInput.addEventListener('change', () => this.selectBroker(brokerSelect, instrumentInput.value.trim()));
+
         // Close on backdrop click
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
@@ -77,6 +82,41 @@ class ModalManager {
     }
 
     /**
+     * Lists the brokers this engine registered and picks the one the instrument trades at.
+     * A broker with order entry off is listed but cannot be picked.
+     */
+    async loadBrokers(select, instrumentInput) {
+        let brokers = [];
+        try {
+            brokers = (await api.getBrokers()).brokers ?? [];
+        } catch (error) {
+            console.error('[ModalManager] Failed to load brokers:', error);
+        }
+        if (!brokers.some(b => b.order.enabled)) {
+            select.replaceChildren(new Option(brokers.length ? 'No broker takes orders' : 'No brokers registered', ''));
+            return;
+        }
+        const label = b => !b.order.enabled ? `${b.name} (no order entry)`
+                         : !b.order.connected ? `${b.name} (disconnected)` : b.name;
+        select.replaceChildren(...brokers.map(b => {
+            const option = new Option(label(b), b.id);
+            option.disabled = !b.order.enabled;
+            return option;
+        }));
+        this.selectBroker(select, instrumentInput.value.trim());
+    }
+
+    /**
+     * Picks the broker `instrument` trades at when the ladder knows it and it takes orders,
+     * else the first broker that does.
+     */
+    selectBroker(select, instrument) {
+        const usable = Array.from(select.options).filter(option => !option.disabled && option.value !== '');
+        const known = String(window.ladderManager?.brokerFor(instrument) ?? '');
+        select.value = (usable.find(option => option.value === known) ?? usable[0])?.value ?? '';
+    }
+
+    /**
      * Create order modal HTML
      */
     createOrderModal(strategy_id, instrument, prefillData = null) {
@@ -110,9 +150,7 @@ class ModalManager {
                         <div class="form-group">
                             <label for="brokerId">Broker</label>
                             <select id="brokerId" required>
-                                <option value="1">Coinbase</option>
-                                <option value="2">Alpaca</option>
-                                <option value="3">Simulated</option>
+                                <option value="">Loading brokers...</option>
                             </select>
                         </div>
 
@@ -183,7 +221,11 @@ class ModalManager {
         const timeInForce = parseInt(form.querySelector('#timeInForce').value);
 
         // Validation
-        if (!strategyId || !instrument || !brokerId || !quantity || timeInForce === undefined) {
+        if (!brokerId) {
+            this.showNotification('No broker here takes orders', 'error');
+            return;
+        }
+        if (!strategyId || !instrument || !quantity || timeInForce === undefined) {
             this.showNotification('Please fill in all required fields', 'error');
             return;
         }

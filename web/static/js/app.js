@@ -5,6 +5,7 @@ class Dashboard {
     constructor() {
         this.wsClient = null;
         this.refreshInterval = null;
+        this.ladderStream = null;   // the instrument whose book this page streams: its ladder's
         this.pnlHistory = [];
         this.lastPnLUpdate = null;
         this.isInitialized = false;
@@ -22,6 +23,9 @@ class Dashboard {
 
         // Setup event listeners
         this.setupEventListeners();
+
+        // The ladder is built with its config, as the socket brings the instruments in
+        await window.ladderManager?.loadConfig();
 
         // Connect to WebSocket
         this.connectWebSocket();
@@ -84,6 +88,9 @@ class Dashboard {
         const wsUrl = `${protocol}//${window.location.host}`;
 
         this.wsClient = new WebSocketClient(wsUrl);
+        if (window.ladderManager) {
+            window.ladderManager.onSelect = (instrument) => this.watchLadder(instrument);
+        }
 
         // Connection status handlers
         this.wsClient.on('connected', () => {
@@ -95,8 +102,10 @@ class Dashboard {
                 window.ladderManager.clearBooks();
             }
 
-            // Subscribe to level2 for instruments (if ladder already initialized)
-            this.subscribeToMarketData();
+            // The ladder streams again once the server lists its instruments, which it does next:
+            // a restarted one may no longer have the selection. Its strategies may have changed too.
+            this.ladderStream = null;   // a new connection streams nothing yet
+            this.loadStrategies();
         });
 
         this.wsClient.on('disconnected', () => {
@@ -144,6 +153,16 @@ class Dashboard {
         // Broker status update handler
         this.wsClient.on('broker_status', (data) => {
             this.renderBrokerStatus(data.brokers);
+        });
+
+        // The ladder's instruments: all of them as the socket opens, then what is added since.
+        // The selection streams once this list has it: a selection that moved streamed already.
+        this.wsClient.on('instruments', (data) => {
+            window.ladderManager?.setInstruments(data.instrument_brokers);
+            this.watchLadder(window.ladderManager?.selectedInstrument);
+        });
+        this.wsClient.on('instruments_added', (data) => {
+            window.ladderManager?.addInstruments(data.instrument_brokers);
         });
 
         // Connect
@@ -246,34 +265,8 @@ class Dashboard {
             const strategies = await api.getStrategies();
             this.updateStrategiesCount(strategies);
             this.strategies = strategies;  // Store for later use
-
-            // Initialize ladders with strategy instruments
-            if (typeof ladderManager !== 'undefined') {
-                await this.initializeLadders(strategies);
-            }
         } catch (error) {
             console.error('[Dashboard] Failed to load strategies:', error);
-        }
-    }
-
-    /**
-     * Initialize price ladders from strategies
-     */
-    async initializeLadders(strategies) {
-        try {
-            if (strategies && strategies.length > 0) {
-                await ladderManager.init(strategies);
-                this.log('Price ladders initialized', 'success');
-
-                // Subscribe to market data now that instruments are known
-                this.subscribeToMarketData();
-            } else {
-                console.warn('[Dashboard] No strategies found for ladder initialization');
-                ladderManager.showEmptyState('No strategies loaded. Check "strategies.enabled" in the config.');
-            }
-        } catch (error) {
-            console.error('[Dashboard] Failed to initialize ladders:', error);
-            this.log('Failed to initialize ladders: ' + error.message, 'error');
         }
     }
 
@@ -385,7 +378,7 @@ class Dashboard {
                         <div class="action-buttons">
                             <button class="btn btn-sm btn-success" onclick="window.dashboard.controlStrategy('${strategyId}', 'start')" title="Start" ${isRunning ? 'disabled' : ''}>▶</button>
                             <button class="btn btn-sm btn-danger" onclick="window.dashboard.controlStrategy('${strategyId}', 'stop')" title="Stop">⏹</button>
-                            <button class="btn btn-sm" onclick="modalManager.showOrderModal('${strategyId}', 'BTC-USD')" title="New Order">📝</button>
+                            <button class="btn btn-sm" onclick="modalManager.showOrderModal('${strategyId}', window.ladderManager?.selectedInstrument ?? '')" title="New Order">📝</button>
                         </div>
                     </td>
                 </tr>
@@ -596,51 +589,21 @@ class Dashboard {
     }
 
     /**
-     * Handle real-time orderbook update
+     * Streams the book of the instrument the ladder shows, and no other: the server sends its
+     * book on subscribe, then its updates. Null streams none.
      */
-    handleOrderbookUpdate(data) {
-        if (!data || !data.instrument) {
-            console.warn('[Dashboard] Invalid orderbook update:', data);
-            return;
+    watchLadder(instrument) {
+        const connected = this.wsClient?.isConnected();
+        const next = connected ? (instrument ?? null) : null;
+        if (next === this.ladderStream) return;
+        if (this.ladderStream && connected) {
+            this.wsClient.send({ type: 'unsubscribe', channel: 'level2', instrument: this.ladderStream });
         }
-
-        // Forward to ladder manager
-        if (typeof ladderManager !== 'undefined') {
-            ladderManager.updateOrderbook(data.instrument, data);
+        this.ladderStream = next;
+        if (next) {
+            console.log(`[Dashboard] Streaming level2 for ${next}`);
+            this.wsClient.send({ type: 'subscribe', channel: 'level2', instrument: next });
         }
-    }
-
-    /**
-     * Get list of instruments to subscribe to from ladder manager
-     */
-    getSubscribedInstruments() {
-        if (typeof ladderManager === 'undefined') return [];
-        return Array.from(ladderManager.instruments);
-    }
-
-    /**
-     * Subscribe to market data for all instruments
-     */
-    subscribeToMarketData() {
-        if (!this.wsClient || !this.wsClient.isConnected()) {
-            console.log('[Dashboard] WebSocket not connected yet, skipping subscription');
-            return;
-        }
-
-        const instruments = this.getSubscribedInstruments();
-        if (instruments.length === 0) {
-            console.log('[Dashboard] No instruments to subscribe to yet');
-            return;
-        }
-
-        console.log('[Dashboard] Subscribing to level2 for instruments:', instruments);
-        instruments.forEach(instrument => {
-            this.wsClient.send({
-                type: 'subscribe',
-                channel: 'level2',
-                instrument: instrument
-            });
-        });
     }
 
     /**

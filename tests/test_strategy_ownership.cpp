@@ -85,7 +85,7 @@ protected:
         reg.set_order_connected(BrokerId::COINBASE, true);
 
         for (auto* s : {&market_maker_, &manual_}) {
-            s->initialize(nlohmann::json::object(), positions_, pnl_, risk_, md_q_, order_q_);
+            s->initialize(nlohmann::json::object(), positions_, pnl_, risk_, order_q_);
             s->start();
         }
     }
@@ -93,7 +93,6 @@ protected:
     PositionTracker positions_;
     PnLCalculator   pnl_{positions_};
     RiskManager     risk_{positions_};
-    slick::queue<uint8_t> md_q_{4096};
     slick::queue<uint8_t> order_q_{65536};
 
     RecordingStrategy market_maker_{"MarketMaker"};

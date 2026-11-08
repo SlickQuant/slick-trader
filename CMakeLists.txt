@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.28)
 
 project(SlickTrader 
-    VERSION 0.2.0
+    VERSION 0.3.0
     LANGUAGES CXX
 )
 
@@ -91,6 +91,7 @@ if (NOT slick-logger_FOUND)
     set(BUILD_SLICK_LOGGER_BENCHMARKS OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
         slick-logger
+        SYSTEM
         GIT_REPOSITORY https://github.com/SlickQuant/slick-logger.git
         GIT_TAG v${SLICK_LOGGER_MIN_VERSION}
     )
@@ -108,6 +109,7 @@ if (NOT slick-orderbook_FOUND)
     set(BUILD_SLICK_ORDERBOOK_EXAMPLES OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(
         slick-orderbook
+        SYSTEM
         GIT_REPOSITORY https://github.com/SlickQuant/slick-orderbook.git
         GIT_TAG v${SLICK_ORDERBOOK_MIN_VERSION}
     )

@@ -40,7 +40,7 @@ protected:
             reg.set_order_connected(broker, true);
         }
         cursor_ = order_q_.initial_reading_index();
-        strategy_.initialize(nlohmann::json::object(), positions_, pnl_, risk_, md_q_, order_q_);
+        strategy_.initialize(nlohmann::json::object(), positions_, pnl_, risk_, order_q_);
         strategy_.start();
     }
 
@@ -56,7 +56,6 @@ protected:
     PositionTracker positions_;
     PnLCalculator   pnl_{positions_};
     RiskManager     risk_{positions_};
-    slick::queue<uint8_t> md_q_{4096};
     slick::queue<uint8_t> order_q_{65536};
     uint64_t cursor_ = 0;
     RoutingStrategy strategy_;

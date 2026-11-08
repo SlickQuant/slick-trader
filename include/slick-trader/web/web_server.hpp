@@ -3,8 +3,8 @@
 #include <slick/queue.hpp>
 #include <uwebsockets/App.h>
 #include <slick-trader/events/event.hpp>
-#include <slick-trader/events/order_book_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
+#include <slick-trader/web/level2_book.hpp>
 #include <slick-trader/core/broker_status.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
 #include <atomic>
@@ -142,6 +142,19 @@ private:
     void handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::string_view message);
     void handle_ws_close(uWS::WebSocket<false, true, void*>* ws);
 
+    using Socket = uWS::WebSocket<false, true, void*>;
+    // Sends `message` as text. One uWS drops, its client too far behind, leaves that client's
+    // ladder or lists short of it for good: close_lagging() closes it, and it reconnects whole.
+    // Not uWS's closeOnBackpressureLimit: that only shuts the read side, so the close waits on
+    // the client sending again, and what is sent meanwhile reaches it past the gap.
+    void send_text(Socket* ws, std::string_view message);
+    void close_lagging();
+
+    // What uWS holds for a client before it drops a send. Over the largest message: the list a
+    // dashboard gets on connect runs to megabytes with MANUAL on "*", and the 64 KB default
+    // dropped the next message to any client still reading it, at every reconnect too.
+    static constexpr unsigned int WS_MAX_BACKPRESSURE = 16u << 20;
+
     // Helper methods
     void send_json_response(uWS::HttpResponse<false>* res, const std::string& json, int status = 200);
     void send_error_response(uWS::HttpResponse<false>* res, const std::string& error, int status = 400);
@@ -156,7 +169,6 @@ private:
     void handle_order_reject(const OrderRejectEvent& reject);
 
     void broadcast_level2_update(const Level2UpdateEvent& event);
-    void broadcast_orderbook(const OrderBookEvent& event);
     void broadcast_order_update(const std::string& message);
 
     // PnL broadcasting
@@ -164,11 +176,6 @@ private:
 
     // Broker status broadcasting
     void check_and_broadcast_broker_status();
-
-    // WebSocket subscription tracking
-    struct Subscription {
-        std::unordered_set<uWS::WebSocket<false, true, void*>*> clients;
-    };
 
     StrategyManager& strategy_manager_;
     PositionTracker& position_tracker_;
@@ -198,6 +205,21 @@ private:
     bool pnl_changed_{false};
     uint64_t last_pnl_broadcast_ns_{0};
 
+    // How many of MANUAL's instruments the dashboards were told of, and when last. A dashboard
+    // gets the whole list as it connects, and what MANUAL adopts after at most this often.
+    static constexpr uint64_t INSTRUMENTS_ADDED_INTERVAL_NS = 250'000'000;
+    uint32_t instruments_sent_{0};
+    uint64_t last_instruments_sent_ns_{0};
+    // The other strategies' instruments, instrument -> broker id, taken in initialize(): their
+    // get_subscriptions() read state their on_config() writes on the StrategyManager thread.
+    nlohmann::json strategy_instruments_ = nlohmann::json::object();
+
+    // How long one process_events() pass may read the bus before the loop gets its sockets back.
+    static constexpr uint64_t PROCESS_EVENTS_BUDGET_NS = 1'000'000;
+
+    // Each level2 message is written here: one buffer, its capacity kept from one to the next.
+    std::string level2_message_;
+
     // Producer side of the same bus: strategy parameter updates are published here from the
     // uWS event loop thread and applied by the StrategyManager worker, so a strategy's
     // on_config() runs on the thread that owns its state. Registered in initialize(), which
@@ -219,8 +241,12 @@ private:
     // All connected WebSocket clients (for broadcasting order updates)
     std::unordered_set<uWS::WebSocket<false, true, void*>*> all_ws_clients_;
 
-    // Subscription management
-    std::unordered_map<std::string, Subscription> level2_subscriptions_;
+    // Clients a send was dropped for, closed at the end of the process_events() pass.
+    std::unordered_set<Socket*> lagging_;
+
+    // The level 2 book of every instrument streamed, any strategy's or MANUAL's, and the
+    // browsers watching each.
+    Level2Streams<Socket> level2_streams_;
 
     // Ladder configuration
     nlohmann::json ladder_config_;

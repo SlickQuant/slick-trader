@@ -8,22 +8,25 @@ find_package(GTest CONFIG REQUIRED)
 
 # Built exactly like a real strategy plugin (SHARED, statically linked against
 # slick-trader-core) so it reproduces the private-singleton problem under test.
-add_library(probe_plugin SHARED probe_plugin.cpp)
+# stale_plugin is one built before plugins named their API version.
+foreach(plugin probe_plugin stale_plugin)
+    add_library(${plugin} SHARED ${plugin}.cpp)
 
-if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
-    set_target_properties(probe_plugin PROPERTIES CXX_SCAN_FOR_MODULES OFF)
-endif()
+    if(SLICK_TRADER_DISABLE_CXX_MODULE_SCAN)
+        set_target_properties(${plugin} PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+    endif()
 
-target_include_directories(probe_plugin PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_link_libraries(probe_plugin PRIVATE slick-trader-core)
-set_target_properties(probe_plugin PROPERTIES
-    PREFIX ""
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
-)
-if(MSVC)
-    target_compile_options(probe_plugin PRIVATE /FS)
-endif()
+    target_include_directories(${plugin} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_link_libraries(${plugin} PRIVATE slick-trader-core)
+    set_target_properties(${plugin} PROPERTIES
+        PREFIX ""
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests"
+    )
+    if(MSVC)
+        target_compile_options(${plugin} PRIVATE /FS)
+    endif()
+endforeach()
 
 add_executable(slick-trader-tests
     test_main.cpp
@@ -37,11 +40,13 @@ add_executable(slick-trader-tests
     test_futures_accounting.cpp
     test_order_request_routing.cpp
     test_md_subscription.cpp
+    test_level2_book.cpp
     test_mbo_book.cpp
     test_instrument_status.cpp
     test_position_store.cpp
     test_spread_fills.cpp
     test_web_server_shutdown.cpp
+    test_web_server_http.cpp
     # Building blocks under brokers/common, shared by out-of-tree brokers.
     test_broker_state_files.cpp
     test_level_book.cpp
@@ -62,6 +67,7 @@ target_link_libraries(slick-trader-tests PRIVATE
 )
 target_compile_definitions(slick-trader-tests PRIVATE
     SLICK_TRADER_TEST_PLUGIN_PATH="$<TARGET_FILE:probe_plugin>"
+    SLICK_TRADER_TEST_STALE_PLUGIN_PATH="$<TARGET_FILE:stale_plugin>"
 )
 
 # Every broker the executable carries, so the registry test sees the same set - plus
@@ -80,7 +86,7 @@ if(TARGET slick::stacker)
     target_sources(slick-trader-tests PRIVATE test_order_stacker_config_apply.cpp)
     target_link_libraries(slick-trader-tests PRIVATE slick::stacker)
 endif()
-add_dependencies(slick-trader-tests probe_plugin)
+add_dependencies(slick-trader-tests probe_plugin stale_plugin)
 
 if(MSVC)
     target_compile_options(slick-trader-tests PRIVATE /FS)

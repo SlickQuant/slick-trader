@@ -7,11 +7,14 @@
 // every order with "Broker order connector disconnected". Orders placed from inside the
 // host (the MANUAL web-UI strategy) worked, which is what made it hard to spot.
 
+#include "strategy_manager_fixture.hpp"
+
 #include <gtest/gtest.h>
 #include <slick-trader/core/broker_status.hpp>
 #include <slick-trader/core/strategy_loader.hpp>
 #include <slick-trader/core/strategy_manager.hpp>
 #include <filesystem>
+#include <fstream>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -24,6 +27,7 @@ using namespace slick::trader;
 namespace {
 
 using ProbeFunc = bool (*)(int);
+using InitializedFunc = bool (*)();
 
 // Opens the already-loaded plugin a second time purely to reach its probe exports.
 // On Windows this bumps the refcount and returns the same HMODULE, so the statics we
@@ -35,12 +39,14 @@ struct PluginProbe {
         if (handle) {
             enabled   = reinterpret_cast<ProbeFunc>(GetProcAddress(static_cast<HMODULE>(handle), "probe_is_order_enabled"));
             connected = reinterpret_cast<ProbeFunc>(GetProcAddress(static_cast<HMODULE>(handle), "probe_is_order_connected"));
+            initialized = reinterpret_cast<InitializedFunc>(GetProcAddress(static_cast<HMODULE>(handle), "probe_initialized"));
         }
 #else
         handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL);
         if (handle) {
             enabled   = reinterpret_cast<ProbeFunc>(dlsym(handle, "probe_is_order_enabled"));
             connected = reinterpret_cast<ProbeFunc>(dlsym(handle, "probe_is_order_connected"));
+            initialized = reinterpret_cast<InitializedFunc>(dlsym(handle, "probe_initialized"));
         }
 #endif
     }
@@ -48,6 +54,7 @@ struct PluginProbe {
     void*     handle{nullptr};
     ProbeFunc enabled{nullptr};
     ProbeFunc connected{nullptr};
+    InitializedFunc initialized{nullptr};
 };
 
 constexpr int kCoinbase = static_cast<int>(BrokerId::COINBASE);
@@ -109,10 +116,66 @@ TEST(BrokerStatusInjection, HostKeepsItsOwnRegistryWhenNothingIsInjected) {
     EXPECT_FALSE(b.is_order_enabled(BrokerId::SIMULATED));
 }
 
+// The order dialog listed Coinbase, Alpaca and Simulated whatever the engine had built. It now
+// lists the brokers the registry knows, and the web server turns an order down for the same
+// reasons submit_order() does, so the caller hears why.
+TEST(BrokerStatusInjection, TheRegistryKnowsItsBrokersAndWhyOneTakesNoOrder) {
+    auto& reg = BrokerStatusRegistry::instance();
+    constexpr BrokerId id = BrokerId::ALPACA;   // no connector in this build makes one
+    ASSERT_FALSE(reg.is_registered(id));
+
+    reg.set_name(id, "Alpaca");
+    EXPECT_TRUE(reg.is_registered(id));
+    EXPECT_STREQ(reg.order_unavailable_reason(id), "Broker order connector disabled");
+    reg.set_order_enabled(id, true);
+    EXPECT_STREQ(reg.order_unavailable_reason(id), "Broker order connector disconnected");
+    reg.set_order_connected(id, true);
+    EXPECT_EQ(reg.order_unavailable_reason(id), nullptr);
+
+    reg.set_order_connected(id, false);
+    reg.set_order_enabled(id, false);
+    reg.set_name(id, "");
+    EXPECT_FALSE(reg.is_registered(id));
+}
+
 // The strategy manager finds plugins by their file extension, and that has to be the one
 // CMake gives a shared library here: macOS names them .dylib, and a manager that looked
 // for .so there loaded no strategy at all.
 TEST(BrokerStatusInjection, ThePluginExtensionIsTheOneThePlatformBuilds) {
     EXPECT_EQ(std::filesystem::path(SLICK_TRADER_TEST_PLUGIN_PATH).extension().string(),
               StrategyManager::PLUGIN_EXTENSION);
+}
+
+// A plugin built before IStrategy::on_order_book named its instrument was loaded all the same:
+// the host called it through its new vtable, and indexed BrokerStatus by another layout. The
+// loader now takes only a plugin built against its own STRATEGY_API_VERSION.
+TEST(BrokerStatusInjection, ThePluginOfAnotherStrategyApiIsRefused) {
+    StrategyLoader loader;
+    EXPECT_EQ(loader.load(SLICK_TRADER_TEST_STALE_PLUGIN_PATH), nullptr);
+    EXPECT_NE(loader.get_last_error().find("Rebuild it"), std::string::npos) << loader.get_last_error();
+
+    StrategyLoader current;
+    EXPECT_NE(current.load(SLICK_TRADER_TEST_PLUGIN_PATH), nullptr) << current.get_last_error();
+}
+
+// A plugin whose config file gave it no "parameters" was never initialize()d: load_strategies()
+// passed a config's parameters only when there were some. It kept a null risk manager and order
+// queue, and its first order dereferenced them.
+TEST(BrokerStatusInjection, APluginWhoseConfigHasNoParametersIsInitialized) {
+    namespace fs = std::filesystem;
+    // A copy of its own, a module apart from the one the tests above inspect. Copied only when
+    // newer: a run repeated in this process has the last copy loaded still.
+    const fs::path dir = fs::temp_directory_path() / "slick-trader-plugin-init-test";
+    fs::create_directories(dir);
+    const fs::path plugin = dir / fs::path(SLICK_TRADER_TEST_PLUGIN_PATH).filename();
+    fs::copy_file(SLICK_TRADER_TEST_PLUGIN_PATH, plugin, fs::copy_options::update_existing);
+    std::ofstream(dir / "probe.config.json") << R"({"name": "Probe"})";
+
+    test::StrategyManagerFixture env;
+    env.manager_.load_strategies(nlohmann::json{{"strategy_plugins_folder", dir.string()}});
+    ASSERT_NE(env.manager_.get_strategy("Probe"), nullptr);
+
+    PluginProbe probe(plugin.string().c_str());
+    ASSERT_NE(probe.initialized, nullptr) << "failed to open " << plugin;
+    EXPECT_TRUE(probe.initialized());
 }

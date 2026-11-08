@@ -53,7 +53,8 @@ struct RestingOrder {
 // Exposes the order bookkeeping StrategyBase keeps protected.
 class TestableMarketMaker : public MarketMaker {
 public:
-    using MarketMaker::on_quote;  // MarketMaker narrows the IStrategy hook to protected
+    using MarketMaker::on_quote;  // MarketMaker narrows the IStrategy hooks to protected
+    using MarketMaker::on_order_book;
     using StrategyBase::get_order;
     using StrategyBase::get_orders;
 };
@@ -81,7 +82,7 @@ protected:
         reg.set_order_enabled(BrokerId::COINBASE, true);
         reg.set_order_connected(BrokerId::COINBASE, true);
 
-        mm_.initialize(strategy_params(), positions_, pnl_, risk_, md_q_, order_q_);
+        mm_.initialize(strategy_params(), positions_, pnl_, risk_, order_q_);
         mm_.start();
     }
 
@@ -233,7 +234,6 @@ protected:
     PositionTracker positions_;
     PnLCalculator   pnl_{positions_};
     RiskManager     risk_{positions_};
-    slick::queue<uint8_t> md_q_{4096};
     slick::queue<uint8_t> order_q_{65536};
     uint64_t order_cursor_{0};
     uint64_t clock_{0};
@@ -547,4 +547,45 @@ TEST_F(MarketMakerTrendTest, TrendLeansQuotesWithTheTrendOnANegativeMid) {
     // through the mid, which is the lean cap at trend_sensitivity 1.0.
     EXPECT_GT(bid_price, -2.00) << "quotes leaned against a rising market";
     EXPECT_LE(bid_price, -1.95) << "and never through the mid";
+}
+
+namespace {
+
+// Fair value from the book's levels on both sides rather than the top alone.
+class MarketMakerBookTest : public MarketMakerQuoteSlotTest {
+protected:
+    nlohmann::json strategy_params() const override {
+        auto p = MarketMakerQuoteSlotTest::strategy_params();
+        p["fair_value_mode"] = "NLEVEL_WMID";
+        return p;
+    }
+
+    // One level a side, of equal sizes, so the book's fair value is its mid.
+    void send_book(const char* instrument, double bid, double ask) {
+        slick::orderbook::OrderBookL2 book(0);
+        for (const auto& [side, price] : {std::pair{slick::orderbook::Side::Buy, bid},
+                                          std::pair{slick::orderbook::Side::Sell, ask}}) {
+            book.updateLevel(side, static_cast<slick::orderbook::Price>(to_price_t(price)),
+                             static_cast<slick::orderbook::Quantity>(to_qty_t(1.0)), ++clock_);
+        }
+        mm_.on_order_book(instrument, book);
+    }
+};
+
+} // namespace
+
+// Every strategy is handed the book of every instrument any strategy subscribed. A market maker
+// valuing books level by level took its fair value from whichever ticked last, and quoted BTC-USD
+// at the price of another strategy's book.
+TEST_F(MarketMakerBookTest, ValuesOnlyTheBookOfItsOwnInstrument) {
+    send_book("ETH-USD", 3000.0, 3002.0);
+    EXPECT_TRUE(drain().empty()) << "quoted " << kInstrument << " off the ETH-USD book";
+
+    send_book(kInstrument, 78000.0, 78002.0);
+    const auto quotes = drain();
+    EXPECT_EQ(count(quotes, EventType::NEW_ORDER), 2);
+    for (const auto& quote : quotes) {
+        EXPECT_GT(quote.price, 77000.0);
+        EXPECT_LT(quote.price, 79000.0);
+    }
 }

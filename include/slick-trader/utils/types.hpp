@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <slick-trader/events/event.hpp>
+#include <slick-trader/utils/string_hash.hpp>
 
 namespace slick::trader {
 

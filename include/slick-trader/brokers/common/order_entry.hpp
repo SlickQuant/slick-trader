@@ -141,11 +141,7 @@ public:
     void set_default(double fee) noexcept { default_fee_ = fee; }
 
 private:
-    struct Hash {
-        using is_transparent = void;
-        size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
-    };
-    std::unordered_map<std::string, double, Hash, std::equal_to<>> fees_;
+    std::unordered_map<std::string, double, StringHash, std::equal_to<>> fees_;
     double default_fee_ = 0.0;
 };
 

@@ -2,6 +2,7 @@
 
 #include <slick-trader/strategy/istrategy.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
+#include <slick-trader/strategy/manual_strategy.hpp>
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
@@ -14,13 +15,17 @@
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick-trader/core/strategy_loader.hpp>
 #include <slick-trader/core/broker_status.hpp>
+#include <slick-trader/core/md_request_queues.hpp>
 #include <slick/queue.hpp>
 #include <nlohmann/json.hpp>
+#include <array>
+#include <deque>
 #include <memory>
 #include <vector>
 #include <thread>
 #include <atomic>
 #include <map>
+#include <optional>
 #include <set>
 #include <string_view>
 #include <tuple>
@@ -76,7 +81,7 @@ public:
         PnLCalculator& pnl_calculator,
         RiskManager& risk_manager,
         slick::stream_buffer_multiplexer& event_mux,
-        slick::queue<uint8_t>& md_request_queue,
+        MdRequestQueues& md_request_queues,
         slick::queue<uint8_t>& order_request_queue
     );
 
@@ -133,16 +138,27 @@ public:
         return it != auto_pause_reasons_.end() ? it->second : empty;
     }
 
-    void subscribe_book_update(std::vector<std::string>& instruments) {
+    // The strategy holding the Web UI's orders and the instruments it ladders. Null until one
+    // is added, which is before any other thread runs.
+    const ManualStrategy* manual() const noexcept { return manual_.get(); }
+
+    // Keeps the L2 book of each of `instruments` for the strategies: on_order_book(), and
+    // quotes and marks from its top.
+    void subscribe_book_update(const std::vector<std::string>& instruments) {
         for (const auto& instrument : instruments) {
             // One observer per book, however many subscription types feed it: a second
             // one would hand every update to the strategies twice.
-            if (!observed_books_.insert(instrument).second) {
+            if (l2_books_.contains(instrument)) {
                 continue;
             }
-            auto *book = book_manager_.getOrCreateOrderBook(get_or_create_symbol_id(instrument));
+            const auto sid = get_or_create_symbol_id(instrument);
+            if (!sid) {
+                continue;
+            }
+            auto *book = book_manager_.getOrCreateOrderBook(*sid);
             auto observer = std::make_shared<OrderBookObserverImpl>(this, *book, instrument);
             book->addObserver(observer);
+            l2_books_.emplace(instrument, book);
 
             // The L2 book is now this instrument's source of quotes.
             if (auto it = mbo_books_.find(instrument); it != mbo_books_.end()) {
@@ -168,16 +184,43 @@ private:
 
     void run();
 
-    void subscribe(const SubscriptionRequest& sub);
+    // `book`: whether to keep the book for the strategies too. Not for MANUAL's, which stream
+    // to the Web UI alone: a venue's worth would take a 16-bit book id each, and its quotes and
+    // marks on every change.
+    void subscribe(const SubscriptionRequest& sub, bool book = true);
     void unsubscribe(const SubscriptionRequest& sub);
 
     void check_loss_limits();
     void check_broker_status();
     void dispatch_strategy_config(const StrategyConfigEvent& event);
 
-    // Sends one SUBSCRIBE or UNSUBSCRIBE request for `instruments` to the request's broker.
+    // Sends SUBSCRIBE or UNSUBSCRIBE requests for `instruments` to the request's broker, as
+    // many as it takes to keep each within max_instruments_per_request(). Each goes straight
+    // into the queue if none waits ahead of it and its connector has room, else to the outbox.
     void publish_subscription(EventType type, const SubscriptionRequest& sub,
                               const std::vector<std::string>& instruments);
+    static size_t max_instruments_per_request(const slick::queue<uint8_t>& queue);
+
+    // A request queue is lossy: a request written a queue's length past where its connector
+    // is reading overwrites one it has not read. has_room() says whether a request of `size`
+    // fits in broker `i`'s queue without that, going by request_cursor(), where it reads.
+    bool has_room(size_t i, const slick::queue<uint8_t>& queue, uint32_t size) const;
+    uint64_t request_cursor(size_t i) const;
+
+    // send_requests() publishes each broker's waiting requests, oldest first, while its
+    // connector has room for them, and returns whether it sent them all. One that read nothing
+    // in md_request_stall_timeout_ms is reported, and still waited on: it would lose them
+    // otherwise. drain_requests() waits for them all, and gives up on a connector there alone.
+    bool send_requests(std::chrono::steady_clock::time_point now);
+    void drain_requests();
+    static constexpr auto REQUEST_RETRY_INTERVAL = std::chrono::milliseconds(1);
+
+    // Subscribes what MANUAL adopted since the last flush, at most once per interval, so a
+    // burst of definitions goes out as one request per broker.
+    void flush_adoptions(std::chrono::steady_clock::time_point now);
+    static constexpr auto ADOPTION_FLUSH_INTERVAL = std::chrono::milliseconds(50);
+    // Has MANUAL adopt `instrument` if its list names it.
+    void adopt(BrokerId broker, std::string_view instrument);
 
     void dispatch_trade(const TradeEvent& event);
     void dispatch_quote(const QuoteEvent& event);
@@ -186,10 +229,16 @@ private:
     void dispatch_instrument_status(const InstrumentStatusEvent& event);
 
     void on_top_of_book_update(const std::string &instrument, const slick::orderbook::TopOfBook& tob);
-    void on_order_book_update(const slick::orderbook::OrderBookL2& book);
+    void on_order_book_update(const std::string& instrument, const slick::orderbook::OrderBookL2& book);
     void dispatch_order_book(const OrderBookEvent& event);
+    // The L2 book kept for `instrument`, or nullptr when no strategy subscribed it.
+    slick::orderbook::OrderBookL2* find_l2_book(std::string_view instrument) const {
+        const auto it = l2_books_.find(instrument);
+        return it != l2_books_.end() ? it->second : nullptr;
+    }
 
-    slick::orderbook::SymbolId get_or_create_symbol_id(const std::string& instrument);
+    // Nothing once every SymbolId (16 bits) is taken: a book refused beats two sharing one.
+    std::optional<slick::orderbook::SymbolId> get_or_create_symbol_id(std::string_view instrument);
 
     // One instrument's market-by-order book. Held here rather than in an OrderBookManager,
     // whose lookup takes a shared lock: only the worker thread touches these.
@@ -212,14 +261,6 @@ private:
     };
     MboBook& get_or_create_mbo_book(std::string_view instrument);
 
-    // Lets the per-event lookup take the instrument as it arrives, without building a string.
-    struct InstrumentHash {
-        using is_transparent = void;
-        std::size_t operator()(std::string_view instrument) const noexcept {
-            return std::hash<std::string_view>{}(instrument);
-        }
-    };
-
     void dispatch_order_ack(const OrderAckEvent& event);
     void dispatch_order_fill(const OrderFillEvent& event);
     void dispatch_order_reject(const OrderRejectEvent& event);
@@ -229,15 +270,39 @@ private:
 private:
     std::vector<std::shared_ptr<IStrategy>> strategies_;
     std::unordered_map<std::string, std::shared_ptr<IStrategy>> strategy_map_;
+    std::shared_ptr<ManualStrategy> manual_;    // also in strategies_; null until one is added
+
+    static constexpr size_t BROKER_COUNT = static_cast<size_t>(BrokerId::_BROKER_ID_COUNT_);
+    std::array<std::vector<std::string>, BROKER_COUNT> adoptions_;   // adopted while running, not yet subscribed
+    // Every instrument each broker defined, so a list MANUAL is given later adopts them too.
+    std::array<StringSet, BROKER_COUNT> defined_;
+    bool adoptions_pending_{false};
+    std::chrono::steady_clock::time_point last_adoption_flush_{};
+    // Whole MDSubscription records not yet published, by broker.
+    std::array<std::deque<std::vector<uint8_t>>, BROKER_COUNT> request_outbox_;
+    size_t requests_queued_{0};
+    std::chrono::steady_clock::time_point last_request_send_{};
+    std::array<uint64_t, BROKER_COUNT> request_baseline_{};   // each queue's index when this manager was made
+    std::chrono::milliseconds reader_stall_timeout_;
+    // A broker whose next request waits on its connector: where that was reading, since when,
+    // and whether it was reported, which it is once it has read nothing in reader_stall_timeout_.
+    struct RequestWait {
+        uint64_t cursor = 0;
+        std::chrono::steady_clock::time_point since{};
+        bool reported = false;
+    };
+    std::array<RequestWait, BROKER_COUNT> request_waits_{};
     slick::orderbook::OrderBookManager<slick::orderbook::OrderBookL2> book_manager_;
-    std::unordered_map<std::string, slick::orderbook::SymbolId> symbol_ids_;
-    std::unordered_map<slick::orderbook::SymbolId, std::string> symbol_names_;
+    // Instruments are looked up as they arrive in events, without building a string.
+    std::unordered_map<std::string, slick::orderbook::SymbolId, StringHash, std::equal_to<>> symbol_ids_;
     // How many strategies hold each subscription. Keyed by all three of broker, type and
     // instrument: trades and the book of one instrument are separate requests to the broker.
     using SubscriptionKey = std::tuple<BrokerId, SubscriptionType, std::string>;
     std::map<SubscriptionKey, uint32_t> subscriptions_;
-    std::unordered_set<std::string> observed_books_;    // instruments whose L2 book has its observer
-    std::unordered_map<std::string, std::unique_ptr<MboBook>, InstrumentHash, std::equal_to<>> mbo_books_;
+    // The L2 books kept for the strategies, each with its observer. Held here so an event finds
+    // its book without the manager's lock: only the worker thread touches them.
+    std::unordered_map<std::string, slick::orderbook::OrderBookL2*, StringHash, std::equal_to<>> l2_books_;
+    std::unordered_map<std::string, std::unique_ptr<MboBook>, StringHash, std::equal_to<>> mbo_books_;
     std::unordered_map<std::string, std::set<BrokerId>> strategy_md_brokers_;
     std::unordered_set<std::string> auto_paused_strategies_;
     std::unordered_map<std::string, std::string> auto_pause_reasons_;
@@ -249,7 +314,7 @@ private:
     RiskManager& risk_manager_;
 
     slick::stream_buffer_multiplexer& event_mux_;
-    slick::queue<uint8_t>& md_request_queue_;
+    MdRequestQueues& md_request_queues_;
     slick::queue<uint8_t>& order_request_queue_;
     std::shared_ptr<producer_buffer> tob_producer_buffer_;
 
@@ -263,7 +328,7 @@ private:
 };
 
 inline void OrderBookObserverImpl::onPriceLevelUpdate(const slick::orderbook::PriceLevelUpdate& update) {
-    manager_->on_order_book_update(order_book_);
+    manager_->on_order_book_update(instrument_, order_book_);
 }
 
 inline void OrderBookObserverImpl::onTopOfBookUpdate(const slick::orderbook::TopOfBook& tob) {

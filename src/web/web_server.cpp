@@ -9,14 +9,66 @@
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/strategy_config_event.hpp>
 #include <slick-trader/events/event_serializer.hpp>
+#include <cassert>
 #include <chrono>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
-#include <set>
+#include <format>
+#include <utility>
 #include <vector>
 
 namespace slick::trader {
+
+namespace {
+
+// Adds `instrument` to `brokers`, the dashboard's map of the broker an order for each goes to.
+// The first broker named wins.
+void add_instrument(json& brokers, std::string_view instrument, BrokerId broker) {
+    brokers.emplace(std::string(instrument), static_cast<int>(broker));   // keeps one there
+}
+
+// Calls `handler(body)` with the request's body once all of it has come. uWS hands it over in
+// chunks as they arrive, and a handler given the last alone parsed the tail of a long one.
+template <typename Handler>
+void read_body(uWS::HttpResponse<false>* res, Handler&& handler) {
+    res->onAborted([]() {});
+    res->onData([handler = std::forward<Handler>(handler), body = std::string()](std::string_view data,
+                                                                                 bool last) mutable {
+        if (!last) {
+            body.append(data);
+        } else if (body.empty()) {
+            handler(data);   // all in one chunk, as most are: no copy
+        } else {
+            body.append(data);
+            handler(std::string_view(body));
+        }
+    });
+}
+
+// {"type":<type>,"instrument_brokers":{<instrument>:<broker id>,...}}: instruments the
+// dashboard ladders, all of them ("instruments") or those new since ("instruments_added").
+std::string instruments_message(std::string_view type, json brokers) {
+    return json{{"type", type}, {"instrument_brokers", std::move(brokers)}}.dump();
+}
+
+// What uWS writes after "HTTP/1.1 ": the code and its reason phrase, which a status line needs.
+std::string_view status_line(int status) {
+    switch (status) {
+    case 200: return "200 OK";
+    case 202: return "202 Accepted";
+    case 400: return "400 Bad Request";
+    case 403: return "403 Forbidden";
+    case 404: return "404 Not Found";
+    case 422: return "422 Unprocessable Content";
+    case 503: return "503 Service Unavailable";
+    default:
+        assert(status == 500 && "a status with no reason phrase here");
+        return "500 Internal Server Error";
+    }
+}
+
+} // namespace
 
 bool WebServer::initialize(const json& config) {
     config_.port = config.value("web_server_port", 8080);
@@ -34,6 +86,20 @@ bool WebServer::initialize(const json& config) {
             {"per_instrument", json::object()}
         };
         LOG_INFO("WebServer: Using default ladder config");
+    }
+
+    // What the strategies subscribe is fixed once they start, and nothing runs them yet. MANUAL's
+    // grows: it is read as each dashboard connects.
+    strategy_instruments_ = json::object();
+    for (const auto& strategy : strategy_manager_.get_all_strategies()) {
+        if (strategy.get() == strategy_manager_.manual()) {
+            continue;
+        }
+        for (const auto& sub : strategy->get_subscriptions()) {
+            for (const auto& instrument : sub.instruments) {
+                add_instrument(strategy_instruments_, instrument, sub.broker_id);
+            }
+        }
     }
 
     // Register our producer on the event bus. Strategy parameter updates go out this way so
@@ -234,12 +300,7 @@ void WebServer::setup_routes(uWS::App &app) {
 
     // POST: Submit manual order
     app.post("/api/orders", [this](auto* res, auto* req) {
-        res->onData([this, res](std::string_view data, bool last) {
-            if (last) {
-                handle_post_order(res, nullptr, data);
-            }
-        });
-        res->onAborted([]() {});
+        read_body(res, [this, res](std::string_view body) { handle_post_order(res, nullptr, body); });
     });
 
     // GET: All open orders across all strategies
@@ -258,30 +319,21 @@ void WebServer::setup_routes(uWS::App &app) {
     // PUT: Modify a specific order
     app.put("/api/orders/:strategy_id/:order_id", [this](auto* res, auto* req) {
         std::string sid(req->getParameter(0)), oid(req->getParameter(1));
-        res->onData([this, res, sid, oid](std::string_view data, bool last) {
-            if (last) handle_put_order(res, nullptr, sid, oid, data);
-        });
-        res->onAborted([]() {});
+        read_body(res, [this, res, sid, oid](std::string_view body) { handle_put_order(res, nullptr, sid, oid, body); });
     });
 
     // DELETE: Cancel a specific order
     app.del("/api/orders/:strategy_id/:order_id", [this](auto* res, auto* req) {
         std::string sid(req->getParameter(0)), oid(req->getParameter(1));
-        res->onData([this, res, sid, oid](std::string_view data, bool last) {
-            if (last) handle_delete_order(res, nullptr, sid, oid, data);
-        });
-        res->onAborted([]() {});
+        read_body(res, [this, res, sid, oid](std::string_view body) { handle_delete_order(res, nullptr, sid, oid, body); });
     });
 
     // POST: Strategy control (start/stop)
     app.post("/api/strategies/:strategy_id/control", [this](auto* res, auto* req) {
         std::string strategy_id(req->getParameter(0));
-        res->onData([this, res, strategy_id](std::string_view data, bool last) {
-            if (last) {
-                handle_post_strategy_control(res, nullptr, strategy_id, data);
-            }
+        read_body(res, [this, res, strategy_id](std::string_view body) {
+            handle_post_strategy_control(res, nullptr, strategy_id, body);
         });
-        res->onAborted([]() {});
     });
 
     // GET: Risk limits for strategy
@@ -293,12 +345,9 @@ void WebServer::setup_routes(uWS::App &app) {
     // PUT: Update risk limits for strategy
     app.put("/api/strategies/:strategy_id/risk", [this](auto* res, auto* req) {
         std::string strategy_id(req->getParameter(0));
-        res->onData([this, res, strategy_id](std::string_view data, bool last) {
-            if (last) {
-                handle_put_risk_limits(res, nullptr, strategy_id, data);
-            }
+        read_body(res, [this, res, strategy_id](std::string_view body) {
+            handle_put_risk_limits(res, nullptr, strategy_id, body);
         });
-        res->onAborted([]() {});
     });
 
     // GET: Current strategy parameters
@@ -310,23 +359,17 @@ void WebServer::setup_routes(uWS::App &app) {
     // PUT: Update strategy parameters at runtime and persist to config.json
     app.put("/api/strategies/:strategy_id/config", [this](auto* res, auto* req) {
         std::string strategy_id(req->getParameter(0));
-        res->onData([this, res, strategy_id](std::string_view data, bool last) {
-            if (last) {
-                handle_put_strategy_config(res, nullptr, strategy_id, data);
-            }
+        read_body(res, [this, res, strategy_id](std::string_view body) {
+            handle_put_strategy_config(res, nullptr, strategy_id, body);
         });
-        res->onAborted([]() {});
     });
 
     // POST: Halt strategy
     app.post("/api/strategies/:strategy_id/halt", [this](auto* res, auto* req) {
         std::string strategy_id(req->getParameter(0));
-        res->onData([this, res, strategy_id](std::string_view data, bool last) {
-            if (last) {
-                handle_post_halt_strategy(res, nullptr, strategy_id, data);
-            }
+        read_body(res, [this, res, strategy_id](std::string_view body) {
+            handle_post_halt_strategy(res, nullptr, strategy_id, body);
         });
-        res->onAborted([]() {});
     });
 
     // POST: Resume strategy
@@ -342,18 +385,12 @@ void WebServer::setup_routes(uWS::App &app) {
 
     // PUT: Update ladder configuration
     app.put("/api/ladder-config", [this](auto* res, auto* req) {
-        auto body_ptr = std::make_shared<std::string>();
-        res->onData([this, res, body_ptr](std::string_view data, bool last) mutable {
-            body_ptr->append(data.data(), data.size());
-            if (last) {
-                handle_put_ladder_config(res, nullptr, *body_ptr);
-            }
-        });
-        res->onAborted([]() {});
+        read_body(res, [this, res](std::string_view body) { handle_put_ladder_config(res, nullptr, std::string(body)); });
     });
 
     // WebSocket endpoint
     app.ws<void*>("/*", {
+        .maxBackpressure = WS_MAX_BACKPRESSURE,
         .open = [this](auto* ws) {
             handle_ws_open(ws);
         },
@@ -417,10 +454,12 @@ void WebServer::setup_routes(uWS::App &app) {
         else if (extension == ".ico") content_type = "image/x-icon";
 
         // Send response
-        add_cors_headers(res);
         res->writeStatus("200 OK");
+        add_cors_headers(res);
         res->writeHeader("Content-Type", content_type);
-        res->writeHeader("Cache-Control", "public, max-age=3600");
+        // The dashboard ships with the engine: a page reloaded after a restart must run the
+        // scripts that engine came with, not ones the browser kept from the last.
+        res->writeHeader("Cache-Control", "no-cache");
         res->end(file_content);
     });
 }
@@ -432,7 +471,7 @@ void WebServer::handle_get_brokers(uWS::HttpResponse<false>* res, uWS::HttpReque
         const auto& all = reg.all();
         for (size_t i = 1; i < all.size(); ++i) {
             const auto& s = all[i];
-            if (s.name[0] == '\0') continue;
+            if (!reg.is_registered(static_cast<BrokerId>(i))) continue;
             brokers.push_back({
                 {"id", i},
                 {"name", s.name},
@@ -458,21 +497,6 @@ void WebServer::handle_get_strategies(uWS::HttpResponse<false>* res, uWS::HttpRe
 
         const auto& strategies = strategy_manager_.get_all_strategies();
         for (const auto& strategy : strategies) {
-            // Collect unique instruments from all subscriptions
-            std::set<std::string> instruments_set;
-            auto subscriptions = strategy->get_subscriptions();
-            for (const auto& sub : subscriptions) {
-                for (const auto& instrument : sub.instruments) {
-                    instruments_set.insert(instrument);
-                }
-            }
-
-            // Convert to array
-            json instruments_array = json::array();
-            for (const auto& inst : instruments_set) {
-                instruments_array.push_back(inst);
-            }
-
             const std::string sname = strategy->name();
             std::string status;
             std::string pause_reason;
@@ -493,8 +517,7 @@ void WebServer::handle_get_strategies(uWS::HttpResponse<false>* res, uWS::HttpRe
                 {"id", sname},
                 {"status", status},
                 {"halt_reason", pause_reason},
-                {"type", "plugin"},
-                {"instruments", instruments_array}
+                {"type", strategy.get() == strategy_manager_.manual() ? "builtin" : "plugin"}
             });
         }
 
@@ -613,7 +636,17 @@ void WebServer::handle_ws_open(uWS::WebSocket<false, true, void*>* ws) {
 
     // Send welcome message
     std::string welcome = R"({"type":"welcome","message":"Connected to SlickTrader"})";
-    ws->send(welcome, uWS::OpCode::TEXT);
+    send_text(ws, welcome);
+
+    // Every instrument a strategy subscribes, for the ladder to list. What MANUAL adopts later
+    // follows from process_events().
+    json brokers = strategy_instruments_;
+    if (const auto* manual = strategy_manager_.manual()) {
+        manual->for_each_adopted(0, [&](BrokerId broker, std::string_view instrument) {
+            add_instrument(brokers, instrument, broker);
+        });
+    }
+    send_text(ws, instruments_message("instruments", std::move(brokers)));
 }
 
 void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::string_view message) {
@@ -626,15 +659,39 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
             std::string instrument = msg.value("instrument", "");
 
             if (channel == "level2" && !instrument.empty()) {
-                level2_subscriptions_[instrument].clients.insert(ws);
-                LOG_INFO("WebServer: Client subscribed to level2 for {}", instrument);
+                const Level2Book* book = level2_streams_.subscribe(ws, instrument);
+                if (!book) {
+                    // Debug: a page sending these in a loop would flood the log.
+                    LOG_DEBUG("WebServer: level2 subscription to '{}' refused: no instrument has a name that "
+                              "long, or the client watches {} already",
+                              instrument, decltype(level2_streams_)::MAX_STREAMS_PER_CLIENT);
+                    return;
+                }
 
                 json response = {
                     {"type", "subscribed"},
                     {"channel", channel},
                     {"instrument", instrument}
                 };
-                ws->send(response.dump(), uWS::OpCode::TEXT);
+                send_text(ws, response.dump());
+
+                // The broker's own snapshot may have streamed before this browser asked, so it
+                // starts from the book as it stands. Again on a repeat: a page that built its
+                // ladder anew asks again, and has nothing to start from otherwise. Empty while its
+                // broker's feed is down: the book is as the feed left it, and the snapshot that
+                // follows the reconnect replaces it.
+                LOG_INFO("WebServer: Client subscribed to level2 for {}", instrument);
+                const auto& brokers = BrokerStatusRegistry::instance();
+                const BrokerId broker = book->broker();
+                const bool stale = broker != BrokerId::UNKNOWN && brokers.is_md_enabled(broker) &&
+                                   !brokers.is_md_connected(broker);
+                write_level2_message(level2_message_, instrument, book->event_time_ns(), book->sequence_num(),
+                                     true, [&](auto&& emit) {
+                                         if (!stale) {
+                                             book->for_each(emit);
+                                         }
+                                     });
+                send_text(ws, level2_message_);
             } else {
                 LOG_WARN("WebServer: Invalid subscription request - channel: {}, instrument: {}", channel, instrument);
             }
@@ -642,15 +699,11 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
             std::string channel = msg.value("channel", "");
             std::string instrument = msg.value("instrument", "");
 
-            if (channel == "level2" && !instrument.empty()) {
-                auto it = level2_subscriptions_.find(instrument);
-                if (it != level2_subscriptions_.end()) {
-                    it->second.clients.erase(ws);
-                    LOG_INFO("WebServer: Client unsubscribed from level2 for {}", instrument);
-                }
+            if (channel == "level2" && level2_streams_.unsubscribe(ws, instrument)) {
+                LOG_INFO("WebServer: Client unsubscribed from level2 for {}", instrument);
             }
         } else if (type == "ping") {
-            ws->send(R"({"type":"pong"})", uWS::OpCode::TEXT);
+            send_text(ws, R"({"type":"pong"})");
         } else {
             LOG_WARN("WebServer: Unknown WebSocket message type: {}", type);
         }
@@ -660,18 +713,39 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
 }
 
 void WebServer::handle_ws_close(uWS::WebSocket<false, true, void*>* ws) {
-    // Remove from all connected clients and subscriptions
+    // Remove from all connected clients and from the books it watched
     all_ws_clients_.erase(ws);
-    for (auto& [instrument, sub] : level2_subscriptions_) {
-        sub.clients.erase(ws);
-    }
+    level2_streams_.remove(ws);
+    lagging_.erase(ws);
 
     LOG_INFO("WebServer: WebSocket connection closed and cleaned up");
 }
 
+void WebServer::send_text(Socket* ws, std::string_view message) {
+    if (ws->send(message, uWS::OpCode::TEXT) == Socket::SendStatus::DROPPED) [[unlikely]] {
+        lagging_.insert(ws);
+    }
+}
+
+void WebServer::close_lagging() {
+    // Every pass: the exchange below builds a set, which allocates on MSVC.
+    if (lagging_.empty()) [[likely]] {
+        return;
+    }
+    // close() runs the close handler now, so not from send_text(): a broadcast may be walking
+    // the clients it would remove this one from.
+    for (auto* ws : std::exchange(lagging_, {})) {
+        LOG_WARN("WebServer: closing a WebSocket client {} KB behind, so it reconnects in step",
+                 ws->getBufferedAmount() / 1024);
+        ws->close();
+    }
+}
+
 void WebServer::send_json_response(uWS::HttpResponse<false>* res, const std::string& json, int status) {
+    // Status first: uWS sends 200 OK with the first header written ahead of one, and ignores
+    // the status written after, so every error went out as a success.
+    res->writeStatus(status_line(status));
     add_cors_headers(res);
-    res->writeStatus(std::to_string(status));
     res->writeHeader("Content-Type", "application/json");
     res->end(json);
 }
@@ -704,28 +778,43 @@ void WebServer::handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpReques
 
         const std::string strategy_id = ManualStrategy::ID;
         std::string instrument = order_data["instrument"];
-        uint8_t broker_id_raw = order_data["broker_id"];
+        // Wide, and range checked before they narrow: read as a byte, 258 was broker 2.
+        const int64_t broker_id_raw = order_data["broker_id"].get<int64_t>();
         std::string side_str = order_data["side"];
         double quantity = order_data["quantity"];
 
         // Optional fields
         std::string order_type = order_data.value("type", "market");
         double price = order_data.value("price", std::numeric_limits<double>::quiet_NaN());
-        uint8_t tif_raw = order_data.value("time_in_force", 0);  // Default to GTC
+        const int64_t tif_raw = order_data.value("time_in_force", int64_t{0});  // Default to GTC
 
-        // Validate broker_id
-        BrokerId broker_id = static_cast<BrokerId>(broker_id_raw);
-        if (broker_id == BrokerId::UNKNOWN || broker_id >= BrokerId::_BROKER_ID_COUNT_) {
-            send_error_response(res, "Invalid broker_id: must be 1 (Coinbase), 2 (Alpaca), 3 (Hyperliquid), 4 (Simulated), 5 (CME) or 6 (ICE)", 400);
+        // Only a broker this engine built, and one that can take the order now: the strategy
+        // would turn it down anyway, and the caller would hear nothing of why.
+        const auto& brokers = BrokerStatusRegistry::instance();
+        if (broker_id_raw <= 0 || broker_id_raw >= static_cast<int64_t>(BrokerId::_BROKER_ID_COUNT_) ||
+            !brokers.is_registered(static_cast<BrokerId>(broker_id_raw))) {
+            std::string registered;
+            for (size_t i = 1; i < static_cast<size_t>(BrokerId::_BROKER_ID_COUNT_); ++i) {
+                if (brokers.is_registered(static_cast<BrokerId>(i))) {
+                    registered += std::format("{}{} ({})", registered.empty() ? "" : ", ", brokers.all()[i].name, i);
+                }
+            }
+            send_error_response(res, std::format("No broker {} in this engine. It has: {}", broker_id_raw,
+                                                 registered.empty() ? "none" : registered), 400);
+            return;
+        }
+        const BrokerId broker_id = static_cast<BrokerId>(broker_id_raw);
+        if (const char* reason = brokers.order_unavailable_reason(broker_id)) {
+            send_error_response(res, std::format("{}: {}", brokers.get(broker_id).name, reason), 503);
             return;
         }
 
         // Validate time_in_force
-        TimeInForce tif = static_cast<TimeInForce>(tif_raw);
-        if (tif_raw > static_cast<uint8_t>(TimeInForce::DAY)) {  // Valid range is 0-4
+        if (tif_raw < 0 || tif_raw > static_cast<int64_t>(TimeInForce::DAY)) {  // Valid range is 0-4
             send_error_response(res, "Invalid time_in_force: must be 0 (GTC), 1 (IOC), 2 (FOK), 3 (GTD) or 4 (DAY)", 400);
             return;
         }
+        const TimeInForce tif = static_cast<TimeInForce>(tif_raw);
 
         // Validate side
         Side side;
@@ -763,27 +852,31 @@ void WebServer::handle_post_order(uWS::HttpResponse<false>* res, uWS::HttpReques
             send_error_response(res, "Strategy not found", 404);
             return;
         }
+        std::string refusal;
         std::string client_order_id = reinterpret_pointer_cast<StrategyBase>(strategy)->submit_order(
-            instrument, broker_id, side, to_qty_t(quantity), type, to_price_t(price), tif);
+            instrument, broker_id, side, to_qty_t(quantity), type, to_price_t(price), tif, true, &refusal);
+        if (client_order_id.empty()) {
+            // Turned down before it left the engine: by risk, or by a broker gone since the check above.
+            send_error_response(res, "Order rejected: " + refusal, 422);
+            return;
+        }
 
         // Seed WebServer-side tracking so handle_get_orders() can return it immediately
-        if (!client_order_id.empty()) {
-            TrackedOrder t;
-            t.strategy_id     = strategy_id;
-            t.client_order_id = client_order_id;
-            t.instrument      = instrument;
-            t.side            = side_str;
-            t.type            = static_cast<int>(type);
-            t.price           = price;
-            t.qty             = quantity;
-            t.remaining_qty   = quantity;
-            t.status          = "PENDING_NEW";
-            t.created_time    = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count());
-            t.last_update_time = t.created_time;
-            open_orders_[client_order_id] = std::move(t);
-        }
+        TrackedOrder t;
+        t.strategy_id     = strategy_id;
+        t.client_order_id = client_order_id;
+        t.instrument      = instrument;
+        t.side            = side_str;
+        t.type            = static_cast<int>(type);
+        t.price           = price;
+        t.qty             = quantity;
+        t.remaining_qty   = quantity;
+        t.status          = "PENDING_NEW";
+        t.created_time    = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        t.last_update_time = t.created_time;
+        open_orders_[client_order_id] = std::move(t);
 
         json response = {
             {"success", true},
@@ -1311,7 +1404,10 @@ void WebServer::process_events() {
         return;  // Stop polling if server is shutting down
     }
 
-    for (int i = 0; i < 100; ++i) {
+    // The bus until it is empty, or PROCESS_EVENTS_BUDGET_NS is spent, so ladders keep up with a
+    // busy feed and the loop still gets back to its sockets. The clock is read every 64 events.
+    const uint64_t deadline = get_timestamp_ns() + PROCESS_EVENTS_BUDGET_NS;
+    for (uint32_t n = 1;; ++n) {
         auto record = event_mux_.read(event_cursor_);
         if (!record) {
             // no event available
@@ -1356,6 +1452,9 @@ void WebServer::process_events() {
             }
 
         }
+        if (n % 64 == 0 && get_timestamp_ns() >= deadline) {
+            break;
+        }
     }
 
     if (pnl_changed_) {
@@ -1367,7 +1466,27 @@ void WebServer::process_events() {
         }
     }
 
+    // What MANUAL adopted since the dashboards were last told, for their ladders to list. At
+    // most once per interval: a channel's definitions arrive by the thousand.
+    if (const auto* manual = strategy_manager_.manual(); manual && manual->adopted_count() != instruments_sent_) {
+        if (all_ws_clients_.empty()) {
+            instruments_sent_ = manual->adopted_count();   // a dashboard gets them all as it connects
+        } else if (const uint64_t now_ns = get_timestamp_ns();
+                   now_ns - last_instruments_sent_ns_ >= INSTRUMENTS_ADDED_INTERVAL_NS) {
+            last_instruments_sent_ns_ = now_ns;
+            json brokers = json::object();
+            instruments_sent_ = manual->for_each_adopted(instruments_sent_, [&](BrokerId broker, std::string_view instrument) {
+                add_instrument(brokers, instrument, broker);
+            });
+            const std::string msg = instruments_message("instruments_added", std::move(brokers));
+            for (auto* ws : all_ws_clients_) {
+                send_text(ws, msg);
+            }
+        }
+    }
+
     check_and_broadcast_broker_status();
+    close_lagging();
 
     uWS::Loop::get()->defer([this]() { process_events(); });
 }
@@ -1379,7 +1498,7 @@ void WebServer::check_and_broadcast_broker_status() {
 
     for (size_t i = 1; i < all.size(); ++i) {
         const auto& s = all[i];
-        if (s.name[0] == '\0') continue;
+        if (!reg.is_registered(static_cast<BrokerId>(i))) continue;
         auto& snap = last_broker_status_[i];
         bool me = s.md_enabled.load(std::memory_order_acquire);
         bool mc = s.md_connected.load(std::memory_order_acquire);
@@ -1397,7 +1516,7 @@ void WebServer::check_and_broadcast_broker_status() {
     json brokers = json::array();
     for (size_t i = 1; i < all.size(); ++i) {
         const auto& s = all[i];
-        if (s.name[0] == '\0') continue;
+        if (!reg.is_registered(static_cast<BrokerId>(i))) continue;
         brokers.push_back({
             {"id", i},
             {"name", s.name},
@@ -1414,101 +1533,29 @@ void WebServer::check_and_broadcast_broker_status() {
 
     const std::string msg = json{{"type", "broker_status"}, {"brokers", brokers}}.dump();
     for (auto* ws : all_ws_clients_) {
-        ws->send(msg, uWS::OpCode::TEXT);
+        send_text(ws, msg);
     }
 }
 
 void WebServer::broadcast_level2_update(const Level2UpdateEvent& event) {
-    std::string instrument(event.instrument);
+    const auto& clients = level2_streams_.apply(event);
 
-    // Build JSON
-    json level2_update;
-    level2_update["type"] = "level2";
-    level2_update["instrument"] = instrument;
-    level2_update["timestamp"] = event.event_time_ns / 1000000; // Convert to ms
-    level2_update["seq_num"] = event.sequence_num;
-    level2_update["is_snapshot"] = event.is_snapshot;
-
-    json levels = json::array();
-    for (uint16_t i = 0; i < event.num_levels; ++i) {
-        levels.push_back({
-            from_price_t(event.levels[i].price),
-            from_qty_t(event.levels[i].quantity),
-            event.levels[i].side
-        });
+    // Most books have no watcher, as a page watches its ladder's alone. Skip the JSON for them.
+    if (clients.empty()) {
+        return;
     }
-    level2_update["levels"] = levels;
-
-    std::string message = level2_update.dump();
-
-    // Broadcast to subscribers
-    auto it = level2_subscriptions_.find(instrument);
-    if (it != level2_subscriptions_.end() && !it->second.clients.empty()) {
-        // LOG_DEBUG("WebServer: Broadcasting {} orderbook update to {} client(s)",
-        //           instrument, it->second.clients.size());
-        for (auto* ws : it->second.clients) {
-            ws->send(message, uWS::OpCode::TEXT);
-        }
-    }/*  else {
-        static uint64_t unsubscribed_count = 0;
-        if (++unsubscribed_count % 100 == 0) {  // Log every 100th to avoid spam
-            LOG_DEBUG("WebServer: No subscribers for {} orderbook (total unsubscribed events: {})",
-                      instrument, unsubscribed_count);
-        }
-    } */
-}
-
-void WebServer::broadcast_orderbook(const OrderBookEvent& event) {
-    std::string instrument(event.instrument);
-
-    // Build JSON
-    json orderbook;
-    orderbook["type"] = "orderbook";
-    orderbook["instrument"] = instrument;
-    orderbook["timestamp"] = event.event_time_ns / 1000000; // Convert to ms
-    orderbook["is_snapshot"] = event.is_snapshot;
-
-    // Bids
-    json bids = json::array();
-    for (uint16_t i = 0; i < event.num_bids; ++i) {
-        bids.push_back({
-            from_price_t(event.bids[i].price),
-            from_qty_t(event.bids[i].quantity)
-        });
-    }
-    orderbook["bids"] = bids;
-
-    // Asks
-    json asks = json::array();
-    for (uint16_t i = 0; i < event.num_asks; ++i) {
-        asks.push_back({
-            from_price_t(event.asks[i].price),
-            from_qty_t(event.asks[i].quantity)
-        });
-    }
-    orderbook["asks"] = asks;
-
-    std::string message = orderbook.dump();
-
-    // Broadcast to subscribers
-    auto it = level2_subscriptions_.find(instrument);
-    if (it != level2_subscriptions_.end() && !it->second.clients.empty()) {
-        // LOG_DEBUG("WebServer: Broadcasting {} orderbook update to {} client(s)",
-        //           instrument, it->second.clients.size());
-        for (auto* ws : it->second.clients) {
-            ws->send(message, uWS::OpCode::TEXT);
-        }
-    } else {
-        static uint64_t unsubscribed_count = 0;
-        if (++unsubscribed_count % 100 == 0) {  // Log every 100th to avoid spam
-            LOG_DEBUG("WebServer: No subscribers for {} orderbook (total unsubscribed events: {})",
-                      instrument, unsubscribed_count);
-        }
+    write_level2_message(level2_message_, std::string_view(event.instrument), event.event_time_ns,
+                         event.sequence_num, event.is_snapshot, [&](auto&& emit) {
+                             for (uint16_t i = 0; i < event.num_levels; ++i) {
+                                 emit(event.levels[i].price, event.levels[i].quantity, event.levels[i].side);
+                             }
+                         });
+    for (auto* ws : clients) {
+        send_text(ws, level2_message_);
     }
 }
 
 void WebServer::handle_get_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
-    add_cors_headers(res);
     try {
         send_json_response(res, ladder_config_.dump());
     } catch (const std::exception& e) {
@@ -1518,8 +1565,6 @@ void WebServer::handle_get_ladder_config(uWS::HttpResponse<false>* res, uWS::Htt
 
 void WebServer::handle_put_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                           const std::string& body) {
-    add_cors_headers(res);
-
     try {
         auto new_config = json::parse(body);
 
@@ -1740,7 +1785,7 @@ void WebServer::handle_order_reject(const OrderRejectEvent& reject) {
 
 void WebServer::broadcast_order_update(const std::string& message) {
     for (auto* ws : all_ws_clients_) {
-        ws->send(message, uWS::OpCode::TEXT);
+        send_text(ws, message);
     }
 }
 
@@ -1762,7 +1807,7 @@ void WebServer::broadcast_pnl_update() {
 
     const std::string message = json{{"type", "pnl_update"}, {"pnl", pnl_obj}}.dump();
     for (auto* ws : all_ws_clients_) {
-        ws->send(message, uWS::OpCode::TEXT);
+        send_text(ws, message);
     }
 }
 
