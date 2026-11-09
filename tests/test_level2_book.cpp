@@ -33,7 +33,10 @@ std::vector<uint8_t> update(bool is_snapshot, uint64_t sequence, const std::vect
     event->sequence_num = sequence;
     event->event_time_ns = sequence * 1000;
     event->num_levels = static_cast<uint16_t>(levels.size());
-    std::memcpy(event->levels, levels.data(), levels.size() * sizeof(PriceLevel));
+    // An empty vector's data() may be null, and memcpy from null is UB even for 0 bytes.
+    if (!levels.empty()) {
+        std::memcpy(event->levels, levels.data(), levels.size() * sizeof(PriceLevel));
+    }
     return buffer;
 }
 
