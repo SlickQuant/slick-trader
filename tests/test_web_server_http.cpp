@@ -222,20 +222,29 @@ TEST_F(WebServerHttpTest, TheLadderListComesWholeOnConnectThenWhatIsNew) {
 // uWS drops a message for a client too far behind, and what send() said went unread: that
 // client's ladder stayed short of the update for good, or its list short of an instrument. It is
 // closed now, and reconnects to both whole.
+//
+// It was closed only once the server had answered every ask uWS had read in, each answer then
+// dropped: with a deep book, 20 s and more past the drop.
 TEST_F(WebServerHttpTest, AClientTooFarBehindIsClosed) {
-    publish_znz6(256);   // each subscribe is answered with 512 levels
+    publish_znz6(1024);   // each subscribe is answered with 2048 levels, about 40 KB
     RawClient reader(port_);
     ASSERT_TRUE(reader.upgrade());
-    ASSERT_TRUE(wait_for_levels(reader, 512));
+    ASSERT_TRUE(wait_for_levels(reader, 2048));
 
-    // A browser that asks and asks and reads nothing.
-    RawClient slow(port_);
+    // A browser that asks and asks and reads nothing, not even to see the close: reading took in
+    // what the server held for it, so on a slow run it never got 16 MB behind.
+    RawClient slow(port_, 4096);
     ASSERT_TRUE(slow.upgrade());
+    constexpr auto CLOSED_WITHIN = std::chrono::seconds(15);
+    const auto start = std::chrono::steady_clock::now();
     bool closed = false;
-    for (int i = 0; i < 20000 && !closed; ++i) {
+    while (!closed && std::chrono::steady_clock::now() - start < CLOSED_WITHIN) {
         closed = !slow.send_text(SUBSCRIBE_ZNZ6);
     }
-    EXPECT_TRUE(closed || slow.wait_closed(std::chrono::seconds(5))) << "kept open, missing what uWS dropped";
+    // A send blocked while the server is busy can fail past the limit.
+    const auto took = std::chrono::steady_clock::now() - start;
+    EXPECT_TRUE(closed) << "kept open, missing what uWS dropped";
+    EXPECT_LT(took, CLOSED_WITHIN) << "closed only after answering what it asked past the drop";
 }
 
 // The list a dashboard gets on connect runs to megabytes with MANUAL on "*", past uWS's 64 KB

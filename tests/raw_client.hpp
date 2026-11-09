@@ -90,6 +90,13 @@ public:
             ::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&receive_buffer),
                          sizeof(receive_buffer));
         }
+#ifdef SO_NOSIGPIPE
+        // macOS: a send to a closed connection fails rather than raising SIGPIPE.
+        if (fd_ != NO_SOCKET) {
+            const int on = 1;
+            ::setsockopt(fd_, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+        }
+#endif
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port);
@@ -187,23 +194,6 @@ public:
 
     /// Sends `text` in a text frame. False once the connection is gone.
     bool send_text(std::string_view text) { return send_frame(0x1, text); }
-
-    /// Reads and drops what the server sends until it closes the connection: false if it has not
-    /// by `timeout`.
-    bool wait_closed(std::chrono::milliseconds timeout) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (true) {
-            buffer_.clear();
-            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now());
-            if (left <= std::chrono::milliseconds(0)) {
-                return false;
-            }
-            if (!fill(left)) {
-                return std::chrono::steady_clock::now() < deadline;
-            }
-        }
-    }
 
 private:
     /// One frame with its `opcode`, masked as a client's must be: the header, the 4 byte mask

@@ -650,6 +650,12 @@ void WebServer::handle_ws_open(uWS::WebSocket<false, true, void*>* ws) {
 }
 
 void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::string_view message) {
+    // A client uWS dropped a send for is closed at the end of this loop pass. Until then its asks
+    // are only dropped too, and uWS may hand over thousands at once, each snapshot costing the
+    // book's depth: answering them held its close back for seconds.
+    if (!lagging_.empty() && lagging_.contains(ws)) [[unlikely]] {
+        return;
+    }
     try {
         auto msg = json::parse(message);
         std::string type = msg.value("type", "");
