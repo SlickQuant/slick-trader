@@ -60,7 +60,7 @@ CoinbaseMDConnector::~CoinbaseMDConnector() {
 
 void CoinbaseMDConnector::register_md_connector() {
     if(enabled_) {
-        EventSerializer::publish<RegisterEvent>(control_queue_, [=](RegisterEvent& event) {
+        EventSerializer::publish<RegisterEvent>(control_queue_, [=, this](RegisterEvent& event) {
             event.broker_id = BrokerId::COINBASE;
             event.component_type = ComponentType::MARKET_DATA;
             event.producer_id = event_buffer_->producer_id();

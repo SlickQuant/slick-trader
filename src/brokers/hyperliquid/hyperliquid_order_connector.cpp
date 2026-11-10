@@ -66,7 +66,7 @@ HyperliquidOrderConnector::~HyperliquidOrderConnector() {
 
 void HyperliquidOrderConnector::register_order_connector() {
     if (enabled_) {
-        EventSerializer::publish<OrderConnectorRegisterEvent>(control_queue_, [=](OrderConnectorRegisterEvent& event) {
+        EventSerializer::publish<OrderConnectorRegisterEvent>(control_queue_, [=, this](OrderConnectorRegisterEvent& event) {
             event.broker_id = BrokerId::COINBASE;
             event.producer_id = event_buffer_->producer_id();
             event.fee_structure.type = FeeType::PERCENTAGE;

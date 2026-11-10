@@ -1456,7 +1456,8 @@ void WebServer::process_events() {
                 handle_order_reject(*reject);
                 break;
             }
-
+            default:
+                break;   // the dashboard shows no other event
         }
         if (n % 64 == 0 && get_timestamp_ns() >= deadline) {
             break;

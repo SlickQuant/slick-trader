@@ -44,7 +44,7 @@ std::vector<uint8_t> update(bool is_snapshot, uint64_t sequence, std::initialize
     return update(is_snapshot, sequence, std::vector<PriceLevel>(levels));
 }
 
-void apply(Level2Book& book, const std::vector<uint8_t>& buffer) {
+void feed(Level2Book& book, const std::vector<uint8_t>& buffer) {
     book.apply(*reinterpret_cast<const Level2UpdateEvent*>(buffer.data()));
 }
 
@@ -71,7 +71,7 @@ std::vector<Level> levels_in_order(const Level2Book& book) {
 // keeps each side in price order, and hands it over best first.
 TEST(Level2BookTest, ItKeepsItsLevelsBestFirst) {
     Level2Book book;
-    apply(book, update(true, 1, {PriceLevel(99, 1, Side::BUY), PriceLevel(103, 4, Side::SELL),
+    feed(book, update(true, 1, {PriceLevel(99, 1, Side::BUY), PriceLevel(103, 4, Side::SELL),
                                  PriceLevel(101, 2, Side::BUY), PriceLevel(102, 5, Side::SELL),
                                  PriceLevel(100, 3, Side::BUY)}));
     EXPECT_EQ(levels_in_order(book), (std::vector<Level>{{Side::BUY, 101, 2}, {Side::BUY, 100, 3},
@@ -90,7 +90,7 @@ TEST(Level2BookTest, ItKeepsAndHandsOverEveryLevel) {
         snapshot.emplace_back(1001 + i, 1, Side::SELL);   // 1001 up
     }
     Level2Book book;
-    apply(book, update(true, 1, snapshot));
+    feed(book, update(true, 1, snapshot));
     auto sent = levels_in_order(book);
     ASSERT_EQ(sent.size(), static_cast<size_t>(4 * N));
     EXPECT_EQ(sent.front(), Level(Side::BUY, 1000, 1));
@@ -104,7 +104,7 @@ TEST(Level2BookTest, ItKeepsAndHandsOverEveryLevel) {
         taken.emplace_back(1000 - i, 0, Side::BUY);
     }
     taken.emplace_back(1000 - 2 * N, 3, Side::BUY);
-    apply(book, update(false, 2, taken));
+    feed(book, update(false, 2, taken));
     sent = levels_in_order(book);
     ASSERT_EQ(sent.size(), static_cast<size_t>(3 * N + 1));
     EXPECT_EQ(sent.front(), Level(Side::BUY, 1000 - N, 1));
@@ -112,8 +112,8 @@ TEST(Level2BookTest, ItKeepsAndHandsOverEveryLevel) {
     EXPECT_EQ(sent[N], Level(Side::BUY, 1000 - 2 * N, 3));
 
     // A level into a gap goes in its place, one past all the others at the end, and the order holds.
-    apply(book, update(false, 3, {PriceLevel(1000 - N - 1, 0, Side::BUY)}));
-    apply(book, update(false, 4, {PriceLevel(1000 - N - 1, 9, Side::BUY), PriceLevel(2000, 9, Side::SELL)}));
+    feed(book, update(false, 3, {PriceLevel(1000 - N - 1, 0, Side::BUY)}));
+    feed(book, update(false, 4, {PriceLevel(1000 - N - 1, 9, Side::BUY), PriceLevel(2000, 9, Side::SELL)}));
     const auto ordered = levels_in_order(book);
     ASSERT_EQ(ordered.size(), static_cast<size_t>(3 * N + 2));   // N + 1 bids, 2N + 1 asks
     EXPECT_EQ(ordered[1], Level(Side::BUY, 1000 - N - 1, 9));
@@ -146,9 +146,9 @@ TEST(Level2MessageTest, ItReadsAsTheDashboardExpects) {
 
 TEST(Level2BookTest, ALateSubscriberGetsTheBookAsItStands) {
     Level2Book book;
-    apply(book, update(true, 1, {PriceLevel(100, 5, Side::BUY), PriceLevel(99, 3, Side::BUY),
+    feed(book, update(true, 1, {PriceLevel(100, 5, Side::BUY), PriceLevel(99, 3, Side::BUY),
                                  PriceLevel(101, 4, Side::SELL)}));
-    apply(book, update(false, 2, {PriceLevel(99, 0, Side::BUY), PriceLevel(102, 1, Side::SELL),
+    feed(book, update(false, 2, {PriceLevel(99, 0, Side::BUY), PriceLevel(102, 1, Side::SELL),
                                   PriceLevel(100, 7, Side::BUY)}));
 
     EXPECT_EQ(levels_of(book), (std::set<Level>{{Side::BUY, 100, 7}, {Side::SELL, 101, 4}, {Side::SELL, 102, 1}}))
@@ -159,19 +159,19 @@ TEST(Level2BookTest, ALateSubscriberGetsTheBookAsItStands) {
 
 TEST(Level2BookTest, ASnapshotReplacesTheBookAndItsLaterPartsAddToIt) {
     Level2Book book;
-    apply(book, update(true, 1, {PriceLevel(100, 5, Side::BUY), PriceLevel(101, 4, Side::SELL)}));
+    feed(book, update(true, 1, {PriceLevel(100, 5, Side::BUY), PriceLevel(101, 4, Side::SELL)}));
 
     // A recovered book, published in two parts: only the first is marked a snapshot.
-    apply(book, update(true, 2, {PriceLevel(98, 2, Side::BUY)}));
-    apply(book, update(false, 2, {PriceLevel(103, 6, Side::SELL)}));
+    feed(book, update(true, 2, {PriceLevel(98, 2, Side::BUY)}));
+    feed(book, update(false, 2, {PriceLevel(103, 6, Side::SELL)}));
 
     EXPECT_EQ(levels_of(book), (std::set<Level>{{Side::BUY, 98, 2}, {Side::SELL, 103, 6}}));
 }
 
 TEST(Level2BookTest, AnEmptySnapshotEmptiesTheBook) {
     Level2Book book;
-    apply(book, update(true, 1, {PriceLevel(100, 5, Side::BUY)}));
-    apply(book, update(true, 2, {}));
+    feed(book, update(true, 1, {PriceLevel(100, 5, Side::BUY)}));
+    feed(book, update(true, 2, {}));
     EXPECT_TRUE(levels_of(book).empty());
 }
 
@@ -294,7 +294,7 @@ TEST(Level2BookTest, ADeepSnapshotListedBestFirstIsTakenInAtOnce) {
     const auto event = update(true, 1, snapshot);
     Level2Book book;
     const auto start = std::chrono::steady_clock::now();
-    apply(book, event);
+    feed(book, event);
     EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(1));
 
     const auto sent = levels_in_order(book);
@@ -309,7 +309,7 @@ TEST(Level2BookTest, ADeepSnapshotListedBestFirstIsTakenInAtOnce) {
 // last quantity, and an empty level is no level.
 TEST(Level2BookTest, ASnapshotListingAPriceTwiceKeepsItsLast) {
     Level2Book book;
-    apply(book, update(true, 1, {PriceLevel(100, 1, Side::BUY), PriceLevel(99, 2, Side::BUY),
+    feed(book, update(true, 1, {PriceLevel(100, 1, Side::BUY), PriceLevel(99, 2, Side::BUY),
                                  PriceLevel(100, 3, Side::BUY), PriceLevel(98, 0, Side::BUY),
                                  PriceLevel(101, 4, Side::SELL), PriceLevel(101, 0, Side::SELL),
                                  PriceLevel(102, 5, Side::SELL)}));
@@ -335,7 +335,7 @@ TEST(Level2BookTest, ASnapshotInPartsIsTakenInAtOnce) {
     Level2Book book;
     const auto start = std::chrono::steady_clock::now();
     for (const auto& part : parts) {
-        apply(book, part);
+        feed(book, part);
     }
     EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(1));
 
@@ -366,11 +366,11 @@ TEST(Level2BookTest, ManyLevelsAtOnceReadAsOneByOne) {
 
     Level2Book merged;
     Level2Book one_by_one;
-    apply(merged, update(true, 1, start));
-    apply(one_by_one, update(true, 1, start));
-    apply(merged, update(false, 2, changes));
+    feed(merged, update(true, 1, start));
+    feed(one_by_one, update(true, 1, start));
+    feed(merged, update(false, 2, changes));
     for (const PriceLevel& change : changes) {
-        apply(one_by_one, update(false, 2, {change}));
+        feed(one_by_one, update(false, 2, {change}));
     }
     EXPECT_EQ(levels_in_order(merged), levels_in_order(one_by_one));
 }
