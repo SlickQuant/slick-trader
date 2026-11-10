@@ -9,6 +9,7 @@
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/trade_event.hpp>
 #include <slick-trader/core/broker_status.hpp>
+#include <coinbase/rest.hpp>
 #include <coinbase/websocket.hpp>
 #include <algorithm>
 #include <chrono>
@@ -35,6 +36,7 @@ CoinbaseMDConnector::CoinbaseMDConnector(
     , request_queue_(request_queue)
     , request_cursor_(request_queue.initial_reading_index())
     , ws_url_(config.value("websocket_url", "wss://advanced-trade-ws.coinbase.com"))
+    , rest_url_(config.value("rest_url", "https://api.coinbase.com"))
     , orderbook_depth_(10) {
     auto& reg = BrokerStatusRegistry::instance();
     reg.set_name(BrokerId::COINBASE, "Coinbase");
@@ -177,8 +179,46 @@ void CoinbaseMDConnector::start() {
         LOG_WARN("Coinbase MD: Already running");
         return;
     }
+    // Before any thread writes the buffer: the WebSocket's, its one writer, starts with the first
+    // subscription, which the worker makes.
+    publish_definitions();
     running_.store(true, std::memory_order_release);
     worker_thread_ = std::thread(&CoinbaseMDConnector::run, this);
+}
+
+std::vector<MdDefinition> coinbase_definitions(const std::vector<coinbase::Product>& products) {
+    std::vector<MdDefinition> definitions;
+    definitions.reserve(products.size());
+    for (const auto& product : products) {
+        if (product.product_id.empty() || product.is_disabled || product.trading_disabled || product.view_only) {
+            continue;
+        }
+        const double tick = product.price_increment > 0 ? product.price_increment : product.quote_increment;
+        definitions.push_back(MdDefinition{
+            .symbol = product.product_id,
+            .tick_size = tick > 0 ? to_price_t(tick) : price_t(0),
+            .multiplier = 1.0,
+            .min_quantity = to_qty_t(product.base_min_size),
+            .max_quantity = to_qty_t(product.base_max_size),
+            .quantity_increment = to_qty_t(product.base_increment),
+            .currency = product.quote_currency_id,
+        });
+    }
+    return definitions;
+}
+
+void CoinbaseMDConnector::publish_definitions() {
+    try {
+        const auto products = coinbase::CoinbaseRestClient(rest_url_).list_public_products();
+        const auto definitions = coinbase_definitions(products);
+        for (const auto& definition : definitions) {
+            publish_definition(*event_buffer_, BrokerId::COINBASE, definition);
+        }
+        LOG_INFO("Coinbase MD: {} of {} product(s) at {} defined", definitions.size(), products.size(), rest_url_);
+    } catch (const std::exception& e) {
+        // Ladders then list only what strategies subscribe of Coinbase's, until a restart.
+        LOG_WARN("Coinbase MD: could not list the products at {}: {}", rest_url_, e.what());
+    }
 }
 
 void CoinbaseMDConnector::stop() {

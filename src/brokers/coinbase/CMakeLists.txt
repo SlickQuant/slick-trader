@@ -22,6 +22,8 @@ slick_trader_add_broker(coinbase
         coinbase_order_connector.cpp
     DEPENDS
         slick::coinbase-advanced-cpp
+    TESTS
+        ${CMAKE_SOURCE_DIR}/tests/test_coinbase_definitions.cpp
 )
 
 # The Coinbase SDK headers are template-heavy; precompile them once.

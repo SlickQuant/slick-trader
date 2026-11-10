@@ -1,159 +1,87 @@
 # SlickTrader Web Dashboard
 
-Modern, real-time trading dashboard for monitoring positions, P&L, and system status.
+The engine serves the dashboard at `http://localhost:<web_server_port>` (3000 in `config/config.json`).
 
-## Features
+## Layout
 
-- **Real-time Updates**: WebSocket connection for live P&L and position streaming
-- **P&L Visualization**: Interactive charts showing total, realized, and unrealized P&L over time
-- **Position Monitoring**: Live table of all active positions across strategies
-- **Strategy Performance**: Per-strategy P&L breakdown
-- **System Logging**: Real-time event log
-- **Responsive Design**: Works on desktop and mobile devices
-- **Dark Theme**: Professional dark mode optimized for trading
+The main window has a toolbar on top: Ladder, Order, Orders, Fills, Positions, P&L and Log. Under it
+sit broker status, P&L totals and strategy control. Each button opens its tool in a popup window
+of its own, with no tabs, menus or bookmark bar. Ladder opens a new window per click. The other
+buttons focus their window if it's already open. Each window remembers its size and position.
+See [FEATURES.md](FEATURES.md) for what each window does.
 
-## Architecture
+Allow popups for the dashboard's host. Chrome and Edge still show a thin read-only address strip on
+a popup, and no page can remove it. Starting the main window as an app gives a cleaner look:
+`msedge --app=http://localhost:3000`.
 
-### Frontend Stack
-- **Vanilla JavaScript (ES6+)**: No build tools required
-- **Chart.js**: Lightweight charting library
-- **CSS Grid/Flexbox**: Modern, responsive layout
-- **WebSocket API**: Native browser support for real-time data
+## Ladder market data
 
-### File Structure
+A ladder lists the instruments brokers define, narrowed by MANUAL's `instruments` parameter
+(symbols, or prefixes ending in `*`). With no parameter it lists all of them, and with `[]` none.
+It also lists what other strategies subscribe. Coinbase and Hyperliquid define their products when
+they start. Coinbase reads them from `market_data.rest_url`.
+
+Nothing streams until a ladder picks an instrument. MANUAL then subscribes its level 2 book, and
+unsubscribes it `web_server_ladder_release_ms` (5000) after the last ladder on it closes or
+switches away. That never drops a book a strategy also subscribed. If a strategy already streams
+the book (LEVEL2 or ORDER_BOOK), the ladder uses that stream and MANUAL subscribes nothing. A
+strategy's quotes or trades carry no book, so they don't count.
+
+## Files
+
 ```
-web/static/
-├── index.html          # Main dashboard UI
-├── css/
-│   └── main.css       # Styles and theme
-└── js/
-    ├── websocket.js   # WebSocket client with auto-reconnect
-    ├── api.js         # REST API wrapper
-    ├── charts.js      # Chart.js integration for P&L charts
-    └── app.js         # Main dashboard application logic
-```
-
-## API Endpoints
-
-### REST API
-- `GET /api/health` - System health check
-- `GET /api/positions` - All positions across strategies
-- `GET /api/positions/:strategy_id` - Positions for specific strategy
-- `GET /api/pnl` - P&L for all strategies
-- `GET /api/pnl/:strategy_id` - P&L for specific strategy
-- `GET /api/strategies` - List all active strategies
-
-### WebSocket
-- **URL**: `ws://localhost:8080`
-- **Messages**:
-  - `{"type": "subscribe", "channels": ["pnl", "positions", "orders"]}` - Subscribe to updates
-  - `{"type": "ping"}` - Keepalive ping
-  - Server sends: `pnl_update`, `position_update`, `order_update` events
-
-## Usage
-
-### Starting the Dashboard
-
-1. **Build the project**:
-   ```bash
-   cd build
-   cmake --build . --config Debug
-   ```
-
-2. **Run the trading system**:
-   ```bash
-   ./examples/Debug/example_trading_system.exe config.json
-   ```
-
-3. **Open the dashboard**:
-   - Navigate to `http://localhost:8080` in your web browser
-   - The dashboard will automatically connect via WebSocket
-
-### Configuration
-
-In `config.json`:
-```json
-{
-  "enable_web_server": true,
-  "web_server_port": 8080,
-  "web_server_cors": true,
-  "web_server_static_path": "web/static"
-}
+index.html, tool.html   main window, and the shell every tool window loads (tool.html?t=<tool>)
+css/main.css            the one stylesheet
+lib/                    preact 11.0.2, htm 3.1.1, chart.js 4.4.1 (vendored)
+js/main.js              toolbar, summary, the log the Log window shows
+js/tool.js              mounts one tool, picked from a fixed registry
+js/core/                api, websocket, connection hooks, windows, bus, instruments, log
+js/components/          picker, strategy control, icons
+js/tools/               ladder, order, orders, fills, positions, pnl, log
+js/slick-ladder.js      the ladder canvas (@slickquant/slick-ladder)
 ```
 
-## Development
+There's no build step. Pages load ES modules through an import map. To update a library, run
+`npm install` and copy its dist file into `lib/` under a `.js` name. The server sends only `.js`
+files as JavaScript, and browsers refuse to run a module served as anything else.
 
-### Customization
+Every window opens its own WebSocket. Windows talk to each other over a `BroadcastChannel`: tool
+windows send log entries and ticket prefills, and the main window relays the log.
 
-**Colors and Theme**:
-- Edit CSS variables in `web/static/css/main.css` (lines 2-15)
+## API
 
-**Chart Settings**:
-- Modify chart options in `web/static/js/charts.js`
-- Change data point limits, colors, and animation settings
+REST: `GET /api/health`, `/api/brokers`, `/api/strategies`, `/api/positions`, `/api/pnl`,
+`/api/orders`, `/api/fills` (the last 1,000 fills, oldest first), `/api/ladder-config`.
+`POST /api/orders`, `PUT`/`DELETE /api/orders/:strategy/:order_id`, `DELETE /api/orders/cancel-all`,
+`POST /api/strategies/:id/control`, `GET`/`PUT /api/strategies/:id/config`. See
+[CONTROLS_GUIDE.md](CONTROLS_GUIDE.md).
 
-**Update Frequency**:
-- WebSocket: Real-time (instant)
-- Polling fallback: 5 seconds (when WebSocket disconnected)
+WebSocket, client to server:
 
-### Adding New Features
+- `{"type":"subscribe","channel":"instruments"}`: the whole list right away, then additions.
+- `{"type":"subscribe","channel":"level2","instrument":"ZNZ6"}` and `unsubscribe`.
+- `{"type":"ping"}`.
 
-**New API Endpoint**:
-1. Add endpoint in `src/web/web_server.cpp`
-2. Add client method in `web/static/js/api.js`
-3. Call from dashboard in `web/static/js/app.js`
+Server to client:
 
-**New Chart**:
-1. Add chart initialization in `web/static/js/charts.js`
-2. Add canvas element to `web/static/index.html`
-3. Update chart from dashboard data
+- `welcome`, `pong`.
+- `instruments` / `instruments_added`: `{"instruments":{"ZNZ6":[<broker id>,<tick>]}}`. The tick
+  is 0 when the broker gives none.
+- `level2`: a snapshot when `is_snapshot` is set, then changes.
+- `order_update` with `event` `ack`, `fill`, `leg_fill`, `cancel` or `reject`. Fills carry `seq`,
+  `strategy_id`, `fill_id`, `fee` and `timestamp_ns`.
+- `pnl_update`, `broker_status`.
+- `subscription_error`: the server couldn't pass a ladder's subscribe on to MANUAL.
 
-## Browser Compatibility
+## Config
 
-- Chrome/Edge: ✅ Full support
-- Firefox: ✅ Full support
-- Safari: ✅ Full support (iOS 12+)
-- Mobile browsers: ✅ Responsive design
+| Key | Default | |
+|---|---|---|
+| `web_server_port` | 8080 | |
+| `web_server_static_path` | `web/static` | |
+| `web_server_cors` | true | |
+| `web_server_ladder_release_ms` | 5000 | grace before a ladder's instrument is unsubscribed |
+| `ladder_config` | `{"default_qty":0.01}` | `default_qty`, and per instrument `default_qty` and `default_broker_id` |
+| broker `market_data.rest_url` (Coinbase) | `https://api.coinbase.com` | where products are listed |
 
-## Performance
-
-- **Initial Load**: <100ms (no build artifacts)
-- **WebSocket Latency**: <10ms typical
-- **Chart Updates**: 60 FPS smooth animations
-- **Memory Usage**: ~20MB typical
-
-## Security Notes
-
-- **CORS**: Enabled by default for localhost development
-- **Static Files**: Path traversal protection included
-- **WebSocket**: No authentication (localhost only)
-- **Production**: Use reverse proxy (nginx/Apache) with HTTPS and authentication
-
-## Troubleshooting
-
-**Dashboard won't load**:
-- Check web server is running: `curl http://localhost:8080/api/health`
-- Verify `web_server_static_path` in config.json
-- Check console for errors (F12 in browser)
-
-**WebSocket won't connect**:
-- Check firewall settings
-- Verify port 8080 is not blocked
-- Look for connection errors in browser console
-
-**No data showing**:
-- Ensure strategies are running
-- Check if market data is flowing (logs)
-- Verify positions exist: `curl http://localhost:8080/api/positions`
-
-## Future Enhancements
-
-- [ ] Strategy start/stop controls
-- [ ] Order submission UI
-- [ ] Trade history table
-- [ ] Multi-timeframe P&L analysis
-- [ ] Risk limits configuration UI
-- [ ] Export data (CSV/JSON)
-- [ ] Dark/Light theme toggle
-- [ ] Multiple dashboard views
-- [ ] WebSocket authentication
+There's no authentication. Keep the port on localhost, or put it behind a proxy that adds TLS and auth.

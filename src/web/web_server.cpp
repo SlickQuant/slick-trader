@@ -5,6 +5,7 @@
 #include <slick-trader/core/strategy_manager.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/strategy/manual_strategy.hpp>
+#include <slick-trader/events/ladder_subscription_event.hpp>
 #include <slick-trader/events/order_event.hpp>
 #include <slick-trader/events/quote_event.hpp>
 #include <slick-trader/events/strategy_config_event.hpp>
@@ -21,12 +22,6 @@
 namespace slick::trader {
 
 namespace {
-
-// Adds `instrument` to `brokers`, the dashboard's map of the broker an order for each goes to.
-// The first broker named wins.
-void add_instrument(json& brokers, std::string_view instrument, BrokerId broker) {
-    brokers.emplace(std::string(instrument), static_cast<int>(broker));   // keeps one there
-}
 
 // Calls `handler(body)` with the request's body once all of it has come. uWS hands it over in
 // chunks as they arrive, and a handler given the last alone parsed the tail of a long one.
@@ -46,10 +41,28 @@ void read_body(uWS::HttpResponse<false>* res, Handler&& handler) {
     });
 }
 
-// {"type":<type>,"instrument_brokers":{<instrument>:<broker id>,...}}: instruments the
-// dashboard ladders, all of them ("instruments") or those new since ("instruments_added").
-std::string instruments_message(std::string_view type, json brokers) {
-    return json{{"type", type}, {"instrument_brokers", std::move(brokers)}}.dump();
+// Writes {"type":<type>,"instruments":{<instrument>:[<broker id>,<tick>],...}} into `out`: what
+// the dashboard's ladders can show, all of it ("instruments") or what is new ("instruments_added").
+// `for_each(emit)` calls emit(instrument, listing) for each. With no JSON tree: the whole list
+// runs to megabytes.
+template <typename ForEach>
+void write_instruments(std::string& out, std::string_view type, ForEach&& for_each) {
+    out.assign(R"({"type":)");
+    append_json_string(out, type);
+    out += R"(,"instruments":{)";
+    const size_t first = out.size();
+    for_each([&](std::string_view instrument, BrokerId broker, price_t tick_size) {
+        if (out.size() != first) {
+            out += ',';
+        }
+        append_json_string(out, instrument);
+        out += ":[";
+        append_json_number(out, static_cast<int>(broker));
+        out += ',';
+        append_json_number(out, from_price_t(tick_size));
+        out += ']';
+    });
+    out += "}}";
 }
 
 // What uWS writes after "HTTP/1.1 ": the code and its reason phrase, which a status line needs.
@@ -74,6 +87,7 @@ bool WebServer::initialize(const json& config) {
     config_.port = config.value("web_server_port", 8080);
     config_.enable_cors = config.value("web_server_cors", true);
     config_.static_files_path = config.value("web_server_static_path", "web/static");
+    config_.ladder_release_ns = config.value("web_server_ladder_release_ms", 5000ull) * 1'000'000;
 
     // Load ladder config if present
     if (config.contains("ladder_config")) {
@@ -88,16 +102,23 @@ bool WebServer::initialize(const json& config) {
         LOG_INFO("WebServer: Using default ladder config");
     }
 
-    // What the strategies subscribe is fixed once they start, and nothing runs them yet. MANUAL's
-    // grows: it is read as each dashboard connects.
-    strategy_instruments_ = json::object();
+    // What the strategies subscribe is fixed once they start, and nothing runs them yet: their
+    // get_subscriptions() read state their on_config() writes on the StrategyManager thread.
+    // MANUAL's list grows: index_listings() takes it in as it does.
+    listings_.clear();
+    listings_indexed_ = 0;
     for (const auto& strategy : strategy_manager_.get_all_strategies()) {
         if (strategy.get() == strategy_manager_.manual()) {
             continue;
         }
         for (const auto& sub : strategy->get_subscriptions()) {
             for (const auto& instrument : sub.instruments) {
-                add_instrument(strategy_instruments_, instrument, sub.broker_id);
+                Listing& listing = listings_.try_emplace(instrument, Listing{sub.broker_id, 0, false}).first->second;
+                // A hold of what streams already is redundant, and harmful at Coinbase: its LEVEL2
+                // and ORDER_BOOK share one channel, so the hold's release would drop the strategy's.
+                if (streams_book(sub.type) && sub.broker_id == listing.broker) {
+                    listing.book = true;
+                }
             }
         }
     }
@@ -306,6 +327,11 @@ void WebServer::setup_routes(uWS::App &app) {
     // GET: All open orders across all strategies
     app.get("/api/orders", [this](auto* res, auto* req) {
         handle_get_orders(res, req);
+    });
+
+    // GET: The last fills, oldest first
+    app.get("/api/fills", [this](auto* res, auto* req) {
+        handle_get_fills(res, req);
     });
 
     // DELETE: Cancel all open orders (must be registered before the parameterized route)
@@ -634,19 +660,10 @@ void WebServer::handle_ws_open(uWS::WebSocket<false, true, void*>* ws) {
     LOG_INFO("WebServer: WebSocket connection opened");
     all_ws_clients_.insert(ws);
 
-    // Send welcome message
+    // Send welcome message. The instruments ladders can show go only to a client that asks: the
+    // list runs to megabytes, and a window with no ladder has no use for it.
     std::string welcome = R"({"type":"welcome","message":"Connected to SlickTrader"})";
     send_text(ws, welcome);
-
-    // Every instrument a strategy subscribes, for the ladder to list. What MANUAL adopts later
-    // follows from process_events().
-    json brokers = strategy_instruments_;
-    if (const auto* manual = strategy_manager_.manual()) {
-        manual->for_each_adopted(0, [&](BrokerId broker, std::string_view instrument) {
-            add_instrument(brokers, instrument, broker);
-        });
-    }
-    send_text(ws, instruments_message("instruments", std::move(brokers)));
 }
 
 void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::string_view message) {
@@ -664,7 +681,11 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
             std::string channel = msg.value("channel", "");
             std::string instrument = msg.value("instrument", "");
 
-            if (channel == "level2" && !instrument.empty()) {
+            if (channel == "instruments") {
+                // All of them now, then what is new from process_events().
+                instrument_clients_.insert(ws);
+                send_instruments(ws);
+            } else if (channel == "level2" && !instrument.empty()) {
                 const Level2Book* book = level2_streams_.subscribe(ws, instrument);
                 if (!book) {
                     // Debug: a page sending these in a loop would flood the log.
@@ -672,6 +693,16 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
                               "long, or the client watches {} already",
                               instrument, decltype(level2_streams_)::MAX_STREAMS_PER_CLIENT);
                     return;
+                }
+
+                // The first ladder on one of MANUAL's has it held at its broker, its book emptied
+                // if it went stale since it was last let go.
+                if (level2_streams_.watchers(instrument) == 1 && !watched(instrument)) {
+                    send_text(ws, json{{"type", "subscription_error"},
+                                       {"channel", channel},
+                                       {"instrument", instrument},
+                                       {"message", "could not ask for its market data"}}
+                                      .dump());
                 }
 
                 json response = {
@@ -707,6 +738,9 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
 
             if (channel == "level2" && level2_streams_.unsubscribe(ws, instrument)) {
                 LOG_INFO("WebServer: Client unsubscribed from level2 for {}", instrument);
+                if (level2_streams_.watchers(instrument) == 0) {
+                    unwatched(instrument);
+                }
             }
         } else if (type == "ping") {
             send_text(ws, R"({"type":"pong"})");
@@ -721,7 +755,8 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
 void WebServer::handle_ws_close(uWS::WebSocket<false, true, void*>* ws) {
     // Remove from all connected clients and from the books it watched
     all_ws_clients_.erase(ws);
-    level2_streams_.remove(ws);
+    instrument_clients_.erase(ws);
+    level2_streams_.remove(ws, [this](std::string_view instrument) { unwatched(instrument); });
     lagging_.erase(ws);
 
     LOG_INFO("WebServer: WebSocket connection closed and cleaned up");
@@ -1473,23 +1508,11 @@ void WebServer::process_events() {
         }
     }
 
-    // What MANUAL adopted since the dashboards were last told, for their ladders to list. At
-    // most once per interval: a channel's definitions arrive by the thousand.
-    if (const auto* manual = strategy_manager_.manual(); manual && manual->adopted_count() != instruments_sent_) {
-        if (all_ws_clients_.empty()) {
-            instruments_sent_ = manual->adopted_count();   // a dashboard gets them all as it connects
-        } else if (const uint64_t now_ns = get_timestamp_ns();
-                   now_ns - last_instruments_sent_ns_ >= INSTRUMENTS_ADDED_INTERVAL_NS) {
-            last_instruments_sent_ns_ = now_ns;
-            json brokers = json::object();
-            instruments_sent_ = manual->for_each_adopted(instruments_sent_, [&](BrokerId broker, std::string_view instrument) {
-                add_instrument(brokers, instrument, broker);
-            });
-            const std::string msg = instruments_message("instruments_added", std::move(brokers));
-            for (auto* ws : all_ws_clients_) {
-                send_text(ws, msg);
-            }
-        }
+    index_listings();
+    if (!listings_added_.empty() || releasing_ != 0) {
+        const uint64_t now_ns = get_timestamp_ns();
+        send_instruments_added(now_ns);
+        release_holds(now_ns);
     }
 
     check_and_broadcast_broker_status();
@@ -1680,12 +1703,22 @@ void WebServer::handle_order_fill(const OrderFillEvent& fill) {
         msg["side"]       = (fill.side == Side::BUY) ? "buy" : "sell";
         msg["fill_price"] = from_price_t(fill.fill_price);
         msg["fill_qty"]   = from_qty_t(fill.fill_quantity);
-        broadcast_order_update(msg.dump());
+        msg["fill_id"]    = std::string(fill.fill_id);
+        msg["fee"]        = from_price_t(fill.fee_amount);
+        msg["timestamp_ns"] = fill.timestamp_ns;
+        if (const auto cid_it = oid_to_cid_.find(oid); cid_it != oid_to_cid_.end()) {
+            msg["client_order_id"] = cid_it->second;
+            if (const auto it = open_orders_.find(cid_it->second); it != open_orders_.end()) {
+                msg["strategy_id"] = it->second.strategy_id;
+            }
+        }
+        broadcast_fill(msg);
         return;
     }
 
-    // Capture tracked order fields before potential erasure
-    std::string instrument, side, fill_status;
+    // Capture tracked order fields before potential erasure. One not tracked is named by the fill.
+    std::string instrument(fill.instrument), side(fill.side == Side::BUY ? "buy" : "sell"), fill_status;
+    std::string strategy_id, client_order_id;
     double price = 0.0, qty = 0.0;
 
     auto cid_it = oid_to_cid_.find(oid);
@@ -1696,6 +1729,8 @@ void WebServer::handle_order_fill(const OrderFillEvent& fill) {
             side       = it->second.side;
             price      = it->second.price;
             qty        = it->second.qty;
+            strategy_id     = it->second.strategy_id;
+            client_order_id = it->second.client_order_id;
 
             double rem = from_qty_t(fill.remaining_quantity);
             it->second.remaining_qty    = rem;
@@ -1724,7 +1759,12 @@ void WebServer::handle_order_fill(const OrderFillEvent& fill) {
     msg["fill_price"]    = from_price_t(fill.fill_price);
     msg["fill_qty"]      = from_qty_t(fill.fill_quantity);
     msg["remaining_qty"] = from_qty_t(fill.remaining_quantity);
-    broadcast_order_update(msg.dump());
+    msg["fill_id"]       = std::string(fill.fill_id);
+    msg["fee"]           = from_price_t(fill.fee_amount);
+    msg["timestamp_ns"]  = fill.timestamp_ns;
+    msg["strategy_id"]     = strategy_id;
+    msg["client_order_id"] = client_order_id;
+    broadcast_fill(msg);
 }
 
 void WebServer::handle_order_cancel(const OrderCancelEvent& cancel) {
@@ -1788,6 +1828,136 @@ void WebServer::handle_order_reject(const OrderRejectEvent& reject) {
     msg["qty"]        = qty;
     msg["reason"]     = std::string(reject.reason);
     broadcast_order_update(msg.dump());
+}
+
+void WebServer::broadcast_fill(json& message) {
+    const std::string& text = fills_.push(message);
+    for (auto* ws : all_ws_clients_) {
+        send_text(ws, text);
+    }
+}
+
+void WebServer::handle_get_fills(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    std::string body;
+    fills_.write_json(body);
+    send_json_response(res, body);
+}
+
+void WebServer::index_listings() {
+    const auto* manual = strategy_manager_.manual();
+    if (manual == nullptr || manual->listed_count() == listings_indexed_) {
+        return;
+    }
+    listings_indexed_ = manual->for_each_listed(listings_indexed_, [&](BrokerId broker, std::string_view instrument,
+                                                                       price_t tick_size) {
+        auto [it, added] = listings_.try_emplace(std::string(instrument), Listing{broker, tick_size, false});
+        if (added) {
+            listings_added_.push_back(&it->first);
+        } else if (it->second.tick_size == 0 && tick_size != 0 && it->second.broker == broker) {
+            it->second.tick_size = tick_size;   // a strategy's, defined: the ladder takes its tick
+            listings_added_.push_back(&it->first);
+        }
+    });
+}
+
+void WebServer::send_instruments(Socket* ws) {
+    index_listings();
+    write_instruments(instruments_message_, "instruments", [&](auto&& emit) {
+        for (const auto& [instrument, listing] : listings_) {
+            emit(instrument, listing.broker, listing.tick_size);
+        }
+    });
+    send_text(ws, instruments_message_);
+}
+
+void WebServer::send_instruments_added(uint64_t now_ns) {
+    // At most once per interval: a channel's definitions arrive by the thousand. With no client
+    // asking, nothing waits: one that asks gets the whole list.
+    if (listings_added_.empty()) {
+        return;
+    }
+    if (instrument_clients_.empty()) {
+        listings_added_.clear();
+        return;
+    }
+    if (now_ns - last_instruments_sent_ns_ < INSTRUMENTS_ADDED_INTERVAL_NS) {
+        return;
+    }
+    last_instruments_sent_ns_ = now_ns;
+    write_instruments(instruments_message_, "instruments_added", [&](auto&& emit) {
+        for (const std::string* instrument : listings_added_) {
+            const Listing& listing = listings_.find(*instrument)->second;
+            emit(*instrument, listing.broker, listing.tick_size);
+        }
+    });
+    listings_added_.clear();
+    for (auto* ws : instrument_clients_) {
+        send_text(ws, instruments_message_);
+    }
+}
+
+bool WebServer::watched(std::string_view instrument) {
+    if (const auto it = ladder_holds_.find(instrument); it != ladder_holds_.end()) {
+        if (it->second.release_at_ns != 0) {
+            it->second.release_at_ns = 0;   // back within the grace: the stream never stopped
+            --releasing_;
+        }
+        return true;
+    }
+    index_listings();
+    const auto listing = listings_.find(instrument);
+    if (listing == listings_.end() || listing->second.book) {
+        return true;   // a strategy streams its book already, and a name nobody lists is only watched
+    }
+    if (!publish_ladder_subscription(listing->second.broker, instrument, true)) {
+        return false;
+    }
+    ladder_holds_.try_emplace(std::string(instrument), LadderHold{listing->second.broker, 0});
+    level2_streams_.renew(instrument);
+    return true;
+}
+
+void WebServer::unwatched(std::string_view instrument) {
+    const auto it = ladder_holds_.find(instrument);
+    if (it != ladder_holds_.end() && it->second.release_at_ns == 0) {
+        it->second.release_at_ns = get_timestamp_ns() + config_.ladder_release_ns;
+        ++releasing_;
+    }
+}
+
+void WebServer::release_holds(uint64_t now_ns) {
+    if (releasing_ == 0) {
+        return;
+    }
+    for (auto it = ladder_holds_.begin(); it != ladder_holds_.end();) {
+        const LadderHold hold = it->second;
+        if (hold.release_at_ns == 0 || now_ns < hold.release_at_ns) {
+            ++it;
+            continue;
+        }
+        // Kept for another pass if the bus has no room for it now: a release must not be lost.
+        if (!publish_ladder_subscription(hold.broker, it->first, false)) {
+            return;
+        }
+        level2_streams_.release(it->first);
+        it = ladder_holds_.erase(it);
+        --releasing_;
+    }
+}
+
+bool WebServer::publish_ladder_subscription(BrokerId broker, std::string_view instrument, bool subscribe) {
+    if (!config_producer_buffer_) {
+        LOG_ERROR("WebServer: no bus producer registered, so {} on {} is not {}", instrument, to_string(broker),
+                  subscribe ? "held" : "released");
+        return false;
+    }
+    return EventSerializer::publish<LadderSubscriptionEvent>(
+        *config_producer_buffer_, [&](LadderSubscriptionEvent& event) {
+            event.timestamp_ns = get_timestamp_ns();
+            event.broker_id = broker;
+            event.set_instrument(instrument);
+            event.subscribe = subscribe;
+        });
 }
 
 void WebServer::broadcast_order_update(const std::string& message) {

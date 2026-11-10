@@ -49,6 +49,12 @@ enum class SubscriptionType : uint8_t {
     MBO,            // market by order: every order of the book, for brokers whose feed carries it
 };
 
+// LEVEL2 and ORDER_BOOK both stream the level 2 updates books are built from. Coinbase serves the
+// two on one channel.
+constexpr bool streams_book(SubscriptionType type) noexcept {
+    return type == SubscriptionType::LEVEL2 || type == SubscriptionType::ORDER_BOOK;
+}
+
 // Subscription request from a strategy
 struct SubscriptionRequest {
     BrokerId broker_id;                   // Which broker to subscribe to

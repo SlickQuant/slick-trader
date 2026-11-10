@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace slick::trader {
@@ -17,5 +18,9 @@ struct StringHash {
 
 // A set of strings searched the same way.
 using StringSet = std::unordered_set<std::string, StringHash, std::equal_to<>>;
+
+// And a map keyed by them.
+template <typename V>
+using StringMap = std::unordered_map<std::string, V, StringHash, std::equal_to<>>;
 
 } // namespace slick::trader

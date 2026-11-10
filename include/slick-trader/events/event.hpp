@@ -48,6 +48,7 @@ enum class EventType : uint8_t {
     INSTRUMENT_DEFINITION,
     MBO_UPDATE,
     INSTRUMENT_STATUS,
+    LADDER_SUBSCRIPTION,
 };
 
 // Base event header - all events must be POD/trivially copyable for lock-free queue

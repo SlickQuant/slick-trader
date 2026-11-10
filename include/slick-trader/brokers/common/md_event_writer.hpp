@@ -50,6 +50,33 @@ void for_each_part(size_t count, size_t max, F&& f) {
     } while (offset < count);
 }
 
+// One instrument as a market data connector describes it.
+struct MdDefinition {
+    std::string_view symbol;
+    price_t tick_size = 0;
+    double multiplier = 1.0;
+    qty_t min_quantity = 0;
+    qty_t max_quantity = 0;
+    qty_t quantity_increment = 0;
+    std::string_view currency;
+};
+
+// Publishes `d` into `buffer` as `broker`'s InstrumentDefinitionEvent. From the buffer's one writer.
+inline bool publish_definition(slick::stream_buffer_multiplexer::producer_buffer& buffer, BrokerId broker,
+                               const MdDefinition& d) {
+    return EventSerializer::publish<InstrumentDefinitionEvent>(buffer, [&](InstrumentDefinitionEvent& ev) {
+        ev.broker_id = broker;
+        ev.timestamp_ns = get_timestamp_ns();
+        ev.set_instrument(d.symbol);
+        ev.tick_size = d.tick_size;
+        ev.contract_multiplier = d.multiplier;
+        ev.min_quantity = d.min_quantity;
+        ev.max_quantity = d.max_quantity;
+        ev.quantity_increment = d.quantity_increment;
+        ev.set_currency(d.currency);
+    });
+}
+
 // A market data connector's output: its producer buffer in the event multiplexer, and
 // the events written into it. Single-threaded: the connector's worker is the one writer.
 class MdEventWriter {
@@ -153,29 +180,9 @@ public:
         });
     }
 
-    struct Definition {
-        std::string_view symbol;
-        price_t tick_size = 0;
-        double multiplier = 1.0;
-        qty_t min_quantity = 0;
-        qty_t max_quantity = 0;
-        qty_t quantity_increment = 0;
-        std::string_view currency;
-    };
+    using Definition = MdDefinition;
 
-    void definition(const Definition& d) {
-        EventSerializer::publish<InstrumentDefinitionEvent>(*buffer_, [&](InstrumentDefinitionEvent& ev) {
-            ev.broker_id = broker_;
-            ev.timestamp_ns = get_timestamp_ns();
-            ev.set_instrument(d.symbol);
-            ev.tick_size = d.tick_size;
-            ev.contract_multiplier = d.multiplier;
-            ev.min_quantity = d.min_quantity;
-            ev.max_quantity = d.max_quantity;
-            ev.quantity_increment = d.quantity_increment;
-            ev.set_currency(d.currency);
-        });
-    }
+    void definition(const Definition& d) { publish_definition(*buffer_, broker_, d); }
 
     [[nodiscard]] BrokerId broker() const noexcept { return broker_; }
 

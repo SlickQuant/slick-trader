@@ -1,3 +1,32 @@
+# v0.4.0 - 11-10-2026
+
+## Changed
+
+- The main dashboard window is a toolbar plus broker status, P&L totals and strategy control.
+  Ladder, Order, Orders, Fills, Positions, P&L and Log each open in their own popup window, and
+  each Ladder click opens another ladder. The frontend uses Preact and htm, vendored in
+  `web/static/lib` with Chart.js, and needs no build step.
+- MANUAL subscribes nothing at startup. Its `instruments` parameter now only narrows what ladders
+  list, and with no parameter ladders list every instrument brokers define. When a ladder shows an
+  instrument, the web server has MANUAL subscribe it. MANUAL unsubscribes it
+  `web_server_ladder_release_ms` (5000) after the last ladder on it closes or switches away. If a
+  strategy already streams the instrument's book (LEVEL2 or ORDER_BOOK), the ladder uses that
+  stream and MANUAL subscribes nothing.
+  `ManualStrategy::adopt()`, `for_each_adopted()` and `adopted_count()` are now `add_listing()`,
+  `for_each_listed()` and `listed_count()`. `EventType::LADDER_SUBSCRIPTION` is new and last.
+- The WebSocket sends the instrument list only to a client that subscribes to the `instruments`
+  channel. Its format is now `{"instruments":{<name>:[<broker id>,<tick>]}}`.
+- Coinbase and Hyperliquid publish instrument definitions when they start, so ladders list their
+  products with real ticks. Coinbase reads products from `market_data.rest_url` (default
+  `https://api.coinbase.com`). `MdEventWriter::definition()` now calls the new free function
+  `publish_definition()`, which connectors without an `MdEventWriter` use too.
+- `GET /api/fills` returns the last 1,000 fills. Fill messages carry `seq`, `strategy_id`,
+  `client_order_id`, `fill_id`, `fee` and `timestamp_ns`. When the order isn't tracked, they take
+  the instrument and side from the fill itself.
+- The order ticket drops its strategy field. The server always booked dashboard orders to MANUAL.
+- A dashboard window keeps reconnecting while the engine is down. It used to give up after ten
+  tries.
+
 # v0.3.0 - 11-09-2026
 
 ## Changed

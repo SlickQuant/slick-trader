@@ -219,6 +219,7 @@ public:
     const Clients& apply(const Level2UpdateEvent& event) {
         Stream& stream = stream_of(std::string_view(event.instrument));
         stream.streamed = true;
+        ++stream.events;
         stream.book.apply(event);
         return stream.clients;
     }
@@ -257,17 +258,54 @@ public:
         return true;
     }
 
-    // Drops `client` from the streams it watches, and from those alone.
-    void remove(Client* client) {
+    // Drops `client` from the streams it watches, and from those alone. `unwatched(instrument)`
+    // is called for each it was the last watcher of.
+    template <typename F>
+    void remove(Client* client, F&& unwatched) {
         const auto it = watching_.find(client);
         if (it == watching_.end()) {
             return;
         }
         for (Stream* stream : it->second) {
             stream->clients.erase(client);
+            if (stream->clients.empty()) {
+                unwatched(stream->instrument);   // before drop_if_unused() takes the name with it
+            }
             drop_if_unused(*stream);
         }
         watching_.erase(it);
+    }
+    void remove(Client* client) {
+        remove(client, [](std::string_view) {});
+    }
+
+    // How many clients watch `instrument`.
+    size_t watchers(std::string_view instrument) const {
+        const auto it = streams_.find(instrument);
+        return it != streams_.end() ? it->second.clients.size() : 0;
+    }
+
+    // Its broker was told to stop streaming `instrument`: from here, the book goes stale once its
+    // events stop. renew(), as the broker is asked for it again, empties a book no event came for
+    // since, so a subscriber starts from the snapshot the broker sends, not from what it left. A
+    // book whose events kept coming, from a connector that streams on regardless, is current and
+    // kept: emptied, it would be built from increments alone.
+    void release(std::string_view instrument) {
+        if (const auto it = streams_.find(instrument); it != streams_.end()) {
+            it->second.released = true;
+            it->second.events_at_release = it->second.events;
+        }
+    }
+    void renew(std::string_view instrument) {
+        const auto it = streams_.find(instrument);
+        if (it == streams_.end() || !it->second.released) {
+            return;
+        }
+        Stream& stream = it->second;
+        stream.released = false;
+        if (stream.events == stream.events_at_release) {
+            stream.book = Level2Book{};
+        }
     }
 
     // How many streams are kept.
@@ -279,6 +317,9 @@ private:
         Level2Book book;
         std::string_view instrument;   // its key in streams_
         bool streamed = false;         // an event came for it
+        uint64_t events = 0;           // how many came
+        bool released = false;         // its broker was told to stop, as release() says
+        uint64_t events_at_release = 0;
     };
 
     Stream& stream_of(std::string_view instrument) {

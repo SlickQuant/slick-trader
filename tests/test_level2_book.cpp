@@ -281,6 +281,60 @@ TEST(Level2StreamsTest, WhatClientsAskForStaysBounded) {
     EXPECT_EQ(streams.size(), 1u) << "only the book that streamed is kept";
 }
 
+// MANUAL subscribes an instrument while a ladder shows it, so the WebServer is told of a stream's
+// first watcher and of its last one going: a client closing reports each it was the last on.
+TEST(Level2StreamsTest, TheLastWatcherOfEachStreamIsReported) {
+    Streams streams;
+    Tab tab;
+    Tab other;
+    streams.subscribe(&tab, "ZNZ6");
+    EXPECT_EQ(streams.watchers("ZNZ6"), 1u);
+    streams.subscribe(&other, "ZNZ6");
+    streams.subscribe(&tab, "ZBZ6");
+    EXPECT_EQ(streams.watchers("ZNZ6"), 2u);
+
+    std::vector<std::string> unwatched;
+    streams.remove(&tab, [&](std::string_view instrument) { unwatched.emplace_back(instrument); });
+    EXPECT_EQ(unwatched, std::vector<std::string>{"ZBZ6"}) << "ZNZ6 has a watcher left";
+    EXPECT_EQ(streams.watchers("ZNZ6"), 1u);
+    EXPECT_EQ(streams.watchers("ZBZ6"), 0u);
+    EXPECT_TRUE(streams.unsubscribe(&other, "ZNZ6"));
+    EXPECT_EQ(streams.watchers("ZNZ6"), 0u);
+}
+
+// A ladder held again after its instrument was let go at the broker started from the book the
+// broker last left, levels long gone, until the snapshot came. It starts empty now.
+TEST(Level2StreamsTest, ABookThatStoppedSinceItWasLetGoIsEmptiedWhenHeldAgain) {
+    Streams streams;
+    Tab tab;
+    stream_znz6(streams);
+    streams.release("ZNZ6");
+    const Level2Book* book = streams.subscribe(&tab, "ZNZ6");
+    ASSERT_NE(book, nullptr);
+    EXPECT_EQ(levels_of(*book), ZNZ6_BOOK) << "emptied before the broker was asked for it again";
+    streams.renew("ZNZ6");
+    EXPECT_TRUE(levels_of(*book).empty());
+
+    stream_znz6(streams);
+    streams.renew("ZNZ6");
+    EXPECT_EQ(levels_of(*book), ZNZ6_BOOK) << "a book not let go was emptied";
+}
+
+// A connector that streams on after it is told to stop keeps the book current: emptied as it is
+// held again, it would be built from deltas alone, as no new snapshot comes.
+TEST(Level2StreamsTest, ABookStillStreamingAfterItWasLetGoIsKept) {
+    Streams streams;
+    stream_znz6(streams);
+    streams.release("ZNZ6");
+    auto delta = update(false, 2, {PriceLevel(to_price_t(110.25), to_qty_t(1.0), Side::BUY)});
+    streams.apply(for_instrument(delta, "ZNZ6"));
+
+    Tab tab;
+    const Level2Book* book = streams.subscribe(&tab, "ZNZ6");
+    streams.renew("ZNZ6");
+    EXPECT_EQ(levels_of(*book).size(), 2u);
+}
+
 // A snapshot went in a level at a time, each kept worst first. A broker lists one best first, so
 // every level went in at the front of its side and moved all the others: a full-depth book took
 // the server's event loop seconds. It is taken in whole now, and sorted once.

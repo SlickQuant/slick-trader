@@ -10,6 +10,7 @@
       "enabled": true,
       "market_data": {
         "enabled": true,
+        "rest_url": "https://api.coinbase.com",
         "websocket_url": "wss://advanced-trade-ws.coinbase.com"
       },
       "order": {
@@ -41,6 +42,7 @@
   "web_service": {
     "enabled": true,
     "web_server_cors": true,
+    "web_server_ladder_release_ms": 5000,
     "web_server_port": 3000,
     "web_server_static_path": "web/static",
     "ladder_config": {

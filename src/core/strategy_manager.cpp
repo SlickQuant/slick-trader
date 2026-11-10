@@ -185,7 +185,7 @@ void StrategyManager::load_strategies(const json& config) {
     }
 
     // Always register ManualStrategy for orders placed through the Web UI, configured by a
-    // <name>.config.json naming it if there is one: its "instruments" are what it ladders.
+    // <name>.config.json naming it if there is one: its "instruments" narrow what ladders list.
     {
         auto manual = std::make_shared<ManualStrategy>();
         const auto config = strategy_configs.find(ManualStrategy::ID);
@@ -268,11 +268,12 @@ void StrategyManager::start() {
     for (auto& strategy : strategies_) {
         strategy->start();
 
-        // subscribe MD update. MANUAL's stream to the Web UI alone, with no book kept here.
-        const bool book = strategy.get() != manual_.get();
-        auto subscriptions = strategy->get_subscriptions();
-        for (const auto &subscription : subscriptions) {
-            subscribe(subscription, book);
+        // subscribe MD update. MANUAL's are subscribed as ladders hold them.
+        if (strategy == manual_) {
+            continue;
+        }
+        for (const auto& subscription : strategy->get_subscriptions()) {
+            subscribe(subscription);
         }
     }
 
@@ -291,22 +292,20 @@ void StrategyManager::stop() {
 
     running_.store(false, std::memory_order_release);
 
-    // Join the worker before unsubscribing: it subscribes at runtime (MANUAL adopting an
-    // instrument), so the subscription map is its state until it stops.
+    // Join the worker before unsubscribing: it subscribes at runtime (a ladder holding an
+    // instrument of MANUAL's), so the subscription map is its state until it stops.
     if (worker_thread_.joinable()) {
         worker_thread_.join();
     }
-    // Adopted but never subscribed: no broker holds them, so there is nothing to undo.
-    for (auto& instruments : adoptions_) {
-        instruments.clear();
-    }
-    adoptions_pending_ = false;
 
     // Stop all strategies
     for (auto& strategy : strategies_) {
         auto subscriptions = strategy->get_subscriptions();
         for (const auto &subscription : subscriptions) {
             unsubscribe(subscription);
+        }
+        if (strategy == manual_) {
+            manual_->release_all();   // a ladder holds them again after a restart
         }
 
         strategy->stop();
@@ -456,23 +455,6 @@ void StrategyManager::drain_requests() {
     }
 }
 
-void StrategyManager::flush_adoptions(std::chrono::steady_clock::time_point now) {
-    if (!adoptions_pending_ || now - last_adoption_flush_ < ADOPTION_FLUSH_INTERVAL) {
-        return;
-    }
-    last_adoption_flush_ = now;
-    adoptions_pending_ = false;
-
-    for (size_t i = 0; i < BROKER_COUNT; ++i) {
-        if (adoptions_[i].empty()) {
-            continue;
-        }
-        SubscriptionRequest request(static_cast<BrokerId>(i), ManualStrategy::SUBSCRIPTION, {});
-        request.instruments.swap(adoptions_[i]);
-        subscribe(request, false);
-    }
-}
-
 void StrategyManager::subscribe(const SubscriptionRequest& sub, bool book) {
     // Only what nobody holds yet goes to the broker; the rest just gains a holder.
     std::vector<std::string> instruments;
@@ -493,7 +475,7 @@ void StrategyManager::subscribe(const SubscriptionRequest& sub, bool book) {
     // bus, so each takes in its broker's snapshot, which no SUBSCRIBE before start() has had
     // read yet. One made later, for one MANUAL streams, would be built from increments alone.
     assert(!is_running());
-    if (sub.type == SubscriptionType::LEVEL2 || sub.type == SubscriptionType::ORDER_BOOK) {
+    if (streams_book(sub.type)) {
         subscribe_book_update(sub.instruments);
     } else if (sub.type == SubscriptionType::MBO) {
         // Built now, not on the first event the worker dispatches.
@@ -533,7 +515,6 @@ void StrategyManager::run() {
         }
 
         auto now = std::chrono::steady_clock::now();
-        flush_adoptions(now);
         // Retried at an interval, not on every event: a connector frees room a request at a time.
         if (requests_queued_ != 0 && now - last_request_send_ >= REQUEST_RETRY_INTERVAL) {
             send_requests(now);
@@ -590,8 +571,8 @@ void StrategyManager::dispatch_strategy_config(const StrategyConfigEvent& event)
     // define them again.
     if (strategy == manual_) {
         for (size_t i = 0; i < BROKER_COUNT; ++i) {
-            for (const auto& instrument : defined_[i]) {
-                adopt(static_cast<BrokerId>(i), instrument);
+            for (const auto& [instrument, tick_size] : defined_[i]) {
+                list(static_cast<BrokerId>(i), instrument, tick_size);
             }
         }
     }
@@ -677,6 +658,9 @@ void StrategyManager::process_event(const Event* event) {
         case EventType::INSTRUMENT_STATUS:
             dispatch_instrument_status(*reinterpret_cast<const InstrumentStatusEvent*>(event));
             break;
+        case EventType::LADDER_SUBSCRIPTION:
+            dispatch_ladder_subscription(*reinterpret_cast<const LadderSubscriptionEvent*>(event));
+            break;
         default:
             LOG_WARN("StrategyManager: Unknown event type: {}", static_cast<int>(event->type));
             break;
@@ -736,22 +720,53 @@ void StrategyManager::dispatch_instrument_definition(const InstrumentDefinitionE
         strategy->on_instrument_definition(event);
     }
 
-    // A replay, as a venue loops its definitions, was adopted or not the first time it came: MANUAL
+    // A replay, as a venue loops its definitions, was listed or not the first time it came: MANUAL
     // takes a new list over defined_ itself. Only a first one goes to it.
     const auto broker = static_cast<size_t>(event.broker_id);
     if (broker < BROKER_COUNT && !defined_[broker].contains(instrument)) {
-        defined_[broker].emplace(instrument);
-        adopt(event.broker_id, instrument);
+        defined_[broker].emplace(std::string(instrument), event.tick_size);
+        list(event.broker_id, instrument, event.tick_size);
     }
 }
 
-void StrategyManager::adopt(BrokerId broker, std::string_view instrument) {
-    // MANUAL takes on the instruments its config lists, so the Web UI can ladder and trade
-    // them. While running, flush_adoptions() subscribes it; before that, start() does.
-    if (manual_ && manual_->adopt(broker, instrument) && is_running()) {
-        adoptions_[static_cast<size_t>(broker)].emplace_back(instrument);
-        adoptions_pending_ = true;
+void StrategyManager::list(BrokerId broker, std::string_view instrument, price_t tick_size) {
+    // For the Web UI's ladders to pick from. Nothing is subscribed until one holds it.
+    if (manual_) {
+        manual_->add_listing(broker, instrument, tick_size);
     }
+}
+
+void StrategyManager::dispatch_ladder_subscription(const LadderSubscriptionEvent& event) {
+    // Held or released once, whatever the WebServer sends: the subscription map counts MANUAL as
+    // one holder, so a strategy holding the same book keeps it.
+    // One a strategy only quotes or trades is the ladder's to hold too: it streams no book.
+    const std::string_view instrument(event.instrument);
+    if (!manual_ || !(event.subscribe
+                          ? manual_->hold(event.broker_id, instrument, subscribed(event.broker_id, instrument))
+                          : manual_->release(event.broker_id, instrument))) {
+        return;
+    }
+    const SubscriptionRequest request(event.broker_id, ManualStrategy::SUBSCRIPTION, {std::string(instrument)});
+    if (event.subscribe) {
+        LOG_INFO("StrategyManager: a ladder holds {} on {}", instrument, to_string(event.broker_id));
+        subscribe(request, false);
+    } else {
+        LOG_INFO("StrategyManager: no ladder holds {} on {} now", instrument, to_string(event.broker_id));
+        unsubscribe(request);
+    }
+}
+
+bool StrategyManager::subscribed(BrokerId broker, std::string_view instrument) const {
+    std::string name(instrument);
+    for (const auto type : {SubscriptionType::TRADE, SubscriptionType::QUOTE, SubscriptionType::LEVEL2,
+                            SubscriptionType::ORDER_BOOK, SubscriptionType::MBO}) {
+        SubscriptionKey key{broker, type, std::move(name)};
+        if (subscriptions_.contains(key)) {
+            return true;
+        }
+        name = std::move(std::get<2>(key));
+    }
+    return false;
 }
 
 void StrategyManager::dispatch_instrument_status(const InstrumentStatusEvent& event) {

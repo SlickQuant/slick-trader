@@ -29,10 +29,10 @@ buy you:
 
 The one exception is `ManualStrategy` ([manual_strategy.hpp](../include/slick-trader/strategy/manual_strategy.hpp)):
 it's a built-in core strategy, not a plugin, and is always registered at startup to own orders
-placed manually through the Web UI. As brokers define instruments, it adopts the ones its
-`instruments` parameter lists (symbols, or prefixes ending in `*`) and subscribes their level 2
-books, so the ladder can trade them with no plugin loaded. CME and ICE publish definitions. With
-no list, it adopts nothing.
+placed manually through the Web UI. As brokers define instruments, it lists them for the
+ladders, narrowed by its `instruments` parameter (symbols, or prefixes ending in `*`). With no
+list it includes everything defined. It subscribes an instrument's level 2 book only while a ladder
+shows it, so the ladder can trade with no plugin loaded.
 
 ## Building Strategy Plugins
 

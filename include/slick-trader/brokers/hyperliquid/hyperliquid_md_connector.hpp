@@ -1,6 +1,7 @@
 #pragma once
 
 #include <slick-trader/brokers/imarket_data_connector.hpp>
+#include <slick-trader/brokers/common/md_event_writer.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
 #include <slick-trader/events/md_subscription.hpp>
 #include <nlohmann/json.hpp>
@@ -21,6 +22,12 @@ namespace slick::trader {
 using json = nlohmann::json;
 
 using producer_buffer = slick::stream_buffer_multiplexer::producer_buffer;
+
+// The definitions of Hyperliquid's perpetuals, from the metadata Info loads: coin -> asset index
+// (perps below 10000) and asset -> size decimals. In coin order, each naming its key in
+// `coin_to_asset`, which must outlive them. Tick 0: a perp's tick depends on its price.
+std::vector<MdDefinition> hyperliquid_definitions(const std::unordered_map<std::string, int>& coin_to_asset,
+                                                  const std::unordered_map<int, int>& asset_to_sz_decimals);
 
 class HyperliquidMDConnector : public IMarketDataConnector {
 public:
@@ -48,6 +55,8 @@ public:
 private:
     void run();
     void process_md_requests();
+    // Publishes a definition of each perp in the loaded metadata, for ladders to list them.
+    void publish_definitions();
     void subscribe_all();
     void on_trades(const nlohmann::json& msg);
     void on_bbo(const nlohmann::json& msg);

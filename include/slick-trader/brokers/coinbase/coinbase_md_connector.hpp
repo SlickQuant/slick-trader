@@ -1,6 +1,7 @@
 #pragma once
 
 #include <slick-trader/brokers/imarket_data_connector.hpp>
+#include <slick-trader/brokers/common/md_event_writer.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
 #include <slick-trader/events/md_subscription.hpp>
 #include <atomic>
@@ -16,6 +17,7 @@
 // Forward declarations
 namespace coinbase {
     class WebSocketClient;
+    struct Product;
 }
 
 namespace slick::trader {
@@ -23,6 +25,10 @@ namespace slick::trader {
 using WebSocketClient = coinbase::WebSocketClient;
 using producer_buffer = slick::stream_buffer_multiplexer::producer_buffer;
 using json = nlohmann::json;
+
+// The definitions of the products Coinbase lists that can be traded, each naming its product:
+// `products` must outlive them. Its price tick is price_increment, or quote_increment without one.
+std::vector<MdDefinition> coinbase_definitions(const std::vector<coinbase::Product>& products);
 
 class CoinbaseMDConnector : public IMarketDataConnector, public coinbase::WebsocketCallbacks {
 public:
@@ -79,6 +85,8 @@ public:
 private:
     void run();
     void process_md_requests();
+    // Publishes a definition of each product the REST API lists, for ladders to list them.
+    void publish_definitions();
 
     void publish_trade(const coinbase::MarketTrade& trade);
     void publish_ticker(const coinbase::Ticker& ticker, uint64_t timestamp);
@@ -99,6 +107,7 @@ private:
     uint64_t request_cursor_;
 
     std::string ws_url_;
+    std::string rest_url_;   // where the products are listed
 
     std::vector<std::string> trade_instruments_;
     std::vector<std::string> quote_instruments_;

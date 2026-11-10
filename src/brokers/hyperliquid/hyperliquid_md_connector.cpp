@@ -14,6 +14,7 @@
 #include <slick/logger.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <stdexcept>
 #include <cstring>
@@ -203,9 +204,42 @@ void HyperliquidMDConnector::stop() {
     disconnect();
 }
 
+std::vector<MdDefinition> hyperliquid_definitions(const std::unordered_map<std::string, int>& coin_to_asset,
+                                                  const std::unordered_map<int, int>& asset_to_sz_decimals) {
+    constexpr int FIRST_SPOT_ASSET = 10000;
+    std::vector<MdDefinition> definitions;
+    for (const auto& [coin, asset] : coin_to_asset) {
+        if (asset >= FIRST_SPOT_ASSET) {
+            continue;
+        }
+        const auto decimals = asset_to_sz_decimals.find(asset);
+        definitions.push_back(MdDefinition{
+            .symbol = coin,
+            .quantity_increment = decimals != asset_to_sz_decimals.end()
+                                      ? to_qty_t(std::pow(10.0, -decimals->second))
+                                      : qty_t(0),
+            .currency = "USDC",
+        });
+    }
+    std::ranges::sort(definitions, {}, &MdDefinition::symbol);
+    return definitions;
+}
+
+void HyperliquidMDConnector::publish_definitions() {
+    const auto definitions = hyperliquid_definitions(info_->coin_to_asset, info_->asset_to_sz_decimals);
+    for (const auto& definition : definitions) {
+        publish_definition(*event_buffer_, BrokerId::HYPERLIQUID, definition);
+    }
+    LOG_INFO("Hyperliquid MD: {} perp(s) defined", definitions.size());
+}
+
 void HyperliquidMDConnector::run() {
     LOG_INFO("Hyperliquid MD: Worker thread started");
     connect();
+    // From this thread, the buffer's one writer: the metadata's callbacks publish from it too.
+    if (info_) {
+        publish_definitions();
+    }
 
     while (running_.load(std::memory_order_acquire)) {
         if (info_) {

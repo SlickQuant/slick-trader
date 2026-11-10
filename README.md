@@ -11,7 +11,7 @@ crypto exchanges over WebSocket/REST, routes market data and order events throug
 messaging core, runs trading strategies as hot-loadable plugins, and exposes a real-time web
 dashboard for monitoring and manual control.
 
-> **Status**: first release, 0.1.0. The Coinbase and Hyperliquid brokers are built in, and more
+> **Status**: 0.4.0. The Coinbase and Hyperliquid brokers are built in, and more
 > can be built in from their own repositories (see
 > [Brokers and out-of-tree brokers](#brokers-and-out-of-tree-brokers)). Order execution needs
 > broker credentials (see [Broker configuration](#broker-configuration)). The sample config sends
@@ -55,8 +55,9 @@ dashboard for monitoring and manual control.
 - **Multi-leg fills** — a broker reports the fill of an order for a multi-leg instrument (a
   futures spread) as the order's own fill followed by one fill per leg (`FillScope`), so the
   order moves at the spread's price while the positions booked are the legs', where they clear.
-- **Live web dashboard** — a dependency-free vanilla-JS frontend (`web/static/`) served over
-  uWebSockets, with a REST API and a price-ladder UI for manual order entry/cancellation.
+- **Live web dashboard** — a Preact frontend with no build step (`web/static/`) served over
+  uWebSockets, with a REST API. A toolbar opens each tool, like the click-to-trade ladder, in its
+  own popup window.
 - **Manual + automated strategies side by side** — a built-in `ManualStrategy` owns orders placed
   by hand through the dashboard, coexisting with plugin strategies under the same risk/position
   tracking.
@@ -309,7 +310,8 @@ while the engine was down reaches it only if the broker reports that fill after 
 
 ## Web Dashboard
 
-The dashboard (`web/static/`) is a build-tool-free HTML/CSS/vanilla-JS app that connects over
+The dashboard (`web/static/`) uses Preact and htm, vendored in `web/static/lib`, and needs no
+build step. It connects over
 WebSocket for live position/PnL/order updates and hits a REST API for everything else. PnL is
 pushed when a subscribed instrument's top of book moves - `StrategyManager` publishes it on the
 event bus as a `TOB` record - at most four times a second. Key endpoints (see
@@ -318,25 +320,26 @@ event bus as a `TOB` record - at most four times a second. Key endpoints (see
 - `GET /api/health`, `GET /api/brokers`, `GET /api/strategies`
 - `GET /api/positions[/:strategy_id]`, `GET /api/pnl[/:strategy_id]`
 - `GET /api/orders`, `POST /api/orders`, `PUT|DELETE /api/orders/:strategy_id/:order_id`, `DELETE /api/orders/cancel-all`
+- `GET /api/fills` (the last 1,000)
 - `POST /api/strategies/:strategy_id/{control,halt,resume}`
 - `GET|PUT /api/strategies/:strategy_id/{risk,config}`
 - `GET|PUT /api/ladder-config`
 
-It includes a price-ladder view (`slick-ladder`, an `@slickquant` npm package — see
-[package.json](package.json)) for click-to-trade manual order entry; manual orders are attributed
-to the built-in `ManualStrategy`, which also subscribes the instruments its config lists so the
-ladder shows them. For example, in `config/manual.config.json`:
+The dashboard is a toolbar that opens each tool (ladder, order ticket, orders, fills, positions,
+P&L, log) in a popup window of its own. Its click-to-trade ladder uses `slick-ladder`, an
+`@slickquant` npm package (see [package.json](package.json)). The built-in `ManualStrategy` owns
+manual orders. A ladder lists the instruments brokers define (CME, ICE, Coinbase and Hyperliquid
+publish definitions), and MANUAL subscribes one only while a ladder shows it. MANUAL's config
+narrows the list, for example in `config/manual.config.json`:
 
 ```json
 { "name": "MANUAL", "parameters": { "instruments": ["ZNZ6", "ZB*"] } }
 ```
 
-Entries are symbols, or prefixes ending in `*`, and each is subscribed once a broker defines it
-(CME and ICE publish definitions). A list sent through `PUT /api/strategies/MANUAL/config`
-replaces the old one and picks up what brokers have already defined. A dashboard gets the
-ladder's list over the WebSocket when it connects, then MANUAL's new instruments at most every
-250 ms. See [web/static/CONTROLS_GUIDE.md](web/static/CONTROLS_GUIDE.md)
-and [web/static/FEATURES.md](web/static/FEATURES.md) for UI details.
+Entries are symbols, or prefixes ending in `*`. With no `instruments` parameter ladders list
+everything, and with `[]` nothing. A list sent through `PUT /api/strategies/MANUAL/config` replaces the old one and
+picks up what brokers have already defined. See [web/static/README.md](web/static/README.md),
+[CONTROLS_GUIDE.md](web/static/CONTROLS_GUIDE.md) and [FEATURES.md](web/static/FEATURES.md).
 
 ## Project Layout
 

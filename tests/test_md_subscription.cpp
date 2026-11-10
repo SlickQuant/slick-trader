@@ -19,6 +19,7 @@
 #include <slick-trader/core/strategy_config.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/events/instrument_definition_event.hpp>
+#include <slick-trader/events/ladder_subscription_event.hpp>
 #include <slick-trader/events/md_subscription.hpp>
 #include <slick-trader/events/strategy_config_event.hpp>
 #include <slick-trader/strategy/manual_strategy.hpp>
@@ -57,10 +58,21 @@ struct Request {
     std::vector<std::string> instruments;
 };
 
-// MANUAL's config parameters, listing `symbols` to adopt as brokers define them.
+// MANUAL's config parameters, listing `symbols` as brokers define them.
 nlohmann::json manual_lists(std::vector<std::string> symbols) {
     return {{"instruments", std::move(symbols)}};
 }
+
+// "I<i>" for i in [from, from + count), and as a multiset, as connectors record them.
+std::string instrument_name(size_t i) { return "I" + std::to_string(i); }
+std::vector<std::string> channel(size_t from, size_t count) {
+    std::vector<std::string> names;
+    for (size_t i = from; i < from + count; ++i) {
+        names.push_back(instrument_name(i));
+    }
+    return names;
+}
+std::multiset<std::string> names_of(const std::vector<std::string>& names) { return {names.begin(), names.end()}; }
 
 class MdSubscriptionTest : public ::testing::Test, protected test::StrategyManagerFixture {
 protected:
@@ -92,20 +104,43 @@ protected:
     }
 
     // A manager of its own, holding MANUAL, for a test that needs a config or request queues
-    // other than the fixture's.
+    // other than the fixture's. With `subscriptions`, a strategy holding them too.
     std::unique_ptr<StrategyManager> manual_manager(MdRequestQueues& md_qs, nlohmann::json config,
-                                                    const nlohmann::json& manual_params = manual_lists({"*"})) {
+                                                    const nlohmann::json& manual_params = manual_lists({"*"}),
+                                                    std::vector<SubscriptionRequest> subscriptions = {}) {
         config["TOB_queue_size"] = 65536;
         config["TOB_control_size"] = 4096;
         auto manager = std::make_unique<StrategyManager>(config, positions_, pnl_, risk_, mux_, md_qs, order_q_);
         auto manual = std::make_shared<ManualStrategy>();
         manual->initialize(manual_params, positions_, pnl_, risk_, order_q_);
         manager->add_strategy(manual);
+        if (!subscriptions.empty()) {
+            auto strategy = std::make_shared<SubscribingStrategy>("Channel", std::move(subscriptions));
+            strategy->initialize(nlohmann::json::object(), positions_, pnl_, risk_, order_q_);
+            manager->add_strategy(strategy);
+        }
         return manager;
+    }
+
+    // The requests published within 5 s, as soon as there are any.
+    std::vector<Request> wait_for_requests() {
+        std::vector<Request> sent;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (sent.empty() && std::chrono::steady_clock::now() < deadline) {
+            sent = requests();
+            std::this_thread::yield();
+        }
+        return sent;
     }
 
     std::array<uint64_t, MdRequestQueues::BROKER_COUNT> cursors_{};   // the queues are new: each starts at 0
 };
+
+// Publishes a copy of `event` into `producer`, as a broker or the WebServer does.
+template <typename E>
+void send(slick::stream_buffer_multiplexer::producer_buffer& producer, const E& event) {
+    EventSerializer::publish<E>(producer, [&](E& e) { e = event; });
+}
 
 } // namespace
 
@@ -166,26 +201,42 @@ TEST_F(MdSubscriptionTest, ASubscriptionTwoStrategiesShareIsSentOnceAndDroppedOn
     EXPECT_EQ(sent[0].instruments, (std::vector<std::string>{"ESZ6", "NQZ6"}));
 }
 
-// MANUAL used to subscribe nothing, so with no strategy plugin loaded the Web UI ladder had
-// no instrument. It now adopts every instrument a broker defines and holds its level 2 book.
+// MANUAL subscribed every instrument it listed as brokers defined them: a venue's worth, with no
+// ladder showing any. It lists them now, and subscribes one only while a ladder holds it.
 
 namespace {
 
-InstrumentDefinitionEvent definition(BrokerId broker, const char* instrument) {
+InstrumentDefinitionEvent definition(BrokerId broker, const char* instrument, double tick = 0) {
     InstrumentDefinitionEvent event;
     event.broker_id = broker;
     event.set_instrument(instrument);
+    event.tick_size = to_price_t(tick);
     return event;
 }
 
-// How many instruments MANUAL holds.
-uint32_t adopted(const StrategyManager& manager) {
-    return manager.manual()->adopted_count();
+LadderSubscriptionEvent ladder(BrokerId broker, const char* instrument, bool subscribe) {
+    LadderSubscriptionEvent event;
+    event.broker_id = broker;
+    event.set_instrument(instrument);
+    event.subscribe = subscribe;
+    return event;
+}
+
+// How many instruments MANUAL lists, and which.
+uint32_t listed(const StrategyManager& manager) {
+    return manager.manual()->listed_count();
+}
+std::multiset<std::string> listed_names(const StrategyManager& manager) {
+    std::multiset<std::string> names;
+    manager.manual()->for_each_listed(0, [&](BrokerId, std::string_view instrument, price_t) {
+        names.emplace(instrument);
+    });
+    return names;
 }
 
 } // namespace
 
-TEST_F(MdSubscriptionTest, ManualAdoptsWhatBrokersDefineAndSubscribesItsBookAtStart) {
+TEST_F(MdSubscriptionTest, ManualListsWhatBrokersDefineAndSubscribesNothing) {
     add_strategy(std::make_shared<ManualStrategy>(), manual_lists({"ZNZ6", "BRNF7"}));
 
     const InstrumentDefinitionEvent defined[] = {definition(BrokerId::CME, "ZNZ6"),
@@ -194,61 +245,118 @@ TEST_F(MdSubscriptionTest, ManualAdoptsWhatBrokersDefineAndSubscribesItsBookAtSt
     for (const auto& event : defined) {
         manager_.process_event(&event);
     }
-    EXPECT_EQ(adopted(manager_), 2u) << "a definition seen again is adopted once";
-    EXPECT_TRUE(requests().empty()) << "nothing goes to a broker before the manager starts";
+    EXPECT_EQ(listed(manager_), 2u) << "a definition seen again is listed once";
 
     manager_.start();
-    auto sent = requests();
-    ASSERT_EQ(sent.size(), 2u);
-    EXPECT_EQ(sent[0].type, EventType::SUBSCRIBE);
-    EXPECT_EQ(sent[0].broker, BrokerId::CME);
-    EXPECT_EQ(sent[0].subscription, SubscriptionType::LEVEL2);
-    EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZNZ6"});
-    EXPECT_EQ(sent[1].broker, BrokerId::ICE);
-    EXPECT_EQ(sent[1].instruments, std::vector<std::string>{"BRNF7"});
-
     manager_.stop();
-    sent = requests();
-    ASSERT_EQ(sent.size(), 2u);
-    EXPECT_EQ(sent[0].type, EventType::UNSUBSCRIBE);
-    EXPECT_EQ(sent[1].type, EventType::UNSUBSCRIBE);
+    EXPECT_TRUE(requests().empty()) << "MANUAL subscribed what no ladder showed";
 }
 
-TEST_F(MdSubscriptionTest, ManualSubscribesAnInstrumentDefinedWhileRunning) {
-    auto manual = std::make_shared<ManualStrategy>();
-    add_strategy(manual, manual_lists({"ZNZ6"}));
+// A ladder showing one of MANUAL's has its book subscribed, once however often it is asked, and
+// unsubscribed when it lets go. Through the bus, as the WebServer sends it, to a running worker.
+TEST_F(MdSubscriptionTest, ALadderHoldReachesTheBrokerAndItsReleaseUnsubscribes) {
+    add_strategy(std::make_shared<ManualStrategy>(), manual_lists({"ZN*"}));
     auto producer = mux_.add_producer(mux_.producer_count(), 1u << 16, 4096);
     manager_.start();
-    ASSERT_TRUE(requests().empty());
 
-    // Through the bus, so the worker thread adopts it, as it does a broker's definition.
-    EventSerializer::publish<InstrumentDefinitionEvent>(*producer, [](InstrumentDefinitionEvent& event) {
-        event.broker_id = BrokerId::CME;
-        event.set_instrument("ZNZ6");
-    });
+    send(*producer, definition(BrokerId::CME, "ZNZ6"));
+    send(*producer, ladder(BrokerId::CME, "ZNZ6", true));
+    send(*producer, ladder(BrokerId::CME, "ZNZ6", true));
 
-    std::vector<Request> sent;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (sent.empty() && std::chrono::steady_clock::now() < deadline) {
-        sent = requests();
-        std::this_thread::yield();
-    }
-    ASSERT_EQ(sent.size(), 1u) << "the worker never subscribed the instrument";
+    auto sent = wait_for_requests();
+    ASSERT_EQ(sent.size(), 1u);
     EXPECT_EQ(sent[0].type, EventType::SUBSCRIBE);
     EXPECT_EQ(sent[0].broker, BrokerId::CME);
     EXPECT_EQ(sent[0].subscription, SubscriptionType::LEVEL2);
     EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZNZ6"});
 
-    // Read off this thread while the worker runs, as the WebServer reads it.
-    const auto held = manual->get_subscriptions();
-    ASSERT_EQ(held.size(), 1u);
-    EXPECT_EQ(held[0].instruments, std::vector<std::string>{"ZNZ6"});
-
-    manager_.stop();
-    EXPECT_EQ(adopted(manager_), 1u);
-    sent = requests();
+    send(*producer, ladder(BrokerId::CME, "ZNZ6", false));
+    sent = wait_for_requests();
     ASSERT_EQ(sent.size(), 1u);
     EXPECT_EQ(sent[0].type, EventType::UNSUBSCRIBE);
+    EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZNZ6"});
+
+    manager_.stop();
+    EXPECT_TRUE(requests().empty()) << "what was let go was unsubscribed again";
+}
+
+// What ladders still hold at stop() is unsubscribed with the rest, once, and is not held after a
+// restart: no ladder of the last run shows it.
+TEST_F(MdSubscriptionTest, StopReleasesWhatLaddersHold) {
+    add_strategy(std::make_shared<ManualStrategy>());
+    const auto defined = definition(BrokerId::CME, "ZNZ6");
+    manager_.process_event(&defined);
+    const auto hold = ladder(BrokerId::CME, "ZNZ6", true);
+    manager_.process_event(&hold);
+    ASSERT_EQ(requests().size(), 1u);
+    manager_.start();
+    EXPECT_TRUE(requests().empty()) << "start() subscribed a ladder's hold again";
+
+    manager_.stop();
+    const auto sent = requests();
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0].type, EventType::UNSUBSCRIBE);
+    EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZNZ6"});
+
+    manager_.start();
+    manager_.stop();
+    EXPECT_TRUE(requests().empty());
+    EXPECT_TRUE(manager_.manual()->get_subscriptions().empty());
+}
+
+// A ladder holding and letting go of a book a strategy subscribed leaves it as it was. The hold of
+// another instrument after them marks when the worker has handled both.
+TEST_F(MdSubscriptionTest, AReleaseKeepsWhatAStrategyHolds) {
+    add("Maker", {SubscriptionRequest(BrokerId::CME, SubscriptionType::LEVEL2, {"ZNZ6"})});
+    add_strategy(std::make_shared<ManualStrategy>());
+    auto producer = mux_.add_producer(mux_.producer_count(), 1u << 16, 4096);
+    manager_.start();
+    ASSERT_EQ(requests().size(), 1u);   // the strategy's
+
+    send(*producer, definition(BrokerId::CME, "ZNZ6"));
+    send(*producer, definition(BrokerId::CME, "ZBZ6"));
+    send(*producer, ladder(BrokerId::CME, "ZNZ6", true));
+    send(*producer, ladder(BrokerId::CME, "ZNZ6", false));
+    send(*producer, ladder(BrokerId::CME, "ZBZ6", true));
+    const auto sent = wait_for_requests();
+    ASSERT_EQ(sent.size(), 1u) << "the ladder's hold or release of the strategy's book reached the broker";
+    EXPECT_EQ(sent[0].type, EventType::SUBSCRIBE);
+    EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZBZ6"});
+
+    manager_.stop();
+    EXPECT_EQ(requests().size(), 2u);   // ZNZ6 at last, and ZBZ6
+}
+
+// A strategy quoting an instrument streams no book of it, and MANUAL's list can leave it out. The
+// ladders list it all the same, so MANUAL holds its book for one.
+TEST_F(MdSubscriptionTest, ALadderHoldsTheBookOfWhatAStrategyOnlyQuotes) {
+    add("Quoter", {SubscriptionRequest(BrokerId::CME, SubscriptionType::QUOTE, {"ZNZ6"})});
+    add_strategy(std::make_shared<ManualStrategy>(), manual_lists({}));
+    auto producer = mux_.add_producer(mux_.producer_count(), 1u << 16, 4096);
+    manager_.start();
+    ASSERT_EQ(requests().size(), 1u);   // the quotes
+
+    send(*producer, ladder(BrokerId::CME, "ZNZ6", true));
+    const auto sent = wait_for_requests();
+    ASSERT_EQ(sent.size(), 1u) << "MANUAL turned the ladder down";
+    EXPECT_EQ(sent[0].type, EventType::SUBSCRIBE);
+    EXPECT_EQ(sent[0].subscription, SubscriptionType::LEVEL2);
+    EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZNZ6"});
+    manager_.stop();
+}
+
+// MANUAL holds only what it lists, at the broker that defined it.
+TEST_F(MdSubscriptionTest, AHoldOfWhatIsNotListedIsRefused) {
+    add_strategy(std::make_shared<ManualStrategy>(), manual_lists({"ZN*"}));
+    for (const auto& event : {definition(BrokerId::CME, "ZNZ6"), definition(BrokerId::CME, "ZBZ6")}) {
+        manager_.process_event(&event);
+    }
+    for (const auto& event : {ladder(BrokerId::CME, "ZBZ6", true), ladder(BrokerId::ICE, "ZNZ6", true),
+                              ladder(BrokerId::CME, "ESZ6", true), ladder(BrokerId::CME, "ZNZ6", false)}) {
+        manager_.process_event(&event);
+    }
+    EXPECT_TRUE(requests().empty());
+    EXPECT_TRUE(manager_.manual()->get_subscriptions().empty());
 }
 
 // A whole channel is more than the request queue holds, and the queue is lossy.
@@ -336,20 +444,6 @@ private:
     std::thread thread_;
 };
 
-std::string instrument_name(size_t i) { return "I" + std::to_string(i); }
-
-// Has `manager` handle `count` definitions from `broker`, named from instrument_name(from) on,
-// and returns the names.
-std::multiset<std::string> define_channel(StrategyManager& manager, BrokerId broker, size_t from, size_t count) {
-    std::multiset<std::string> names;
-    for (size_t i = from; i < from + count; ++i) {
-        names.insert(instrument_name(i));
-        const auto event = definition(broker, instrument_name(i).c_str());
-        manager.process_event(&event);
-    }
-    return names;
-}
-
 bool wait_until(const std::chrono::steady_clock::time_point deadline, const auto& done) {
     while (!done()) {
         if (std::chrono::steady_clock::now() >= deadline) {
@@ -366,9 +460,10 @@ bool wait_until(const std::chrono::steady_clock::time_point deadline, const auto
 // start() and stop() published them all at once: a connector taking a moment over each
 // request lost some of both. Requests now wait until no connector would lose them.
 TEST_F(MdSubscriptionTest, ASlowConnectorGetsEveryRequestOfAChannel) {
-    add_strategy(std::make_shared<ManualStrategy>(), manual_lists({"*"}));
     constexpr size_t COUNT = 2048;
-    const auto defined = define_channel(manager_, BrokerId::CME, 0, COUNT);
+    const auto names = channel(0, COUNT);
+    const auto defined = names_of(names);
+    add("Channel", {SubscriptionRequest(BrokerId::CME, SubscriptionType::TRADE, names)});
 
     Connector cme(md_qs_.get(BrokerId::CME), BrokerId::CME, std::chrono::milliseconds(20));
     manager_.start();
@@ -384,52 +479,19 @@ TEST_F(MdSubscriptionTest, ASlowConnectorGetsEveryRequestOfAChannel) {
     EXPECT_LE(cme.largest_request, md_qs_.get(BrokerId::CME).size() / 4);
 }
 
-// Adoptions went out a request at a time, holding only as far as the next instrument of
-// another broker, so CME and ICE definitions in turn were subscribed one per 50 ms: a
-// channel took over 100 seconds. They are now grouped by broker.
-TEST_F(MdSubscriptionTest, InterleavedDefinitionsAreSubscribedByBroker) {
-    add_strategy(std::make_shared<ManualStrategy>(), manual_lists({"*"}));
-    auto producer = mux_.add_producer(mux_.producer_count(), 1u << 16, 4096);
-    Connector cme(md_qs_.get(BrokerId::CME), BrokerId::CME);
-    Connector ice(md_qs_.get(BrokerId::ICE), BrokerId::ICE);
-    manager_.start();
-
-    constexpr size_t COUNT = 2048;
-    std::multiset<std::string> defined[2];
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    for (size_t i = 0; i < COUNT; ++i) {
-        const BrokerId broker = i % 2 == 0 ? BrokerId::CME : BrokerId::ICE;
-        defined[i % 2].insert(instrument_name(i));
-        EventSerializer::publish<InstrumentDefinitionEvent>(*producer, [&](InstrumentDefinitionEvent& event) {
-            event.broker_id = broker;
-            event.set_instrument(instrument_name(i));
-        });
-        // One at a time, so the test's own bus never laps the worker.
-        ASSERT_TRUE(wait_until(deadline, [&] { return adopted(manager_) > i; }));
-    }
-    EXPECT_TRUE(wait_until(deadline, [&] { return cme.subscribed_count() + ice.subscribed_count() >= COUNT; }))
-        << "subscribed " << cme.subscribed_count() + ice.subscribed_count() << " of " << COUNT;
-    manager_.stop();
-    cme.stop();
-    ice.stop();
-
-    EXPECT_EQ(cme.subscribed, defined[0]);
-    EXPECT_EQ(ice.subscribed, defined[1]);
-    EXPECT_EQ(cme.unsubscribed, defined[0]);
-    EXPECT_EQ(ice.unsubscribed, defined[1]);
-    EXPECT_LT(cme.subscribe_requests + ice.subscribe_requests, COUNT / 4);
-    EXPECT_LE(std::max(cme.largest_request, ice.largest_request), md_qs_.get(BrokerId::CME).size() / 4);
-}
-
 // Requests shared one queue, so a connector that stopped reading held up every broker's until it
 // was given up on, and from then on the manager wrote over what it had not read: back and
 // reading, it never saw some of its own, which stayed subscribed here and streamed nothing. Each
 // broker now has a queue of its own, and its requests wait for its connector however long it takes.
 TEST_F(MdSubscriptionTest, AConnectorThatStopsReadingLosesNoRequestAndHoldsUpNoOtherBroker) {
-    auto manager = manual_manager(md_qs_, {{"md_request_stall_timeout_ms", 200}});
     constexpr size_t COUNT = 2048;
-    const auto cme_defined = define_channel(*manager, BrokerId::CME, 0, COUNT);
-    const auto ice_defined = define_channel(*manager, BrokerId::ICE, COUNT, COUNT);
+    const auto cme_names = channel(0, COUNT);
+    const auto ice_names = channel(COUNT, COUNT);
+    const auto cme_defined = names_of(cme_names);
+    const auto ice_defined = names_of(ice_names);
+    auto manager = manual_manager(md_qs_, {{"md_request_stall_timeout_ms", 200}}, manual_lists({"*"}),
+                                  {SubscriptionRequest(BrokerId::CME, SubscriptionType::TRADE, cme_names),
+                                   SubscriptionRequest(BrokerId::ICE, SubscriptionType::TRADE, ice_names)});
 
     Connector cme(md_qs_.get(BrokerId::CME), BrokerId::CME, {}, true);
     Connector ice(md_qs_.get(BrokerId::ICE), BrokerId::ICE);
@@ -455,8 +517,9 @@ TEST_F(MdSubscriptionTest, AConnectorThatStopsReadingLosesNoRequestAndHoldsUpNoO
 // stop() waits on a connector still reading its unsubscribes, but not on one that reads none:
 // its broker is stopping too.
 TEST_F(MdSubscriptionTest, StopGivesUpOnAConnectorThatReadsNothing) {
-    auto manager = manual_manager(md_qs_, {{"md_request_stall_timeout_ms", 100}});
-    define_channel(*manager, BrokerId::CME, 0, 2048);   // more than CME's queue holds
+    // More than CME's queue holds.
+    auto manager = manual_manager(md_qs_, {{"md_request_stall_timeout_ms", 100}}, manual_lists({"*"}),
+                                  {SubscriptionRequest(BrokerId::CME, SubscriptionType::TRADE, channel(0, 2048))});
     Connector cme(md_qs_.get(BrokerId::CME), BrokerId::CME, {}, true);
     manager->start();
 
@@ -469,8 +532,9 @@ TEST_F(MdSubscriptionTest, StopGivesUpOnAConnectorThatReadsNothing) {
 // stop() gave up on a connector reading nothing and kept it marked as reported. Started again,
 // the manager never said its requests waited on it, and the next stop() gave up on it at once.
 TEST_F(MdSubscriptionTest, AConnectorGivenUpOnIsReportedAgainAfterARestart) {
-    auto manager = manual_manager(md_qs_, {{"md_request_stall_timeout_ms", 100}});
-    define_channel(*manager, BrokerId::CME, 0, 2048);   // more than CME's queue holds
+    // More than CME's queue holds.
+    auto manager = manual_manager(md_qs_, {{"md_request_stall_timeout_ms", 100}}, manual_lists({"*"}),
+                                  {SubscriptionRequest(BrokerId::CME, SubscriptionType::TRADE, channel(0, 2048))});
     Connector cme(md_qs_.get(BrokerId::CME), BrokerId::CME, {}, true);
     manager->start();
     manager->stop();   // gives up on it, reported
@@ -491,23 +555,23 @@ TEST_F(MdSubscriptionTest, ARequestWaitingOnOneConnectorHoldsUpNoOtherBroker) {
     add_strategy(std::make_shared<ManualStrategy>(), manual_lists({"*"}));
     auto producer = mux_.add_producer(mux_.producer_count(), 1u << 16, 4096);
     constexpr size_t COUNT = 2048;
-    // More of ICE's book than its queue holds, while CME's connector reads nothing.
-    auto ice_defined = define_channel(manager_, BrokerId::ICE, 0, COUNT);
+    // More of ICE's than its queue holds, while CME's connector reads nothing.
+    const auto ice_names = channel(0, COUNT);
+    auto ice_defined = names_of(ice_names);
+    add("Channel", {SubscriptionRequest(BrokerId::ICE, SubscriptionType::TRADE, ice_names)});
     Connector cme(md_qs_.get(BrokerId::CME), BrokerId::CME, {}, true);
     Connector ice(md_qs_.get(BrokerId::ICE), BrokerId::ICE);
     manager_.start();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     ASSERT_TRUE(wait_until(deadline, [&] { return ice.subscribed_count() >= COUNT; }));
 
-    // One more for each, CME's first: it waits for CME's connector, and ICE's goes past it.
-    auto define = [&](BrokerId broker, const char* instrument) {
-        EventSerializer::publish<InstrumentDefinitionEvent>(*producer, [&](InstrumentDefinitionEvent& event) {
-            event.broker_id = broker;
-            event.set_instrument(instrument);
-        });
+    // One more for each, a ladder's, CME's first: it waits for CME's connector, and ICE's goes past it.
+    auto hold = [&](BrokerId broker, const char* instrument) {
+        send(*producer, definition(broker, instrument));
+        send(*producer, ladder(broker, instrument, true));
     };
-    define(BrokerId::CME, "C0");
-    define(BrokerId::ICE, "J0");
+    hold(BrokerId::CME, "C0");
+    hold(BrokerId::ICE, "J0");
     ice_defined.insert("J0");
     EXPECT_TRUE(wait_until(std::chrono::steady_clock::now() + std::chrono::seconds(3),
                            [&] { return ice.subscribed_count() > COUNT; }))
@@ -531,9 +595,8 @@ TEST_F(MdSubscriptionTest, ARequestWaitingOnOneConnectorHoldsUpNoOtherBroker) {
 TEST_F(MdSubscriptionTest, ATinyRequestQueueStillCarriesARequest) {
     MdRequestQueues tiny(128);
     ASSERT_GT(2 * (sizeof(MDSubscription) + sizeof(char[32])), tiny.get(BrokerId::CME).size());
-    auto manager = manual_manager(tiny, nlohmann::json::object());
-    const auto event = definition(BrokerId::CME, "ZNZ6");
-    manager->process_event(&event);
+    auto manager = manual_manager(tiny, nlohmann::json::object(), manual_lists({"*"}),
+                                  {SubscriptionRequest(BrokerId::CME, SubscriptionType::TRADE, {"ZNZ6"})});
 
     Connector cme(tiny.get(BrokerId::CME), BrokerId::CME);
     manager->start();
@@ -546,47 +609,51 @@ TEST_F(MdSubscriptionTest, ATinyRequestQueueStillCarriesARequest) {
     EXPECT_EQ(cme.unsubscribed, std::multiset<std::string>{"ZNZ6"});
 }
 
-// The dashboards learned of what MANUAL adopted by fetching all it held, again and again. They are
-// handed what is new: what it adopted from the count they were given last.
-TEST(ManualStrategyTest, HandsOverWhatItAdoptedSinceACount) {
+// The dashboards learned of what MANUAL listed by fetching all it held, again and again. They are
+// handed what is new: what it listed from the count they were given last, with each tick.
+TEST(ManualStrategyTest, HandsOverWhatItListedSinceACount) {
     ManualStrategy manual;
     manual.set_config(manual_lists({"*"}));
-    ASSERT_TRUE(manual.adopt(BrokerId::CME, "ZNZ6"));
-    ASSERT_TRUE(manual.adopt(BrokerId::ICE, "BRNF7"));
+    ASSERT_TRUE(manual.add_listing(BrokerId::CME, "ZNZ6", to_price_t(0.015625)));
+    ASSERT_TRUE(manual.add_listing(BrokerId::ICE, "BRNF7", to_price_t(0.01)));
 
-    std::vector<std::pair<BrokerId, std::string>> seen;
-    const auto collect = [&](BrokerId broker, std::string_view instrument) { seen.emplace_back(broker, instrument); };
-    uint32_t count = manual.for_each_adopted(0, collect);
+    std::vector<std::tuple<BrokerId, std::string, price_t>> seen;
+    const auto collect = [&](BrokerId broker, std::string_view instrument, price_t tick) {
+        seen.emplace_back(broker, instrument, tick);
+    };
+    uint32_t count = manual.for_each_listed(0, collect);
     EXPECT_EQ(count, 2u);
-    ASSERT_TRUE(manual.adopt(BrokerId::CME, "ZBZ6"));
-    count = manual.for_each_adopted(count, collect);
+    ASSERT_TRUE(manual.add_listing(BrokerId::CME, "ZBZ6"));
+    count = manual.for_each_listed(count, collect);
     EXPECT_EQ(count, 3u);
-    EXPECT_EQ(manual.for_each_adopted(count, collect), 3u);
-    EXPECT_EQ(seen, (std::vector<std::pair<BrokerId, std::string>>{
-                        {BrokerId::CME, "ZNZ6"}, {BrokerId::ICE, "BRNF7"}, {BrokerId::CME, "ZBZ6"}}));
-    EXPECT_EQ(manual.adopted_count(), 3u);
+    EXPECT_EQ(manual.for_each_listed(count, collect), 3u);
+    EXPECT_EQ(seen, (std::vector<std::tuple<BrokerId, std::string, price_t>>{
+                        {BrokerId::CME, "ZNZ6", to_price_t(0.015625)},
+                        {BrokerId::ICE, "BRNF7", to_price_t(0.01)},
+                        {BrokerId::CME, "ZBZ6", 0}}));
+    EXPECT_EQ(manual.listed_count(), 3u);
 }
 
-// Full, MANUAL turned an instrument down but still took it for held. Only adopt() reads what
-// it takes for held, so that cannot be seen from outside: this pins down the limit itself.
-// And it logged each one it turned down, a venue's worth of lines: it says so once now.
-TEST(ManualStrategyTest, HoldsNoMoreThanItsMaximum) {
+// Full, MANUAL turned an instrument down but still took it for listed. Only add_listing() and
+// hold() read what it takes for listed: this pins down the limit itself. And it logged each one
+// it turned down, a venue's worth of lines: it says so once now.
+TEST(ManualStrategyTest, ListsNoMoreThanItsMaximum) {
     ManualStrategy manual;
     manual.set_config(manual_lists({"*"}));
     for (uint32_t i = 0; i < ManualStrategy::MAX_INSTRUMENTS; ++i) {
-        ASSERT_TRUE(manual.adopt(BrokerId::CME, instrument_name(i)));
+        ASSERT_TRUE(manual.add_listing(BrokerId::CME, instrument_name(i)));
     }
-    const test::LogCount full("holding the maximum of");
-    EXPECT_FALSE(manual.adopt(BrokerId::CME, "OVER"));
-    EXPECT_FALSE(manual.adopt(BrokerId::CME, "OVER"));
-    EXPECT_FALSE(manual.adopt(BrokerId::ICE, "OVER2"));
-    EXPECT_FALSE(manual.adopt(BrokerId::CME, instrument_name(0))) << "held already";
+    const test::LogCount full("listing the maximum of");
+    EXPECT_FALSE(manual.add_listing(BrokerId::CME, "OVER"));
+    EXPECT_FALSE(manual.add_listing(BrokerId::CME, "OVER"));
+    EXPECT_FALSE(manual.add_listing(BrokerId::ICE, "OVER2"));
+    EXPECT_FALSE(manual.add_listing(BrokerId::CME, instrument_name(0))) << "listed already";
     EXPECT_EQ(full.count(), 1u);
 
-    const auto held = manual.get_subscriptions();
-    ASSERT_EQ(held.size(), 1u);
-    EXPECT_EQ(held[0].instruments.size(), ManualStrategy::MAX_INSTRUMENTS);
-    EXPECT_EQ(std::count(held[0].instruments.begin(), held[0].instruments.end(), "OVER"), 0);
+    EXPECT_EQ(manual.listed_count(), ManualStrategy::MAX_INSTRUMENTS);
+    EXPECT_FALSE(manual.hold(BrokerId::CME, "OVER")) << "one turned down was held";
+    EXPECT_TRUE(manual.hold(BrokerId::CME, instrument_name(0)));
+    EXPECT_FALSE(manual.hold(BrokerId::CME, instrument_name(0))) << "held already";
 }
 
 // A request a connector could not read was dropped with nothing said: one lapped, another
@@ -661,8 +728,11 @@ TEST_F(MdSubscriptionTest, BooksAreKeptForStrategiesAndComeWithTheirInstrument) 
     add_strategy(watcher);
     add("Other", {SubscriptionRequest(BrokerId::CME, SubscriptionType::LEVEL2, {"ZBZ6"})});
     add_strategy(std::make_shared<ManualStrategy>(), manual_lists({"*"}));
-    const auto adopted = definition(BrokerId::CME, "ZTZ6");   // MANUAL's alone
-    manager_.process_event(&adopted);
+    // MANUAL's alone, held by a ladder.
+    const auto defined = definition(BrokerId::CME, "ZTZ6");
+    manager_.process_event(&defined);
+    const auto held = ladder(BrokerId::CME, "ZTZ6", true);
+    manager_.process_event(&held);
     auto producer = mux_.add_producer(mux_.producer_count(), 1u << 16, 4096);
     manager_.start();
 
@@ -693,44 +763,43 @@ TEST_F(MdSubscriptionTest, BooksAreKeptForStrategiesAndComeWithTheirInstrument) 
     EXPECT_EQ(watcher->quotes, (std::set<std::string>{"ZNZ6", "ZBZ6"})) << "MANUAL's ZTZ6 was quoted";
 }
 
-// MANUAL adopted every instrument a broker defined: a venue's worth of subscriptions. It now
-// adopts what its config lists, by symbol or by a prefix ending in '*'.
-TEST_F(MdSubscriptionTest, ManualAdoptsOnlyWhatItsConfigLists) {
+// MANUAL's config narrows what it lists, by symbol or by a prefix ending in '*', each with the
+// tick its broker defined.
+TEST_F(MdSubscriptionTest, ManualListsOnlyWhatItsConfigLists) {
     auto manager = manual_manager(md_qs_, nlohmann::json::object(), manual_lists({"ZNZ6", "BRN*"}));
     for (const auto& [broker, instrument] : {std::pair{BrokerId::CME, "ZNZ6"}, std::pair{BrokerId::CME, "ZBZ6"},
                                              std::pair{BrokerId::ICE, "BRNF7"}, std::pair{BrokerId::ICE, "BRNG7"},
                                              std::pair{BrokerId::ICE, "GASF7"}}) {
-        const auto event = definition(broker, instrument);
+        const auto event = definition(broker, instrument, 0.01);
         manager->process_event(&event);
     }
-    EXPECT_EQ(adopted(*manager), 3u);
-
-    const auto manual = std::dynamic_pointer_cast<ManualStrategy>(manager->get_strategy(ManualStrategy::ID));
-    ASSERT_NE(manual, nullptr);
-    const auto held = manual->get_subscriptions();
-    ASSERT_EQ(held.size(), 2u);
-    EXPECT_EQ(held[0].broker_id, BrokerId::CME);
-    EXPECT_EQ(held[0].instruments, std::vector<std::string>{"ZNZ6"});
-    EXPECT_EQ(held[1].broker_id, BrokerId::ICE);
-    EXPECT_EQ(held[1].instruments, (std::vector<std::string>{"BRNF7", "BRNG7"}));
+    EXPECT_EQ(listed_names(*manager), (std::multiset<std::string>{"ZNZ6", "BRNF7", "BRNG7"}));
+    manager->manual()->for_each_listed(0, [](BrokerId, std::string_view instrument, price_t tick) {
+        EXPECT_EQ(tick, to_price_t(0.01)) << instrument;
+    });
 }
 
-TEST_F(MdSubscriptionTest, ManualListingNothingAdoptsNothing) {
-    auto manager = manual_manager(md_qs_, nlohmann::json::object(), nlohmann::json::object());
-    const auto event = definition(BrokerId::CME, "ZNZ6");
-    manager->process_event(&event);
-
-    EXPECT_EQ(adopted(*manager), 0u);
-    const auto manual = std::dynamic_pointer_cast<ManualStrategy>(manager->get_strategy(ManualStrategy::ID));
-    ASSERT_NE(manual, nullptr);
-    EXPECT_TRUE(manual->get_subscriptions().empty());
+// With no list, MANUAL lists every instrument brokers define, as a ladder needs one to show. An
+// empty list lists none.
+TEST_F(MdSubscriptionTest, ManualWithNoListListsEverythingDefined) {
+    auto all = manual_manager(md_qs_, nlohmann::json::object(), nlohmann::json::object());
+    auto none = manual_manager(md_qs_, nlohmann::json::object(), manual_lists({}));
+    for (auto* manager : {all.get(), none.get()}) {
+        for (const auto* instrument : {"ZNZ6", "ESZ6"}) {
+            const auto event = definition(BrokerId::CME, instrument);
+            manager->process_event(&event);
+        }
+    }
+    EXPECT_EQ(listed(*all), 2u);
+    EXPECT_EQ(listed(*none), 0u);
+    EXPECT_TRUE(requests().empty());
 }
 
 // A broker built with market data off reads no request, and waiting on it would hold its
 // requests until stop() gave up on it. Only an enabled connector is waited on.
 TEST_F(MdSubscriptionTest, ABrokerWithMarketDataOffIsNotWaitedOn) {
-    add_strategy(std::make_shared<ManualStrategy>(), manual_lists({"*"}));
-    define_channel(manager_, BrokerId::CME, 0, 2048);   // more than CME's queue holds, left unread
+    // More than CME's queue holds, left unread.
+    add("Channel", {SubscriptionRequest(BrokerId::CME, SubscriptionType::TRADE, channel(0, 2048))});
     BrokerStatusRegistry::instance().set_md_enabled(BrokerId::CME, false);
     manager_.start();
 
@@ -746,11 +815,9 @@ TEST_F(MdSubscriptionTest, ABrokerWithMarketDataOffIsNotWaitedOn) {
 TEST_F(MdSubscriptionTest, ABrokerThisEngineDidNotBuildIsAskedForNothing) {
     MdRequestQueues cme_only(65536);
     Connector cme(cme_only.get(BrokerId::CME), BrokerId::CME);
-    auto manager = manual_manager(cme_only, nlohmann::json::object());
-    for (const auto broker : {BrokerId::SIMULATED, BrokerId::CME}) {
-        const auto event = definition(broker, "ZNZ6");
-        manager->process_event(&event);
-    }
+    auto manager = manual_manager(cme_only, nlohmann::json::object(), manual_lists({"*"}),
+                                  {SubscriptionRequest(BrokerId::SIMULATED, SubscriptionType::TRADE, {"ZNZ6"}),
+                                   SubscriptionRequest(BrokerId::CME, SubscriptionType::TRADE, {"ZNZ6"})});
     manager->start();
     EXPECT_TRUE(wait_until(std::chrono::steady_clock::now() + std::chrono::seconds(5),
                            [&] { return cme.subscribed_count() == 1; }));
@@ -773,44 +840,43 @@ void update_manual(StrategyManager& manager, const nlohmann::json& params) {
 
 } // namespace
 
-// A list MANUAL was given at runtime adopted only what brokers defined after it, and they had
-// defined theirs already: no ladder until a restart. A new list now adopts what was defined
-// before it. An update without one empties it, as it does the file it is saved to.
-TEST_F(MdSubscriptionTest, AListManualIsGivenAtRuntimeAdoptsWhatWasDefinedBefore) {
+// A list MANUAL was given at runtime listed only what brokers defined after it, and they had
+// defined theirs already: no ladder until a restart. A new list now takes what was defined
+// before it, with its tick. An update without one takes everything, as a config without one does.
+TEST_F(MdSubscriptionTest, AListManualIsGivenAtRuntimeListsWhatWasDefinedBefore) {
     auto manager = manual_manager(md_qs_, nlohmann::json::object(), manual_lists({"ZNZ6"}));
     for (const auto* instrument : {"ZNZ6", "ZBZ6", "ZBH7"}) {
-        const auto event = definition(BrokerId::CME, instrument);
+        const auto event = definition(BrokerId::CME, instrument, 1.0 / 32);
         manager->process_event(&event);
     }
-    EXPECT_EQ(adopted(*manager), 1u);
+    EXPECT_EQ(listed(*manager), 1u);
 
     update_manual(*manager, manual_lists({"ZB*"}));
-    EXPECT_EQ(adopted(*manager), 3u) << "the ZB contracts defined already were not adopted";
+    EXPECT_EQ(listed(*manager), 3u) << "the ZB contracts defined already were not listed";
+    manager->manual()->for_each_listed(0, [](BrokerId, std::string_view instrument, price_t tick) {
+        EXPECT_EQ(tick, to_price_t(1.0 / 32)) << instrument << " lost its tick";
+    });
 
     const auto later = definition(BrokerId::CME, "ZBM7");
     manager->process_event(&later);
-    EXPECT_EQ(adopted(*manager), 4u);
-    update_manual(*manager, {{"default_qty", 2}});
-    const auto unlisted = definition(BrokerId::CME, "ZBU7");
+    EXPECT_EQ(listed(*manager), 4u);
+    update_manual(*manager, manual_lists({}));
+    const auto unlisted = definition(BrokerId::CME, "ESZ6");
     manager->process_event(&unlisted);
-    EXPECT_EQ(adopted(*manager), 4u) << "an update without \"instruments\" left a list";
+    EXPECT_EQ(listed(*manager), 4u) << "an empty list took one";
 
-    const auto manual = std::dynamic_pointer_cast<ManualStrategy>(manager->get_strategy(ManualStrategy::ID));
-    ASSERT_NE(manual, nullptr);
-    const auto held = manual->get_subscriptions();
-    ASSERT_EQ(held.size(), 1u);
-    EXPECT_EQ(std::multiset<std::string>(held[0].instruments.begin(), held[0].instruments.end()),
-              (std::multiset<std::string>{"ZNZ6", "ZBZ6", "ZBH7", "ZBM7"}))
-        << "what is held stays held";
+    update_manual(*manager, {{"default_qty", 2}});
+    EXPECT_EQ(listed_names(*manager), (std::multiset<std::string>{"ZNZ6", "ZBZ6", "ZBH7", "ZBM7", "ESZ6"}))
+        << "what is listed stays listed, and no list takes the rest";
 }
 
-// MANUAL adopted what a definition naming no broker defined, under UNKNOWN: the ladder listed it
+// MANUAL listed what a definition naming no broker defined, under UNKNOWN: the ladder listed it
 // with broker 0, which takes no order, and its subscription had no queue to go to.
-TEST_F(MdSubscriptionTest, ManualAdoptsNothingOfNoBroker) {
+TEST_F(MdSubscriptionTest, ManualListsNothingOfNoBroker) {
     add_strategy(std::make_shared<ManualStrategy>(), manual_lists({"*"}));
     const auto event = definition(BrokerId::UNKNOWN, "ZNZ6");
     manager_.process_event(&event);
-    EXPECT_EQ(adopted(manager_), 0u);
+    EXPECT_EQ(listed(manager_), 0u);
 }
 
 // The cursor a connector reports is the registry's, not its queue's: one a connector of an earlier

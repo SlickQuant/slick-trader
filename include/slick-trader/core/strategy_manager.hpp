@@ -11,6 +11,7 @@
 #include <slick-trader/events/strategy_config_event.hpp>
 #include <slick-trader/events/instrument_definition_event.hpp>
 #include <slick-trader/events/instrument_status_event.hpp>
+#include <slick-trader/events/ladder_subscription_event.hpp>
 #include <slick-trader/events/event_serializer.hpp>
 #include <slick-trader/market_data/order_book.hpp>
 #include <slick-trader/core/strategy_loader.hpp>
@@ -215,12 +216,12 @@ private:
     void drain_requests();
     static constexpr auto REQUEST_RETRY_INTERVAL = std::chrono::milliseconds(1);
 
-    // Subscribes what MANUAL adopted since the last flush, at most once per interval, so a
-    // burst of definitions goes out as one request per broker.
-    void flush_adoptions(std::chrono::steady_clock::time_point now);
-    static constexpr auto ADOPTION_FLUSH_INTERVAL = std::chrono::milliseconds(50);
-    // Has MANUAL adopt `instrument` if its list names it.
-    void adopt(BrokerId broker, std::string_view instrument);
+    // Has MANUAL list `instrument` if its config takes it.
+    void list(BrokerId broker, std::string_view instrument, price_t tick_size);
+    // A ladder holding or releasing an instrument of MANUAL's, from the WebServer.
+    void dispatch_ladder_subscription(const LadderSubscriptionEvent& event);
+    // Whether any strategy subscribes any kind of data of `instrument` at `broker`.
+    bool subscribed(BrokerId broker, std::string_view instrument) const;
 
     void dispatch_trade(const TradeEvent& event);
     void dispatch_quote(const QuoteEvent& event);
@@ -273,11 +274,8 @@ private:
     std::shared_ptr<ManualStrategy> manual_;    // also in strategies_; null until one is added
 
     static constexpr size_t BROKER_COUNT = static_cast<size_t>(BrokerId::_BROKER_ID_COUNT_);
-    std::array<std::vector<std::string>, BROKER_COUNT> adoptions_;   // adopted while running, not yet subscribed
-    // Every instrument each broker defined, so a list MANUAL is given later adopts them too.
-    std::array<StringSet, BROKER_COUNT> defined_;
-    bool adoptions_pending_{false};
-    std::chrono::steady_clock::time_point last_adoption_flush_{};
+    // Every instrument each broker defined, with its tick, so a list MANUAL is given later takes them too.
+    std::array<StringMap<price_t>, BROKER_COUNT> defined_;
     // Whole MDSubscription records not yet published, by broker.
     std::array<std::deque<std::vector<uint8_t>>, BROKER_COUNT> request_outbox_;
     size_t requests_queued_{0};

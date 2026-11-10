@@ -1,205 +1,50 @@
-# Dashboard Features Overview
+# Dashboard Windows
 
-## 🎨 Visual Design
+## Main window
 
-### Dark Professional Theme
-- Dark blue-gray background (`#0a0e1a`)
-- Accent blue for interactive elements (`#3b82f6`)
-- Green for positive values (`#10b981`)
-- Red for negative values (`#ef4444`)
-- Smooth animations and transitions
+- **Toolbar**: opens each tool. The Log button shows a red count of errors logged while the Log
+  window is closed.
+- **Brokers**: market data and order connection of each broker, live.
+- **P&L totals**: total, realized and unrealized across strategies.
+- **Strategies**: status (with the halt reason), P&L, start, stop, and a JSON editor for parameters.
+  A halt or pause shows within 5 s.
 
-### Responsive Layout
-- Desktop: Multi-column grid layout
-- Tablet: 2-column layout
-- Mobile: Single column, scrollable
+## Ladder
 
-## 📊 Components
+- A searchable instrument dropdown. Type to filter, then use the arrow keys and Enter. It shows the
+  first 200 matches.
+- A new ladder opens with nothing picked. A reloaded one comes back on its instrument.
+- Uses the tick the broker defined. Without one it falls back to a small table, then 0.01.
+- Click a level to trade the ladder qty there. The ladder config sets the qty, and until it loads
+  the qty box is disabled and clicks send nothing. A price typed in the box overrides the level. A limit order left on IOC goes out GTC, and a
+  market order left on GTC goes out IOC.
+- Your resting orders are outlined in gold, kept through a reload and moved on a modify.
+- Several ladders can run side by side, each streaming one book.
 
-### 1. Header Bar
-- **SlickTrader Logo** with version badge
-- **Connection Status** indicator (green/red/yellow dot)
-- Sticky header (stays visible while scrolling)
+## Order
 
-### 2. Summary Cards (Top Row)
-Four cards displaying key metrics:
-- **Total P&L**: Large display with color coding (green/red)
-  - Shows change from last update
-- **Realized P&L**: Closed position profits/losses
-- **Unrealized P&L**: Open position mark-to-market
-- **Active Strategies**: Count of running strategies
+One order for any listed instrument, booked to MANUAL. The broker defaults to the one listing the
+instrument. A `per_instrument` `default_broker_id` in `ladder_config` overrides it.
 
-### 3. P&L Chart (Main Chart)
-- **Line chart** with 3 series:
-  - Total P&L (blue, filled)
-  - Realized P&L (green line)
-  - Unrealized P&L (orange line)
-- **Timeframe controls**: 1H, 1D (active), 1W buttons
-- **Interactive tooltips**: Hover to see exact values
-- **Auto-updates**: New data points added in real-time
-- **Max 100 data points**: Automatically scrolls
+## Orders
 
-### 4. Positions Table (Left)
-Real-time position monitoring:
-- **Columns**:
-  - Strategy: Which strategy owns the position
-  - Instrument: Trading pair (e.g., BTC-USD)
-  - Quantity: Position size (color: green=long, red=short)
-  - Avg Price: Average entry price
-  - Realized P&L: Profits/losses from this position
-- **Features**:
-  - Scrollable table (max 400px height)
-  - Refresh button for manual update
-  - Empty state when no positions
+Open orders across strategies, with modify, cancel and cancel all. A burst of updates reloads the
+list once.
 
-### 5. Strategy P&L Table (Right)
-Per-strategy performance breakdown:
-- **Columns**:
-  - Strategy: Strategy name
-  - Realized: Closed P&L
-  - Unrealized: Open P&L
-  - Total: Combined P&L
-- **Features**:
-  - Color-coded values
-  - Scrollable table
-  - Refresh button
+## Fills
 
-### 6. System Log (Bottom)
-Real-time event log:
-- **Timestamp** for each entry `[HH:MM:SS]`
-- **Color-coded by level**:
-  - Info: White
-  - Success: Green
-  - Warning: Orange
-  - Error: Red
-- **Features**:
-  - Auto-scroll to latest entry
-  - Max 100 entries (auto-cleanup)
-  - Clear button
-  - Monospace font for readability
+The last 1,000 fills, newest first: the server's history when the window opens, then each one as it
+comes. Leg fills of spread orders are marked. Fills are matched by `seq`, so none shows twice.
 
-## 🔄 Real-Time Features
+## Positions
 
-### WebSocket Connection
-- **Auto-connect** on page load
-- **Auto-reconnect** with exponential backoff
-- **Keepalive pings** every 30 seconds
-- **Connection status** in header
+Positions by strategy, refreshed every 5 s and after fills.
 
-### Live Updates
-- **P&L updates**: Chart updates immediately
-- **Position changes**: Table refreshes automatically
-- **Order events**: Logged in real-time
-- **Fallback polling**: Every 5 seconds if WebSocket disconnected
+## P&L
 
-## 🎯 User Interactions
+Total, realized and unrealized P&L over time, from when the window opens.
 
-### Buttons
-- **Refresh buttons**: Manual data reload for positions/strategies
-- **Clear log**: Removes all log entries
-- **Timeframe selectors**: Change chart time window (future)
+## Log
 
-### Hover Effects
-- **Cards**: Subtle lift effect
-- **Table rows**: Highlight on hover
-- **Buttons**: Color change on hover
-
-## 📱 Responsive Breakpoints
-
-### Desktop (>1024px)
-- Two-column layout for tables
-- Full-width chart
-- 4-column summary cards
-
-### Tablet (768px - 1024px)
-- Single-column layout for tables
-- 2-column summary cards
-
-### Mobile (<768px)
-- Stacked layout
-- Single-column summary cards
-- Horizontal scroll for wide tables
-
-## 🚀 Performance
-
-### Optimizations
-- **No framework overhead**: Vanilla JS = faster
-- **Chart throttling**: Updates without lag (300ms animation)
-- **Efficient DOM updates**: Only changed elements
-- **Lazy data loading**: Tables update only when needed
-- **WebSocket efficiency**: Binary data ready (future)
-
-### Load Times
-- Initial page: <100ms
-- Chart initialization: <50ms
-- Data fetch: <10ms (local)
-- WebSocket connect: <100ms
-
-## 🔐 Security
-
-### Client-Side
-- No sensitive data stored locally
-- WebSocket over same origin only
-- CORS enabled for development
-
-### Server-Side
-- Path traversal protection for static files
-- Canonical path validation
-- Content-type headers for security
-
-## 💡 Future Enhancements (Not Yet Implemented)
-
-- [ ] Strategy start/stop buttons
-- [ ] Manual order submission form
-- [ ] Trade history table with pagination
-- [ ] Multiple timeframe views (1H/1D/1W functional)
-- [ ] Risk limits editor
-- [ ] Export data to CSV/JSON
-- [ ] Theme toggle (dark/light)
-- [ ] User authentication
-- [ ] Multi-dashboard views
-- [ ] Advanced filtering/sorting
-- [ ] Notifications/alerts
-- [ ] Mobile app wrapper
-
-## 🎓 Code Quality
-
-### JavaScript Modules
-- **websocket.js**: 200 lines, WebSocket client class
-- **api.js**: 150 lines, REST API wrapper
-- **charts.js**: 180 lines, Chart.js management
-- **app.js**: 300 lines, Main dashboard logic
-
-### CSS
-- **main.css**: 450 lines
-- CSS variables for easy theming
-- BEM-inspired naming
-- Mobile-first responsive design
-
-### HTML
-- **index.html**: 150 lines
-- Semantic HTML5
-- Accessible markup
-- Clean structure
-
-### Total Size
-- **HTML**: ~8 KB
-- **CSS**: ~12 KB
-- **JavaScript**: ~25 KB (unminified)
-- **Chart.js CDN**: ~200 KB (cached)
-- **Total (first load)**: ~245 KB
-- **Total (cached)**: ~45 KB
-
-## 🧪 Browser Testing
-
-### Tested & Working
-- ✅ Chrome 120+
-- ✅ Edge 120+
-- ✅ Firefox 120+
-- ✅ Safari 17+
-- ✅ Mobile Safari (iOS 16+)
-- ✅ Chrome Mobile (Android 12+)
-
-### Known Limitations
-- IE11: Not supported (uses ES6+)
-- Old Safari: May need polyfills for some features
+The main window's log of the last 500 entries: connection changes, order updates, and what you do
+in any window. With the main window closed there is nothing to show.

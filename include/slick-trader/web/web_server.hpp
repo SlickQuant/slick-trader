@@ -4,6 +4,7 @@
 #include <uwebsockets/App.h>
 #include <slick-trader/events/event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
+#include <slick-trader/web/fill_history.hpp>
 #include <slick-trader/web/level2_book.hpp>
 #include <slick-trader/core/broker_status.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
@@ -42,6 +43,9 @@ public:
         uint16_t port{8080};
         std::string static_files_path{"./web/static"};
         bool enable_cors{true};
+        // How long an instrument of MANUAL's stays held once no ladder shows it, so a page
+        // reloaded or switched back keeps its stream. web_server_ladder_release_ms.
+        uint64_t ladder_release_ns{5'000'000'000};
     };
 
     WebServer(
@@ -116,6 +120,7 @@ private:
     void handle_put_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                                    const std::string& body);
     void handle_get_orders(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
+    void handle_get_fills(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
     void handle_delete_order(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
                              const std::string& strategy_id, const std::string& order_id,
                              std::string_view body);
@@ -170,6 +175,24 @@ private:
 
     void broadcast_level2_update(const Level2UpdateEvent& event);
     void broadcast_order_update(const std::string& message);
+    // Keeps a fill in fills_ and sends it to every client.
+    void broadcast_fill(json& message);
+
+    // The ladder's instruments. index_listings() takes what MANUAL listed since it last looked
+    // into listings_, and what is new into listings_added_; send_instruments() writes them all
+    // to a client that asked, send_instruments_added() what is new to every one that did.
+    void index_listings();
+    void send_instruments(Socket* ws);
+    void send_instruments_added(uint64_t now_ns);
+
+    // A ladder shows `instrument` and nobody else did (watched), or the last one let go
+    // (unwatched). One of MANUAL's is held at its broker while watched, and released
+    // ladder_release_ns after it is not, by release_holds(). False when a hold was needed and
+    // could not be asked for.
+    bool watched(std::string_view instrument);
+    void unwatched(std::string_view instrument);
+    void release_holds(uint64_t now_ns);
+    bool publish_ladder_subscription(BrokerId broker, std::string_view instrument, bool subscribe);
 
     // PnL broadcasting
     void broadcast_pnl_update();
@@ -205,14 +228,34 @@ private:
     bool pnl_changed_{false};
     uint64_t last_pnl_broadcast_ns_{0};
 
-    // How many of MANUAL's instruments the dashboards were told of, and when last. A dashboard
-    // gets the whole list as it connects, and what MANUAL adopts after at most this often.
+    // Every instrument a ladder can show: each strategy's, then each MANUAL lists, the first
+    // broker named winning, with its tick, 0 when unknown. listings_indexed_ is how many of
+    // MANUAL's are in. A dashboard asking gets them all, then what is new at most this often.
+    struct Listing {
+        BrokerId broker;
+        price_t tick_size;
+        // A strategy streams its book at `broker` (LEVEL2 or ORDER_BOOK), so it is never held for
+        // a ladder. One a strategy only quotes or trades streams no book: it is held.
+        bool book;
+    };
     static constexpr uint64_t INSTRUMENTS_ADDED_INTERVAL_NS = 250'000'000;
-    uint32_t instruments_sent_{0};
+    StringMap<Listing> listings_;
+    uint32_t listings_indexed_{0};
+    // Keys of listings_, which a map keeps in place, new or given a tick since last sent.
+    std::vector<const std::string*> listings_added_;
     uint64_t last_instruments_sent_ns_{0};
-    // The other strategies' instruments, instrument -> broker id, taken in initialize(): their
-    // get_subscriptions() read state their on_config() writes on the StrategyManager thread.
-    nlohmann::json strategy_instruments_ = nlohmann::json::object();
+    std::string instruments_message_;   // one buffer, its capacity kept from one to the next
+    // The clients that asked for the list.
+    std::unordered_set<uWS::WebSocket<false, true, void*>*> instrument_clients_;
+
+    // MANUAL's instruments ladders hold: release_at_ns is 0 while one shows it, else when it
+    // goes. `releasing_` counts those with a deadline.
+    struct LadderHold {
+        BrokerId broker;
+        uint64_t release_at_ns;
+    };
+    StringMap<LadderHold> ladder_holds_;
+    size_t releasing_{0};
 
     // How long one process_events() pass may read the bus before the loop gets its sockets back.
     static constexpr uint64_t PROCESS_EVENTS_BUDGET_NS = 1'000'000;
@@ -273,6 +316,9 @@ private:
 
     // Keyed by client_order_id
     std::unordered_map<std::string, TrackedOrder> open_orders_;
+    // The last fills sent, for /api/fills.
+    static constexpr size_t FILL_HISTORY_CAPACITY = 1000;
+    FillHistory fills_{FILL_HISTORY_CAPACITY};
     // Reverse map: broker order_id → client_order_id
     std::unordered_map<std::string, std::string> oid_to_cid_;
 

@@ -21,4 +21,6 @@ slick_trader_add_broker(hyperliquid
         hyperliquid_order_connector.cpp
     DEPENDS
         hyperliquid
+    TESTS
+        ${CMAKE_SOURCE_DIR}/tests/test_hyperliquid_definitions.cpp
 )
