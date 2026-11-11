@@ -103,8 +103,10 @@ jobs:
         -DSLICK_TRADER_SANITIZER=${{ matrix.sanitizer }}
         -DCMAKE_TOOLCHAIN_FILE="${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
+    # One compile per core. --parallel with no count lets make start every test file at once, and
+    # that many ASan+UBSan compiles ran the runner out of memory: the build was killed (exit 143).
     - name: Build
-      run: cmake --build build --parallel
+      run: cmake --build build --parallel "$(nproc)"
 
     - name: Verify the sanitizer is actually linked
       shell: bash
