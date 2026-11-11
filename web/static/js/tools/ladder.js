@@ -8,7 +8,7 @@ import { useTitle } from '../core/hooks.js';
 import { instruments, watchInstruments } from '../core/instruments.js';
 import { loadScript } from '../core/load.js';
 import { notify } from '../core/notify.js';
-import { session } from '../core/store.js';
+import { local, session } from '../core/store.js';
 import * as bus from '../core/bus.js';
 import { Picker, useInstruments } from '../components/picker.js';
 
@@ -16,6 +16,7 @@ import { Picker, useInstruments } from '../components/picker.js';
 const FALLBACK_TICKS = { 'ES': 0.25, 'NQ': 0.25 };
 const DEFAULT_TICK = 0.01;
 const TIF = { GTC: '0', IOC: '1', FOK: '2', DAY: '4' };
+const DEFAULT_TIF = TIF.DAY;
 
 const COLORS = {
     background: '#1e1e1e',
@@ -184,7 +185,8 @@ export default function Ladder() {
     const [instrument, setInstrument] = useState(() => session.get('ladder.instrument'));
     const [qty, setQty] = useState('');
     const [price, setPrice] = useState('');
-    const [tif, setTif] = useState(TIF.IOC);
+    const [tif, setTif] = useState(DEFAULT_TIF);
+    const [showControls, setShowControls] = useState(() => local.get('ladder.controls', true));
     const [ready, setReady] = useState(false);   // slick-ladder loaded
     const host = useRef(null);
     const view = useRef(null);
@@ -236,9 +238,9 @@ export default function Ladder() {
         const override = parseFloat(priceText);
         const orderPrice = override > 0 ? override : levelPrice ?? undefined;
         const type = orderPrice !== undefined ? 'limit' : 'market';
-        // Left at its default, IOC, a limit order rests GTC; a market order left at GTC goes IOC.
-        const timeInForce = type === 'limit' && tifValue === TIF.IOC ? parseInt(TIF.GTC)
-                          : type === 'market' && tifValue === TIF.GTC ? parseInt(TIF.IOC)
+        // A market order cannot rest: left at GTC or DAY, it goes IOC.
+        const timeInForce = type === 'market' && (tifValue === TIF.GTC || tifValue === TIF.DAY)
+                          ? parseInt(TIF.IOC)
                           : parseInt(tifValue);
         const brokerId = instruments.brokerFor(inst);
         if (brokerId === undefined) {
@@ -260,7 +262,7 @@ export default function Ladder() {
                 view.current?.setOwn(inst, orderPrice, side, true);
             }
             setPrice('');
-            setTif(TIF.IOC);
+            setTif(DEFAULT_TIF);
             const msg = `Order submitted: ${orderSide.toUpperCase()} ${quantity} ${inst}${type === 'limit' ? ` @ ${orderPrice}` : ''}`;
             notify(msg, 'success');
             bus.log(msg, 'success');
@@ -349,12 +351,24 @@ export default function Ladder() {
         api.saveLadderConfig(config).catch((error) => console.error('[Ladder] Failed to save qty:', error));
     };
 
+    const toggleControls = () => {
+        const next = !showControls;
+        local.set('ladder.controls', next);
+        if (!next) {
+            setPrice('');   // an override out of sight must not apply to the next click
+            setTif(DEFAULT_TIF);
+        }
+        setShowControls(next);
+    };
+
     return html`
         <div class="tool-window">
             <div class="tool-bar">
                 <${Picker} value=${shown} onPick=${pick} autoFocus=${true} />
+                <button class="btn" title=${showControls ? 'Hide qty, price and TIF' : 'Show qty, price and TIF'}
+                        onClick=${toggleControls}>${showControls ? '▴' : '▾'}</button>
             </div>
-            <div class="tool-bar">
+            ${showControls && html`<div class="tool-bar">
                 <label>Qty</label>
                 <input type="number" step="any" min="0" value=${qty} title="Order quantity for click-to-trade"
                        disabled=${!configured} placeholder=${configured ? '' : 'Loading…'}
@@ -362,11 +376,11 @@ export default function Ladder() {
                 <label>Price</label>
                 <input type="number" step="any" min="0" value=${price} placeholder="Ladder"
                        title="Price to trade at, over the level clicked"
-                       onInput=${(e) => { setPrice(e.target.value); setTif(e.target.value.trim() ? TIF.GTC : TIF.IOC); }} />
+                       onInput=${(e) => setPrice(e.target.value)} />
                 <select value=${tif} title="Time in force" onChange=${(e) => setTif(e.target.value)}>
                     ${Object.entries(TIF).map(([label, value]) => html`<option value=${value}>${label}</option>`)}
                 </select>
-            </div>
+            </div>`}
             ${!shown && html`<div class="tool-note">${list.loaded ? 'Pick an instrument to see its book.' : 'Loading instruments…'}</div>`}
             <div class=${`ladder-host${shown ? '' : ' hidden'}`} ref=${host}></div>
         </div>`;
