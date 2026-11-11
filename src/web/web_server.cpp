@@ -1706,7 +1706,7 @@ void WebServer::handle_order_fill(const OrderFillEvent& fill) {
         msg["fill_qty"]   = from_qty_t(fill.fill_quantity);
         msg["fill_id"]    = std::string(fill.fill_id);
         msg["fee"]        = from_price_t(fill.fee_amount);
-        msg["timestamp_ns"] = fill.timestamp_ns;
+        msg["timestamp_ns"] = uint64_t{fill.timestamp_ns};   // a copy: json binds a reference, and fill is packed
         if (const auto cid_it = oid_to_cid_.find(oid); cid_it != oid_to_cid_.end()) {
             msg["client_order_id"] = cid_it->second;
             if (const auto it = open_orders_.find(cid_it->second); it != open_orders_.end()) {
@@ -1762,7 +1762,7 @@ void WebServer::handle_order_fill(const OrderFillEvent& fill) {
     msg["remaining_qty"] = from_qty_t(fill.remaining_quantity);
     msg["fill_id"]       = std::string(fill.fill_id);
     msg["fee"]           = from_price_t(fill.fee_amount);
-    msg["timestamp_ns"]  = fill.timestamp_ns;
+    msg["timestamp_ns"]  = uint64_t{fill.timestamp_ns};   // a copy, as above
     msg["strategy_id"]     = strategy_id;
     msg["client_order_id"] = client_order_id;
     broadcast_fill(msg);

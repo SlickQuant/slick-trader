@@ -724,7 +724,8 @@ void StrategyManager::dispatch_instrument_definition(const InstrumentDefinitionE
     // takes a new list over defined_ itself. Only a first one goes to it.
     const auto broker = static_cast<size_t>(event.broker_id);
     if (broker < BROKER_COUNT && !defined_[broker].contains(instrument)) {
-        defined_[broker].emplace(std::string(instrument), event.tick_size);
+        // A copy: the event is packed, and emplace() would bind a reference to its field.
+        defined_[broker].emplace(std::string(instrument), price_t{event.tick_size});
         list(event.broker_id, instrument, event.tick_size);
     }
 }
