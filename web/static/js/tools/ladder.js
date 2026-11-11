@@ -81,7 +81,15 @@ export class LadderView {
     }
 
     resize(height) {
-        this.ladder?.resize(undefined, Math.max(height, 100));
+        // The renderer sizes its canvas to its columns as the quantities change; the ladder's
+        // configured width is only the first guess, so passing it back would clip the ask column.
+        const ladder = this.ladder;
+        if (!ladder) {
+            return;
+        }
+        const h = Math.max(height, 100);
+        ladder.config.height = h;
+        ladder.renderer.resize(ladder.renderer.width, h);
     }
 
     clear() {
