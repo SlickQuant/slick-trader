@@ -186,7 +186,7 @@ export default function Ladder() {
     const [qty, setQty] = useState('');
     const [price, setPrice] = useState('');
     const [tif, setTif] = useState(DEFAULT_TIF);
-    const [showControls, setShowControls] = useState(() => local.get('ladder.controls', true));
+    const [showControls, setShowControls] = useState(() => local.get('ladder.controls', false));
     const [ready, setReady] = useState(false);   // slick-ladder loaded
     const host = useRef(null);
     const view = useRef(null);
