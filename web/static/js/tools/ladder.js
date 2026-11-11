@@ -369,14 +369,18 @@ export default function Ladder() {
                         onClick=${toggleControls}>${showControls ? '▴' : '▾'}</button>
             </div>
             ${showControls && html`<div class="tool-bar">
-                <label>Qty</label>
-                <input type="number" step="any" min="0" value=${qty} title="Order quantity for click-to-trade"
-                       disabled=${!configured} placeholder=${configured ? '' : 'Loading…'}
-                       onInput=${(e) => setQty(e.target.value)} onChange=${(e) => saveQty(e.target.value)} />
-                <label>Price</label>
-                <input type="number" step="any" min="0" value=${price} placeholder="Ladder"
-                       title="Price to trade at, over the level clicked"
-                       onInput=${(e) => setPrice(e.target.value)} />
+                <span class="pair">
+                    <label>Qty</label>
+                    <input type="number" step="any" min="0" value=${qty} title="Order quantity for click-to-trade"
+                           disabled=${!configured} placeholder=${configured ? '' : 'Loading…'}
+                           onInput=${(e) => setQty(e.target.value)} onChange=${(e) => saveQty(e.target.value)} />
+                </span>
+                <span class="pair">
+                    <label>Price</label>
+                    <input type="number" step="any" min="0" value=${price} placeholder="Ladder"
+                           title="Price to trade at, over the level clicked"
+                           onInput=${(e) => setPrice(e.target.value)} />
+                </span>
                 <select value=${tif} title="Time in force" onChange=${(e) => setTif(e.target.value)}>
                     ${Object.entries(TIF).map(([label, value]) => html`<option value=${value}>${label}</option>`)}
                 </select>

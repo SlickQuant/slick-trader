@@ -195,6 +195,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
     border-bottom: 1px solid var(--border-color);
 }
 .tool-bar .spacer { flex: 1; }
+.tool-bar .pair { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .tool-bar label { color: var(--text-secondary); }
 .tool-bar input[type=number] { width: 96px; }
 .tool-body { flex: 1; min-height: 0; overflow: auto; }
