@@ -309,6 +309,12 @@ protected:
     std::string submit_order(std::string_view instrument, BrokerId broker_id, Side side, qty_t quantity, OrderType type, price_t price = NULL_PRICE, TimeInForce tif = TimeInForce::FOK, bool post_only = true, std::string* refusal = nullptr) {
         auto client_order_id = generate_order_id();
 
+        // CME and ICE have no post-only instruction: their order entry would only check the order
+        // against its own view of the book and reject it, so the flag is dropped for them.
+        if (broker_id == BrokerId::CME || broker_id == BrokerId::ICE) {
+            post_only = false;
+        }
+
         // Track which broker handles each instrument (used by close_all_positions)
         instrument_broker_map_[std::string(instrument)] = broker_id;
 

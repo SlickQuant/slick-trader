@@ -7,7 +7,7 @@ import { notify } from './notify.js';
 
 export const TOOLS = {
     ladder:    { title: 'Ladder',    width: 360, height: 720, multi: true },
-    order:     { title: 'Order',     width: 380, height: 560 },
+    order:     { title: 'Ticket',    width: 380, height: 560 },
     orders:    { title: 'Orders',    width: 960, height: 420 },
     fills:     { title: 'Fills',     width: 1000, height: 420 },
     positions: { title: 'Positions', width: 720, height: 360 },

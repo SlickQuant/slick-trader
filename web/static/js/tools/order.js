@@ -36,7 +36,7 @@ function fromParams(get) {
 }
 
 export default function Order({ params }) {
-    useTitle('Order');
+    useTitle('Ticket');
     const list = useInstruments();
     const [form, setForm] = useState(() => ({ ...BLANK, ...fromParams((k) => params.get(k)) }));
     const [brokers, setBrokers] = useState([]);
