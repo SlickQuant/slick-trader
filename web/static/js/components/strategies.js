@@ -5,6 +5,7 @@ import { useOnConnect } from '../core/connection.js';
 import { useInterval } from '../core/hooks.js';
 import { Dialog, notify } from '../core/notify.js';
 
+const MANUAL_ID = 'MANUAL';   // always running, owns the hand-placed orders: nothing to start, stop or set
 const STATUS_POLL_MS = 5000;   // a halt or a pause is not pushed
 
 export function Strategies({ pnl, log }) {
@@ -89,12 +90,12 @@ export function Strategies({ pnl, log }) {
                                     <td class=${`num ${colorClass(p.realized_pnl)}`}>${formatCurrency(p.realized_pnl)}</td>
                                     <td class=${`num ${colorClass(p.unrealized_pnl)}`}>${formatCurrency(p.unrealized_pnl)}</td>
                                     <td class=${`num ${colorClass(p.total_pnl)}`}>${formatCurrency(p.total_pnl)}</td>
-                                    <td><div class="actions">
+                                    <td>${id !== MANUAL_ID && html`<div class="actions">
                                         <button class="btn btn-success" title="Start" disabled=${s.status === 'running'}
                                                 onClick=${() => control(id, 'start')}>▶</button>
                                         <button class="btn btn-danger" title="Stop" onClick=${() => control(id, 'stop')}>■</button>
                                         <button class="btn" title="Parameters" onClick=${() => configure(id)}>⚙</button>
-                                    </div></td>
+                                    </div>`}</td>
                                 </tr>`;
                         })}
                     </tbody>
