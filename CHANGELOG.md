@@ -26,6 +26,8 @@
 - The order ticket drops its strategy field. The server always booked dashboard orders to MANUAL.
 - A dashboard window keeps reconnecting while the engine is down. It used to give up after ten
   tries.
+- The main window shows the engine's version, which `GET /api/health` now returns and the startup
+  banner prints.
 
 # v0.3.0 - 11-09-2026
 

@@ -333,6 +333,14 @@ TEST_F(WebServerLongGraceTest, AReturnWithinTheGraceKeepsTheHold) {
     EXPECT_FALSE(next_ladder_event(std::chrono::milliseconds(300))) << "held or released again";
 }
 
+// The dashboard shows the engine's version, read from /api/health.
+TEST_F(WebServerHttpTest, HealthNamesTheVersion) {
+    RawClient client(port_);
+    ASSERT_TRUE(client.get("/api/health", "HTTP/1.1 200")) << client.head();
+    EXPECT_EQ(nlohmann::json::parse(client.body()),
+              (nlohmann::json{{"status", "ok"}, {"version", SLICK_TRADER_VERSION}}));
+}
+
 // A Fills window opened late had nothing to show: fills went out over the WebSocket alone, and named
 // no strategy. The server keeps the last ones for /api/fills, each with the seq it was sent with.
 TEST_F(WebServerHttpTest, AFillIsListedAndBroadcastWithItsSeq) {

@@ -56,5 +56,12 @@ export function useConnection() {
     useWs('connected', () => setState('connected'));
     useWs('disconnected', () => setState('disconnected'));
     useWs('reconnecting', () => setState('connecting'));
+    // The socket can open between the first render and the listeners above: on a LAN it often
+    // does, and the label stayed on "Connecting…".
+    useEffect(() => {
+        if (ws.isConnected()) {
+            setState('connected');
+        }
+    }, []);
     return state;
 }

@@ -284,7 +284,8 @@ void WebServer::close_connections() {
 void WebServer::setup_routes(uWS::App &app) {
     // Health check
     app.get("/api/health", [this](auto* res, auto* req) {
-        send_json_response(res, R"({"status":"ok"})");
+        static const std::string health = R"({"status":"ok","version":")" SLICK_TRADER_VERSION R"("})";
+        send_json_response(res, health);
     });
 
     // Broker status

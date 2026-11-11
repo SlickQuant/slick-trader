@@ -53,9 +53,19 @@ function Toolbar() {
         errorsListeners.add(setErrorsState);
         return () => errorsListeners.delete(setErrorsState);
     }, []);
+    // Asked on every connect: the engine that comes back may be a new version.
+    const [version, setVersion] = useState('');
+    useOnConnect(async () => {
+        try {
+            setVersion((await api.getHealth()).version ?? '');
+        } catch {
+            // keeps the last one known
+        }
+    });
     return html`
         <header class="toolbar">
             <div class="brand">SlickTrader</div>
+            ${version && html`<span class="version" title="Engine version">v${version}</span>`}
             <nav class="tools">
                 ${TOOLBAR.map(tool => html`
                     <button class="tool-btn" key=${tool} onClick=${() => openTool(tool)}

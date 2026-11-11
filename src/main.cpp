@@ -65,7 +65,7 @@ int main(int argc, char* argv[]) {
     // ========================================================================
     LOG_INFO("");
     LOG_INFO("========================================================================");
-    LOG_INFO("          SlickTrader is now RUNNING...");
+    LOG_INFO("          SlickTrader {} is now RUNNING...", SLICK_TRADER_VERSION);
     LOG_INFO("========================================================================");
     LOG_INFO("");
     LOG_INFO("Press Ctrl+C to shutdown gracefully");

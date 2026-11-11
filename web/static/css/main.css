@@ -126,6 +126,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
     text-align: center;
 }
 
+.version { font-size: 11px; color: var(--text-secondary); margin-right: 8px; }
 .connection { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); white-space: nowrap; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--warning); }
 .dot.connected { background: var(--success); box-shadow: 0 0 4px var(--success); }

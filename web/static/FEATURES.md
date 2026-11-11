@@ -2,8 +2,9 @@
 
 ## Main window
 
-- **Toolbar**: opens each tool. The Log button shows a red count of errors logged while the Log
-  window is closed.
+- **Toolbar**: opens each tool. The engine's version shows next to the name, and the connection
+  state on the right. The Log button shows a red count of errors logged while the Log window is
+  closed.
 - **Brokers**: market data and order connection of each broker, live.
 - **P&L totals**: total, realized and unrealized across strategies.
 - **Strategies**: status (with the halt reason), P&L, start, stop, and a JSON editor for parameters.

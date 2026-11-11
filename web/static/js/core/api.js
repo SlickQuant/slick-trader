@@ -20,6 +20,7 @@ class ApiClient {
     post(endpoint, data) { return this.request(endpoint, { method: 'POST', body: JSON.stringify(data) }); }
     put(endpoint, data) { return this.request(endpoint, { method: 'PUT', body: JSON.stringify(data) }); }
 
+    getHealth() { return this.get('/api/health'); }
     getBrokers() { return this.get('/api/brokers'); }
     getStrategies() { return this.get('/api/strategies'); }
     getAllPositions() { return this.get('/api/positions'); }

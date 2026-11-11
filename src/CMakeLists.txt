@@ -22,6 +22,9 @@ target_include_directories(slick-trader-core PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# The engine's version: /api/health reports it and the startup banner shows it.
+target_compile_definitions(slick-trader-core PUBLIC SLICK_TRADER_VERSION="${SlickTrader_VERSION}")
+
 target_link_libraries(slick-trader-core PUBLIC
     slick::logger
     nlohmann_json::nlohmann_json

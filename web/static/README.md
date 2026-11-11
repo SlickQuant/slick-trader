@@ -10,9 +10,10 @@ of its own, with no tabs, menus or bookmark bar. Ladder opens a new window per c
 buttons focus their window if it's already open. Each window remembers its size and position.
 See [FEATURES.md](FEATURES.md) for what each window does.
 
-Allow popups for the dashboard's host. Chrome and Edge still show a thin read-only address strip on
-a popup, and no page can remove it. Starting the main window as an app gives a cleaner look:
-`msedge --app=http://localhost:3000`.
+Allow popups for the dashboard's host. Chrome and Edge show a thin read-only address strip on a
+popup, and no page can remove it. Starting the main window as an app drops its own address bar and
+tabs: `msedge --app=http://<host>:3000` or `chrome --app=http://<host>:3000`. Skip `--kiosk`, which
+locks the main window to full screen.
 
 ## Ladder market data
 
@@ -50,7 +51,7 @@ windows send log entries and ticket prefills, and the main window relays the log
 
 ## API
 
-REST: `GET /api/health`, `/api/brokers`, `/api/strategies`, `/api/positions`, `/api/pnl`,
+REST: `GET /api/health` (status and engine version), `/api/brokers`, `/api/strategies`, `/api/positions`, `/api/pnl`,
 `/api/orders`, `/api/fills` (the last 1,000 fills, oldest first), `/api/ladder-config`.
 `POST /api/orders`, `PUT`/`DELETE /api/orders/:strategy/:order_id`, `DELETE /api/orders/cancel-all`,
 `POST /api/strategies/:id/control`, `GET`/`PUT /api/strategies/:id/config`. See
