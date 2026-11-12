@@ -218,10 +218,10 @@ TEST_F(WebServerHttpTest, AnOrderTurnedDownBeforeItLeavesIs422) {
 // Each time MANUAL listed instruments, every dashboard refetched every strategy, each with every
 // instrument it held: a channel's worth, again and again. The ladder's list now comes over the
 // WebSocket to a page that asks, all of it and then what MANUAL lists since, each with its broker
-// and tick, and /api/strategies leaves it out. It names MANUAL "builtin", as it is no plugin.
+// tick and smallest order, and /api/strategies leaves it out. It names MANUAL "builtin", as it is no plugin.
 TEST_F(WebServerHttpTest, TheLadderListComesWholeWhenAskedThenWhatIsNew) {
     // From this thread, as the StrategyManager's worker lists while the server reads.
-    ASSERT_TRUE(manual_->add_listing(BrokerId::CME, "ZNZ6", to_price_t(0.015625)));
+    ASSERT_TRUE(manual_->add_listing(BrokerId::CME, "ZNZ6", to_price_t(0.015625), to_qty_t(1)));
     const int cme = static_cast<int>(BrokerId::CME);
     const int ice = static_cast<int>(BrokerId::ICE);
 
@@ -229,9 +229,9 @@ TEST_F(WebServerHttpTest, TheLadderListComesWholeWhenAskedThenWhatIsNew) {
     ASSERT_TRUE(browser.upgrade());
     EXPECT_EQ(next(browser)["type"], "welcome");
     ASSERT_TRUE(browser.send_text(SUBSCRIBE_INSTRUMENTS));
-    EXPECT_EQ(next(browser), (nlohmann::json{{"type", "instruments"}, {"instruments", {{"ZNZ6", {cme, 0.015625}}}}}));
+    EXPECT_EQ(next(browser), (nlohmann::json{{"type", "instruments"}, {"instruments", {{"ZNZ6", {cme, 0.015625, 1}}}}}));
 
-    ASSERT_TRUE(manual_->add_listing(BrokerId::ICE, "ZBZ6", to_price_t(0.01)));
+    ASSERT_TRUE(manual_->add_listing(BrokerId::ICE, "ZBZ6", to_price_t(0.01), to_qty_t(0.5)));
     // ZNZ6 may come again, listed before the server last told its dashboards: one that asked
     // since gets it twice, and the ladder takes it once.
     nlohmann::json added = nlohmann::json::object();
@@ -240,7 +240,7 @@ TEST_F(WebServerHttpTest, TheLadderListComesWholeWhenAskedThenWhatIsNew) {
         ASSERT_EQ(message["type"], "instruments_added") << message.dump();
         added.update(message["instruments"]);
     }
-    EXPECT_EQ(added["ZBZ6"], (nlohmann::json{ice, 0.01}));
+    EXPECT_EQ(added["ZBZ6"], (nlohmann::json{ice, 0.01, 0.5}));
     added.erase("ZNZ6");
     EXPECT_EQ(added.size(), 1u) << added.dump();
 
@@ -563,7 +563,7 @@ TEST_F(WebServerWithAStrategyTest, AStrategysInstrumentsAreListedWithNoCallOffIt
     EXPECT_EQ(next(browser)["type"], "welcome");
     ASSERT_TRUE(browser.send_text(SUBSCRIBE_INSTRUMENTS));
     EXPECT_EQ(next(browser), (nlohmann::json{{"type", "instruments"},
-                                             {"instruments", {{"ZBZ6", {static_cast<int>(BrokerId::CME), 0}}}}}));
+                                             {"instruments", {{"ZBZ6", {static_cast<int>(BrokerId::CME), 0, 0}}}}}));
     EXPECT_FALSE(strategy_->asked_off_thread.load(std::memory_order_relaxed));
 
     // A ladder on it streams what the strategy subscribed: MANUAL holds nothing for it.

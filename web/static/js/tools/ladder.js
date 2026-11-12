@@ -5,7 +5,7 @@ import { html, useCallback, useEffect, useRef, useState } from '../core/html.js'
 import { api } from '../core/api.js';
 import { ws, useOnConnect, useWs } from '../core/connection.js';
 import { useTitle } from '../core/hooks.js';
-import { instruments, watchInstruments } from '../core/instruments.js';
+import { GRID_BROKERS, defaultTifFor, instruments, watchInstruments } from '../core/instruments.js';
 import { loadScript } from '../core/load.js';
 import { notify } from '../core/notify.js';
 import { local, session } from '../core/store.js';
@@ -16,7 +16,8 @@ import { Picker, useInstruments } from '../components/picker.js';
 const FALLBACK_TICKS = { 'ES': 0.25, 'NQ': 0.25 };
 const DEFAULT_TICK = 0.01;
 const TIF = { GTC: '0', IOC: '1', FOK: '2', DAY: '4' };
-const DEFAULT_TIF = TIF.DAY;
+// The exchanges in GRID_BROKERS have fixed grids of price levels: their ladder keeps an empty row
+// for a price with nothing on it, so rows stay put as levels come and go.
 
 const COLORS = {
     background: '#1e1e1e',
@@ -33,6 +34,44 @@ const COLORS = {
 
 export function tickFor(instrument) {
     return instruments.tickFor(instrument) || FALLBACK_TICKS[instrument] || DEFAULT_TICK;
+}
+
+// The ladder rounds a price to its tick in floating point: 4.991 comes back as 4.9910000000000005.
+// Prices have at most 8 decimals, as price_t keeps them.
+const cleanPrice = (price) => Number(price.toFixed(8));
+
+// In 'showEmpty' mode the library knows no price for a row with nothing on it, so a click there
+// would carry none and go out as a market order. Its price is where the row stands from the
+// centre, as the library draws it, and a click or hover on it gets that.
+function keepEmptyRowPrices(renderer) {
+    // The library centres on the midpoint, or on 100 when a side is missing, and keeps that
+    // centre: a book that starts one-sided would sit around 100. Centre on the side there is.
+    const resolve = renderer.resolveReferencePrice.bind(renderer);
+    renderer.resolveReferencePrice = (snapshot) => {
+        if (renderer.centerPrice === 0 && !(snapshot.midPrice > 0) && renderer.tickSize > 0) {
+            const best = snapshot.bids.length > 0 ? Math.max(...snapshot.bids.map((l) => l.price))
+                       : snapshot.asks.length > 0 ? Math.min(...snapshot.asks.map((l) => l.price)) : 0;
+            if (best > 0) {
+                renderer.centerPrice = Math.round(best / renderer.tickSize) * renderer.tickSize;
+            }
+        }
+        return resolve(snapshot);
+    };
+
+    const levelInfo = renderer.rowToLevelInfo.bind(renderer);
+    renderer.rowToLevelInfo = (row) => {
+        const info = levelInfo(row);
+        if (info || renderer.removalMode !== 'showEmpty' || !renderer.currentSnapshot) {
+            return info;
+        }
+        const tick = renderer.tickSize;
+        const centre = renderer.centerPrice !== 0 ? renderer.centerPrice : renderer.currentSnapshot.midPrice;
+        if (!(tick > 0) || !(centre > 0)) {
+            return null;
+        }
+        const price = centre - (row - Math.floor(renderer.visibleRows / 2)) * tick;
+        return { price: Math.round(price / tick) * tick, quantity: 0, side: SlickLadder.Side.BID };
+    };
 }
 
 const sideEnum = (side) => (side === 'buy' ? 0 : 1);
@@ -61,13 +100,14 @@ export class LadderView {
             rowHeight: 20,
             tickSize,
             mode: 'PriceLevel',
-            removalMode: 'removeRow',
+            removalMode: GRID_BROKERS.has(instruments.brokerFor(instrument)) ? 'showEmpty' : 'removeRow',
             showVolumeBars: false,
             showOrderCount: false,
             minQuantityThreshold: 0.0001,
             colors: COLORS,
-            onLevelClick: (price, side) => this.onLevelClick(instrument, price, side),
+            onLevelClick: (price, side) => this.onLevelClick(instrument, price === null ? null : cleanPrice(price), side),
         });
+        keepEmptyRowPrices(this.ladder.renderer);
         this.restoreOwnOrders();
     }
 
@@ -185,16 +225,14 @@ export default function Ladder() {
     const [instrument, setInstrument] = useState(() => session.get('ladder.instrument'));
     const [qty, setQty] = useState('');
     const [price, setPrice] = useState('');
-    const [tif, setTif] = useState(DEFAULT_TIF);
+    const [tifChoice, setTif] = useState('');   // what was picked; '' is the broker's default
     const [showControls, setShowControls] = useState(() => local.get('ladder.controls', false));
     const [ready, setReady] = useState(false);   // slick-ladder loaded
     const host = useRef(null);
     const view = useRef(null);
     const streamed = useRef(null);   // what this window's socket streams
     const controls = useRef({});
-    controls.current = { qty, price, tif };
 
-    useTitle(instrument ? `Ladder · ${instrument}` : 'Ladder');
     useEffect(() => watchInstruments(), []);
 
     // Streams `next`'s book and no other; null streams none. `again` asks for the book once more
@@ -234,7 +272,7 @@ export default function Ladder() {
             return;
         }
         const config = instruments.configFor(inst);
-        const quantity = parseFloat(qtyText) || config.default_qty;
+        const quantity = parseFloat(qtyText) || instruments.defaultQtyFor(inst);
         const override = parseFloat(priceText);
         const orderPrice = override > 0 ? override : levelPrice ?? undefined;
         const type = orderPrice !== undefined ? 'limit' : 'market';
@@ -262,7 +300,7 @@ export default function Ladder() {
                 view.current?.setOwn(inst, orderPrice, side, true);
             }
             setPrice('');
-            setTif(DEFAULT_TIF);
+            setTif('');
             const msg = `Order submitted: ${orderSide.toUpperCase()} ${quantity} ${inst}${type === 'limit' ? ` @ ${orderPrice}` : ''}`;
             notify(msg, 'success');
             bus.log(msg, 'success');
@@ -291,6 +329,9 @@ export default function Ladder() {
 
     // A restored pick no longer listed, after a restart, is dropped.
     const shown = list.loaded && instrument && !list.has(instrument) ? null : instrument;
+    const tif = tifChoice || defaultTifFor(shown ? instruments.brokerFor(shown) : undefined);
+    controls.current = { qty, price, tif };
+    useTitle(shown ?? 'Ladder');
 
     // The ladder of what is shown, built anew as it changes or its tick comes, and its book asked
     // for again: the new ladder has none.
@@ -306,16 +347,21 @@ export default function Ladder() {
         }
     }, [ready, list.loaded, shown, tick]);
 
-    // The qty starts at the instrument's default once the ladder config has come, and only then:
-    // before it, the default is not known. What is typed after stays until another is picked.
+    // The qty starts at the instrument's default once the ladder config and the instruments have
+    // come, and only then: before them, the default is not known. What is typed after stays until
+    // another is picked.
     const configured = list.config !== null;
-    const qtyFor = useRef(null);   // the instrument the qty was set for
+    // A qty set so, not typed, follows the default as it changes: a minimum quantity can come late.
+    const qtyFor = useRef(null);    // the instrument the qty was set for
+    const qtyAuto = useRef(false);  // the qty is the default, not typed
+    const defaultQty = configured && list.loaded && shown ? String(instruments.defaultQtyFor(shown)) : null;
     useEffect(() => {
-        if (configured && shown && qtyFor.current !== shown) {
+        if (defaultQty !== null && (qtyFor.current !== shown || qtyAuto.current)) {
             qtyFor.current = shown;
-            setQty(String(instruments.configFor(shown).default_qty ?? 0.01));
+            qtyAuto.current = true;
+            setQty(defaultQty);
         }
-    }, [configured, shown]);
+    }, [defaultQty, shown]);
 
     // A new connection streams nothing yet: the book comes again whole.
     useOnConnect(() => {
@@ -336,18 +382,15 @@ export default function Ladder() {
         setInstrument(name);
     };
 
-    // The qty typed becomes the default for the instrument, as the ladder config keeps it.
+    // The qty typed becomes the default for that instrument, as the ladder config keeps it.
     const saveQty = (text) => {
         const value = parseFloat(text);
         const config = instruments.config;
         if (!(value > 0) || !config || !shown) {
             return;
         }
-        if (config.per_instrument?.[shown]) {
-            config.per_instrument[shown].default_qty = value;
-        } else {
-            config.default_qty = value;
-        }
+        config.per_instrument = config.per_instrument ?? {};
+        config.per_instrument[shown] = { ...config.per_instrument[shown], default_qty: value };
         api.saveLadderConfig(config).catch((error) => console.error('[Ladder] Failed to save qty:', error));
     };
 
@@ -356,7 +399,7 @@ export default function Ladder() {
         local.set('ladder.controls', next);
         if (!next) {
             setPrice('');   // an override out of sight must not apply to the next click
-            setTif(DEFAULT_TIF);
+            setTif('');
         }
         setShowControls(next);
     };
@@ -373,7 +416,7 @@ export default function Ladder() {
                     <label>Qty</label>
                     <input type="number" step="any" min="0" value=${qty} title="Order quantity for click-to-trade"
                            disabled=${!configured} placeholder=${configured ? '' : 'Loading…'}
-                           onInput=${(e) => setQty(e.target.value)} onChange=${(e) => saveQty(e.target.value)} />
+                           onInput=${(e) => { qtyAuto.current = false; setQty(e.target.value); }} onChange=${(e) => saveQty(e.target.value)} />
                 </span>
                 <span class="pair">
                     <label>Price</label>

@@ -41,7 +41,7 @@ void read_body(uWS::HttpResponse<false>* res, Handler&& handler) {
     });
 }
 
-// Writes {"type":<type>,"instruments":{<instrument>:[<broker id>,<tick>],...}} into `out`: what
+// Writes {"type":<type>,"instruments":{<instrument>:[<broker id>,<tick>,<min qty>],...}} into `out`: what
 // the dashboard's ladders can show, all of it ("instruments") or what is new ("instruments_added").
 // `for_each(emit)` calls emit(instrument, listing) for each. With no JSON tree: the whole list
 // runs to megabytes.
@@ -51,7 +51,7 @@ void write_instruments(std::string& out, std::string_view type, ForEach&& for_ea
     append_json_string(out, type);
     out += R"(,"instruments":{)";
     const size_t first = out.size();
-    for_each([&](std::string_view instrument, BrokerId broker, price_t tick_size) {
+    for_each([&](std::string_view instrument, BrokerId broker, price_t tick_size, qty_t min_qty) {
         if (out.size() != first) {
             out += ',';
         }
@@ -60,6 +60,8 @@ void write_instruments(std::string& out, std::string_view type, ForEach&& for_ea
         append_json_number(out, static_cast<int>(broker));
         out += ',';
         append_json_number(out, from_price_t(tick_size));
+        out += ',';
+        append_json_number(out, from_qty_t(min_qty));
         out += ']';
     });
     out += "}}";
@@ -1850,12 +1852,19 @@ void WebServer::index_listings() {
         return;
     }
     listings_indexed_ = manual->for_each_listed(listings_indexed_, [&](BrokerId broker, std::string_view instrument,
-                                                                       price_t tick_size) {
-        auto [it, added] = listings_.try_emplace(std::string(instrument), Listing{broker, tick_size, false});
+                                                                       price_t tick_size, qty_t min_qty) {
+        auto [it, added] = listings_.try_emplace(std::string(instrument), Listing{broker, tick_size, false, min_qty});
         if (added) {
             listings_added_.push_back(&it->first);
-        } else if (it->second.tick_size == 0 && tick_size != 0 && it->second.broker == broker) {
-            it->second.tick_size = tick_size;   // a strategy's, defined: the ladder takes its tick
+        } else if (it->second.broker == broker && ((it->second.tick_size == 0 && tick_size != 0) ||
+                                                   (it->second.min_qty == 0 && min_qty != 0))) {
+            // a strategy's, defined: the ladder takes its tick and its smallest order
+            if (it->second.tick_size == 0) {
+                it->second.tick_size = tick_size;
+            }
+            if (it->second.min_qty == 0) {
+                it->second.min_qty = min_qty;
+            }
             listings_added_.push_back(&it->first);
         }
     });
@@ -1865,7 +1874,7 @@ void WebServer::send_instruments(Socket* ws) {
     index_listings();
     write_instruments(instruments_message_, "instruments", [&](auto&& emit) {
         for (const auto& [instrument, listing] : listings_) {
-            emit(instrument, listing.broker, listing.tick_size);
+            emit(instrument, listing.broker, listing.tick_size, listing.min_qty);
         }
     });
     send_text(ws, instruments_message_);
@@ -1888,7 +1897,7 @@ void WebServer::send_instruments_added(uint64_t now_ns) {
     write_instruments(instruments_message_, "instruments_added", [&](auto&& emit) {
         for (const std::string* instrument : listings_added_) {
             const Listing& listing = listings_.find(*instrument)->second;
-            emit(*instrument, listing.broker, listing.tick_size);
+            emit(*instrument, listing.broker, listing.tick_size, listing.min_qty);
         }
     });
     listings_added_.clear();

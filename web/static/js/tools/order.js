@@ -1,18 +1,18 @@
 // The order ticket: one order for any listed instrument, booked to MANUAL as every order from the
 // dashboard is. Opened prefilled from the URL, or, already open, from the bus.
-import { html, useEffect, useState } from '../core/html.js';
+import { html, useEffect, useRef, useState } from '../core/html.js';
 import { api } from '../core/api.js';
 import { useOnConnect } from '../core/connection.js';
 import { useTitle } from '../core/hooks.js';
-import { instruments, watchInstruments } from '../core/instruments.js';
+import { defaultTifFor, instruments, watchInstruments } from '../core/instruments.js';
 import { notify } from '../core/notify.js';
 import * as bus from '../core/bus.js';
 import { Picker, useInstruments } from '../components/picker.js';
 
-const LIMIT_TIF = [['0', 'GTC'], ['1', 'IOC'], ['2', 'FOK'], ['3', 'GTD']];
+const LIMIT_TIF = [['4', 'DAY'], ['0', 'GTC'], ['1', 'IOC'], ['2', 'FOK'], ['3', 'GTD']];
 const MARKET_TIF = [['1', 'IOC'], ['2', 'FOK']];
 
-const BLANK = { instrument: '', side: 'buy', type: 'market', price: '', qty: '', tif: '1', broker: '' };
+const BLANK = { instrument: '', side: 'buy', type: 'limit', price: '', qty: '', tif: '', broker: '' };
 
 // The fields prefill params name, of instrument, side, price and qty: the rest stay.
 function fromParams(get) {
@@ -44,9 +44,22 @@ export default function Order({ params }) {
     const set = (patch) => setForm((f) => ({ ...f, ...patch }));
 
     useEffect(() => watchInstruments(), []);
+    // The qty starts at the instrument's default, once that is known, and follows it as it changes
+    // (a minimum quantity can come late) until one is typed.
+    const qtyAuto = useRef(params.get('qty') == null);   // a qty that came prefilled is not the default's
+    const defaultQty = form.instrument && list.loaded && list.config !== null
+        ? String(instruments.defaultQtyFor(form.instrument)) : null;
+    useEffect(() => {
+        // Only while the qty is not the user's: one cleared by hand stays empty.
+        if (defaultQty !== null && qtyAuto.current && form.qty !== defaultQty) {
+            set({ qty: defaultQty });
+        }
+    }, [defaultQty, form.qty]);
     useEffect(() => bus.on('tool-params', (m) => {
         if (m.tool === 'order') {
-            setForm((f) => ({ ...f, ...fromParams((k) => m.params[k]), broker: '' }));
+            const fields = fromParams((k) => m.params[k]);
+            qtyAuto.current = fields.qty === undefined;
+            setForm((f) => ({ ...f, ...fields, broker: '', ...(fields.qty === undefined && { qty: '' }) }));
             window.focus();
         }
     }), []);
@@ -64,7 +77,8 @@ export default function Order({ params }) {
     const known = String(list.brokerFor(form.instrument) ?? '');
     const broker = form.broker || (usable.find((b) => String(b.id) === known) ?? usable[0])?.id || '';
     const tifs = form.type === 'limit' ? LIMIT_TIF : MARKET_TIF;
-    const tif = tifs.some(([v]) => v === form.tif) ? form.tif : tifs[0][0];
+    const wanted = form.tif || defaultTifFor(Number(broker));
+    const tif = tifs.some(([v]) => v === wanted) ? wanted : tifs[0][0];
 
     const submit = async (e) => {
         e.preventDefault();
@@ -101,7 +115,7 @@ export default function Order({ params }) {
     return html`
         <form class="form" onSubmit=${submit}>
             <div class="field"><span>Instrument</span>
-                <${Picker} value=${form.instrument || null} onPick=${(name) => set({ instrument: name, broker: '' })} />
+                <${Picker} value=${form.instrument || null} onPick=${(name) => { qtyAuto.current = true; set({ instrument: name, broker: '', qty: '' }); }} />
             </div>
             <label class="field"><span>Broker</span>
                 <select value=${broker} onChange=${(e) => set({ broker: e.target.value })}>
@@ -129,7 +143,7 @@ export default function Order({ params }) {
             <div class="form-row">
                 <label class="field"><span>Quantity</span>
                     <input type="number" step="any" min="0" value=${form.qty} placeholder="0.01"
-                           onInput=${(e) => set({ qty: e.target.value })} />
+                           onInput=${(e) => { qtyAuto.current = false; set({ qty: e.target.value }); }} />
                 </label>
                 <label class=${`field${form.type === 'limit' ? '' : ' hidden'}`}><span>Price</span>
                     <input type="number" step="any" min="0" value=${form.price}

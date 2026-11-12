@@ -237,6 +237,7 @@ private:
         // A strategy streams its book at `broker` (LEVEL2 or ORDER_BOOK), so it is never held for
         // a ladder. One a strategy only quotes or trades streams no book: it is held.
         bool book;
+        qty_t min_qty{0};   // smallest order, 0 when its broker did not say
     };
     static constexpr uint64_t INSTRUMENTS_ADDED_INTERVAL_NS = 250'000'000;
     StringMap<Listing> listings_;

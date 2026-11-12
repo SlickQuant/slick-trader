@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -46,7 +47,8 @@ public:
         return subs;
     }
 
-    // Calls `f(broker, instrument, tick_size)` for each instrument listed from the `from`th on, in
+    // Calls `f(broker, instrument, tick_size, min_qty)` (or without min_qty, for an `f` that takes
+    // three) for each instrument listed from the `from`th on, in
     // the order listed, and returns how many are listed: passed back as `from`, it hands over only
     // what is new. Safe from any thread: the WebServer reads it while the StrategyManager lists.
     template <typename F>
@@ -54,7 +56,11 @@ public:
         const uint32_t count = count_.load(std::memory_order_acquire);
         for (uint32_t i = from; i < count; ++i) {
             const Slot& slot = chunks_[i / CHUNK_SIZE][i % CHUNK_SIZE];
-            f(slot.broker, std::string_view(slot.instrument), slot.tick_size);
+            if constexpr (std::is_invocable_v<F&, BrokerId, std::string_view, price_t, qty_t>) {
+                f(slot.broker, std::string_view(slot.instrument), slot.tick_size, slot.min_qty);
+            } else {
+                f(slot.broker, std::string_view(slot.instrument), slot.tick_size);
+            }
         }
         return count;
     }
@@ -64,7 +70,7 @@ public:
     // Lists an instrument a broker defined. False when the config does not take it, when listed
     // already, when full, or when no broker is named: one of UNKNOWN takes no order and has no
     // request queue. StrategyManager thread only: it is the one writer.
-    bool add_listing(BrokerId broker, std::string_view instrument, price_t tick_size = 0) {
+    bool add_listing(BrokerId broker, std::string_view instrument, price_t tick_size = 0, qty_t min_qty = 0) {
         const auto b = static_cast<size_t>(broker);
         // Listed already is the common case, as a venue replays its definitions: found with no
         // string built.
@@ -91,6 +97,7 @@ public:
         Slot& slot = chunk[n % CHUNK_SIZE];
         slot.broker = broker;
         slot.tick_size = tick_size;
+        slot.min_qty = min_qty;
         const size_t len = std::min(instrument.size(), sizeof(slot.instrument) - 1);
         std::memcpy(slot.instrument, instrument.data(), len);
         slot.instrument[len] = '\0';
@@ -166,6 +173,7 @@ private:
     struct Slot {
         BrokerId broker;
         price_t tick_size;   // 0 when its broker did not say
+        qty_t min_qty;       // 0 when its broker did not say
         char instrument[MAX_INSTRUMENT_LENGTH];
     };
 

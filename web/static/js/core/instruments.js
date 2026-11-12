@@ -1,13 +1,21 @@
-// The instruments a ladder can show, as the server lists them: name -> [broker id, tick]. Kept
+// The instruments a ladder can show, as the server lists them: name -> [broker id, tick, min qty]. Kept
 // sorted, with each name in capitals too, so a filter over a venue's worth stays a plain scan.
 import { api } from './api.js';
 import { ws, subscribeChannel } from './connection.js';
+
+// BrokerId values of the exchanges whose books are fixed grids of price levels (CME, ICE): they
+// take DAY orders, which the crypto brokers reject.
+export const GRID_BROKERS = new Set([5, 6]);
+
+// The time in force an order starts at, as the TIF dropdowns number them: DAY where the broker
+// takes it, else GTC.
+export const defaultTifFor = (broker) => (GRID_BROKERS.has(broker) ? '4' : '0');
 
 export class Instruments {
     constructor() {
         this.names = [];          // sorted
         this.upper = [];          // names[i] in capitals, for a case-blind match
-        this.info = new Map();    // name -> { broker, tick }
+        this.info = new Map();    // name -> { broker, tick, minQty }
         this.loaded = false;      // the whole list came
         this.config = null;       // the ladder config: default qty, per-instrument broker
         this.listeners = new Set();
@@ -15,7 +23,7 @@ export class Instruments {
 
     // The whole list, sent on every subscribe: what a restarted server no longer lists goes.
     set(list) {
-        this.info = new Map(Object.entries(list ?? {}).map(([name, [broker, tick]]) => [name, { broker, tick }]));
+        this.info = new Map(Object.entries(list ?? {}).map(([name, [broker, tick, minQty]]) => [name, { broker, tick, minQty }]));
         this.names = Array.from(this.info.keys()).sort();
         this.upper = this.names.map(name => name.toUpperCase());
         this.loaded = true;
@@ -26,11 +34,11 @@ export class Instruments {
     // listed one past it.
     add(list) {
         const added = [];
-        for (const [name, [broker, tick]] of Object.entries(list ?? {})) {
+        for (const [name, [broker, tick, minQty]] of Object.entries(list ?? {})) {
             if (!this.info.has(name)) {
                 added.push(name);
             }
-            this.info.set(name, { broker, tick });
+            this.info.set(name, { broker, tick, minQty });
         }
         if (added.length) {
             added.sort();
@@ -52,10 +60,20 @@ export class Instruments {
 
     tickFor(name) { return this.info.get(name)?.tick || 0; }
 
+    // The smallest order its broker takes, 0 when it did not say.
+    minQtyFor(name) { return this.info.get(name)?.minQty || 0; }
+
     // The broker an order for `name` goes to: the one its own ladder config names, else the one
     // listing it. Undefined when neither is known.
     brokerFor(name) {
         return this.config?.per_instrument?.[name]?.default_broker_id ?? this.info.get(name)?.broker;
+    }
+
+    // The qty an order starts at: the one saved for the instrument, else the smallest its broker
+    // takes, else the ladder config's default.
+    defaultQtyFor(name) {
+        return this.config?.per_instrument?.[name]?.default_qty
+            ?? (this.minQtyFor(name) || this.config?.default_qty || 0.01);
     }
 
     // The ladder config, with an instrument's own over the defaults.

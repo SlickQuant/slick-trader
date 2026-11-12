@@ -217,7 +217,7 @@ private:
     static constexpr auto REQUEST_RETRY_INTERVAL = std::chrono::milliseconds(1);
 
     // Has MANUAL list `instrument` if its config takes it.
-    void list(BrokerId broker, std::string_view instrument, price_t tick_size);
+    void list(BrokerId broker, std::string_view instrument, price_t tick_size, qty_t min_qty);
     // A ladder holding or releasing an instrument of MANUAL's, from the WebServer.
     void dispatch_ladder_subscription(const LadderSubscriptionEvent& event);
     // Whether any strategy subscribes any kind of data of `instrument` at `broker`.
@@ -275,7 +275,11 @@ private:
 
     static constexpr size_t BROKER_COUNT = static_cast<size_t>(BrokerId::_BROKER_ID_COUNT_);
     // Every instrument each broker defined, with its tick, so a list MANUAL is given later takes them too.
-    std::array<StringMap<price_t>, BROKER_COUNT> defined_;
+    struct Defined {
+        price_t tick_size;
+        qty_t min_qty;
+    };
+    std::array<StringMap<Defined>, BROKER_COUNT> defined_;
     // Whole MDSubscription records not yet published, by broker.
     std::array<std::deque<std::vector<uint8_t>>, BROKER_COUNT> request_outbox_;
     size_t requests_queued_{0};
