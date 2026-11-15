@@ -41,6 +41,9 @@
 *.dwo
 
 build/
+build_*/
+build-*/
+
 # Local configure presets - where out-of-tree broker paths belong
 CMakeUserPresets.json
 .agents/
