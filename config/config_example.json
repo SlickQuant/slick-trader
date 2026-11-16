@@ -45,6 +45,7 @@
     "web_server_ladder_release_ms": 5000,
     "web_server_port": 3000,
     "web_server_static_path": "web/static",
+    "web_server_workspaces_file": "state/workspaces.json",
     "ladder_config": {
       "default_qty": 0.01,
       "per_instrument": {

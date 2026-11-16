@@ -2,7 +2,7 @@
 // over the whole window, with a socket of its own.
 import { html, render } from './core/html.js';
 import { connect } from './core/connection.js';
-import { TOOLS, trackGeometry } from './core/windows.js';
+import { TOOLS, registerToolWindow } from './core/windows.js';
 
 // Only these: the name in the URL never becomes an import path.
 const REGISTRY = {
@@ -23,7 +23,7 @@ if (!Object.hasOwn(REGISTRY, tool)) {
     app.innerHTML = '<div class="tool-note">Unknown tool</div>';
 } else {
     document.title = TOOLS[tool].title;
-    trackGeometry();
+    registerToolWindow(tool);
     const { default: Tool } = await REGISTRY[tool]();
     render(html`<${Tool} params=${params} />`, app);
     connect();

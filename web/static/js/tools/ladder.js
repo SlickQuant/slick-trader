@@ -9,6 +9,7 @@ import { GRID_BROKERS, defaultTifFor, instruments, watchInstruments } from '../c
 import { loadScript } from '../core/load.js';
 import { notify } from '../core/notify.js';
 import { local, session } from '../core/store.js';
+import { setWindowParams } from '../core/windows.js';
 import * as bus from '../core/bus.js';
 import { Picker, useInstruments } from '../components/picker.js';
 
@@ -220,9 +221,10 @@ export class LadderView {
     }
 }
 
-export default function Ladder() {
+export default function Ladder({ params }) {
     const list = useInstruments();
-    const [instrument, setInstrument] = useState(() => session.get('ladder.instrument'));
+    // The one picked here, kept across a reload, else the one a workspace opened it on.
+    const [instrument, setInstrument] = useState(() => session.get('ladder.instrument') ?? params.get('instrument'));
     const [qty, setQty] = useState('');
     const [price, setPrice] = useState('');
     const [tifChoice, setTif] = useState('');   // what was picked; '' is the broker's default
@@ -332,6 +334,7 @@ export default function Ladder() {
     const tif = tifChoice || defaultTifFor(shown ? instruments.brokerFor(shown) : undefined);
     controls.current = { qty, price, tif };
     useTitle(shown ?? 'Ladder');
+    useEffect(() => setWindowParams(shown ? { instrument: shown } : {}), [shown]);
 
     // The ladder of what is shown, built anew as it changes or its tick comes, and its book asked
     // for again: the new ladder has none.

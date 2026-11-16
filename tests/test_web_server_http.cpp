@@ -46,7 +46,8 @@ protected:
         ASSERT_NO_FATAL_FAILURE(free_port(port_));
         ASSERT_TRUE(server_.initialize(nlohmann::json{{"web_server_port", port_},
                                                       {"web_server_static_path", static_dir_.string()},
-                                                      {"web_server_ladder_release_ms", release_ms_}}));
+                                                      {"web_server_ladder_release_ms", release_ms_},
+                                                      {"web_server_workspaces_file", (static_dir_ / "workspaces.json").string()}}));
         server_.start();
         ASSERT_TRUE(wait_until_listening());
     }
@@ -339,6 +340,50 @@ TEST_F(WebServerHttpTest, HealthNamesTheVersion) {
     ASSERT_TRUE(client.get("/api/health", "HTTP/1.1 200")) << client.head();
     EXPECT_EQ(nlohmann::json::parse(client.body()),
               (nlohmann::json{{"status", "ok"}, {"version", SLICK_TRADER_VERSION}}));
+}
+
+// The dashboard saves, lists, opens and deletes workspaces by name, and each change reaches the file.
+TEST_F(WebServerHttpTest, WorkspacesAreSavedListedAndDeleted) {
+    const nlohmann::json windows = {{{"tool", "ladder"}, {"left", -1280}, {"top", 40}, {"width", 360}, {"height", 720},
+                                     {"params", {{"instrument", "ZNZ6"}}}}};
+    {
+        RawClient client(port_);
+        ASSERT_TRUE(client.put("/api/workspaces", nlohmann::json{{"name", "Morning"}, {"windows", windows}}.dump(),
+                               "HTTP/1.1 200")) << client.head() << client.body();
+    }
+    {
+        RawClient client(port_);
+        ASSERT_TRUE(client.get("/api/workspaces", "HTTP/1.1 200")) << client.head();
+        const auto doc = nlohmann::json::parse(client.body());
+        EXPECT_EQ(doc["last"], "Morning");
+        EXPECT_EQ(doc["workspaces"]["Morning"]["windows"], windows);
+        EXPECT_EQ(doc["workspaces"]["Default"]["windows"], nlohmann::json::array());
+    }
+    {
+        RawClient client(port_);
+        ASSERT_TRUE(client.put("/api/workspaces/last", R"({"name":"Default"})", "HTTP/1.1 200")) << client.body();
+    }
+    {
+        RawClient client(port_);
+        EXPECT_TRUE(client.put("/api/workspaces/last", R"({"name":"Nope"})", "HTTP/1.1 404")) << client.head();
+    }
+    {
+        RawClient client(port_);
+        EXPECT_TRUE(client.del("/api/workspaces", R"({"name":"Default"})", "HTTP/1.1 400")) << client.head();
+    }
+    {
+        RawClient client(port_);
+        EXPECT_TRUE(client.put("/api/workspaces", R"({"name":"Bad","windows":[{"tool":"ladder"}]})", "HTTP/1.1 400"))
+            << client.head();
+    }
+    {
+        RawClient client(port_);
+        ASSERT_TRUE(client.del("/api/workspaces", R"({"name":"Morning"})", "HTTP/1.1 200")) << client.body();
+    }
+    std::ifstream in(static_dir_ / "workspaces.json");
+    const auto file = nlohmann::json::parse(in);
+    EXPECT_EQ(file["last"], "Default");
+    EXPECT_FALSE(file["workspaces"].contains("Morning"));
 }
 
 // A Fills window opened late had nothing to show: fills went out over the WebSocket alone, and named

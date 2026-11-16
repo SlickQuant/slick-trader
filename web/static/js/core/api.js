@@ -19,6 +19,7 @@ class ApiClient {
     get(endpoint) { return this.request(endpoint, { method: 'GET' }); }
     post(endpoint, data) { return this.request(endpoint, { method: 'POST', body: JSON.stringify(data) }); }
     put(endpoint, data) { return this.request(endpoint, { method: 'PUT', body: JSON.stringify(data) }); }
+    del(endpoint, data = {}) { return this.request(endpoint, { method: 'DELETE', body: JSON.stringify(data) }); }
 
     getHealth() { return this.get('/api/health'); }
     getBrokers() { return this.get('/api/brokers'); }
@@ -35,19 +36,22 @@ class ApiClient {
     putStrategyConfig(strategyId, params) { return this.put(`/api/strategies/${encodeURIComponent(strategyId)}/config`, params); }
     getLadderConfig() { return this.get('/api/ladder-config'); }
     saveLadderConfig(config) { return this.put('/api/ladder-config', config); }
+    // { last, workspaces: { <name>: { windows: [...] } } }. Saving one makes it the last used.
+    getWorkspaces() { return this.get('/api/workspaces'); }
+    saveWorkspace(name, windows) { return this.put('/api/workspaces', { name, windows }); }
+    deleteWorkspace(name) { return this.del('/api/workspaces', { name }); }
+    useWorkspace(name) { return this.put('/api/workspaces/last', { name }); }
 
     // order_id is the broker's; cancel_order() needs the client_order_id too.
     cancelOrder(strategyId, orderId, clientOrderId) {
-        return this.request(`/api/orders/${encodeURIComponent(strategyId)}/${encodeURIComponent(orderId)}`, {
-            method: 'DELETE',
-            body: JSON.stringify({ client_order_id: clientOrderId }),
-        });
+        return this.del(`/api/orders/${encodeURIComponent(strategyId)}/${encodeURIComponent(orderId)}`,
+                        { client_order_id: clientOrderId });
     }
     // updates: { client_order_id, new_price?, new_quantity? }
     modifyOrder(strategyId, orderId, updates) {
         return this.put(`/api/orders/${encodeURIComponent(strategyId)}/${encodeURIComponent(orderId)}`, updates);
     }
-    cancelAllOrders() { return this.request('/api/orders/cancel-all', { method: 'DELETE', body: '{}' }); }
+    cancelAllOrders() { return this.del('/api/orders/cancel-all'); }
 }
 
 export const api = new ApiClient();

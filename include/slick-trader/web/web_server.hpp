@@ -6,6 +6,7 @@
 #include <slick-trader/events/level2_update_event.hpp>
 #include <slick-trader/web/fill_history.hpp>
 #include <slick-trader/web/level2_book.hpp>
+#include <slick-trader/web/workspace_store.hpp>
 #include <slick-trader/core/broker_status.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
 #include <atomic>
@@ -128,6 +129,9 @@ private:
                           const std::string& strategy_id, const std::string& order_id,
                           std::string_view body);
     void handle_delete_all_orders(uWS::HttpResponse<false>* res, uWS::HttpRequest* req);
+    // PUT /api/workspaces {name, windows}, DELETE /api/workspaces {name}, PUT /api/workspaces/last {name}.
+    enum class WorkspaceChange { SAVE, REMOVE, USE };
+    void handle_workspace_change(uWS::HttpResponse<false>* res, std::string_view body, WorkspaceChange change);
 
     // Hand a parameter update to the StrategyManager worker over the event bus.
     // Returns false when the update could not be published at all.
@@ -294,6 +298,9 @@ private:
 
     // Ladder configuration
     nlohmann::json ladder_config_;
+
+    // The dashboard's saved window layouts, in web_server_workspaces_file.
+    WorkspaceStore workspaces_;
 
     // Path to config.json — used to persist runtime strategy parameter changes
     std::string config_path_;

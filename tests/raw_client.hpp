@@ -139,23 +139,30 @@ public:
 
     /// POSTs `body` as JSON and checks the status line starts with `expected_status`.
     [[nodiscard]] bool post(const std::string& path, const std::string& body, const std::string& expected_status) {
-        return exchange("POST " + path + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
-                        "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body,
-                        expected_status);
+        return exchange(with_body("POST", path, body), expected_status);
+    }
+
+    /// As post(), PUT.
+    [[nodiscard]] bool put(const std::string& path, const std::string& body, const std::string& expected_status) {
+        return exchange(with_body("PUT", path, body), expected_status);
+    }
+
+    /// As post(), DELETE.
+    [[nodiscard]] bool del(const std::string& path, const std::string& body, const std::string& expected_status) {
+        return exchange(with_body("DELETE", path, body), expected_status);
     }
 
     /// As post(), with the body sent in two writes a pause apart, as a long one arrives: the server
     /// reads it in more than one chunk.
     [[nodiscard]] bool post_in_two(const std::string& path, const std::string& body, const std::string& expected_status) {
-        const size_t half = body.size() / 2;
-        const std::string first = "POST " + path + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
-                                  "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body.substr(0, half);
+        const std::string request = with_body("POST", path, body);
+        const size_t first = request.size() - (body.size() - body.size() / 2);
         if (fd_ == NO_SOCKET ||
-            ::send(fd_, first.data(), static_cast<int>(first.size()), SEND_FLAGS) != static_cast<int>(first.size())) {
+            ::send(fd_, request.data(), static_cast<int>(first), SEND_FLAGS) != static_cast<int>(first)) {
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        return exchange(body.substr(half), expected_status);
+        return exchange(request.substr(first), expected_status);
     }
 
     /// The status line and headers of the last answer, and its body.
@@ -196,6 +203,12 @@ public:
     bool send_text(std::string_view text) { return send_frame(0x1, text); }
 
 private:
+    /// A `method` request for `path` with `body` as JSON.
+    static std::string with_body(const char* method, const std::string& path, const std::string& body) {
+        return std::string(method) + " " + path + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+               "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+    }
+
     /// One frame with its `opcode`, masked as a client's must be: the header, the 4 byte mask
     /// key, then the payload xored with it. Payloads under 64 KB.
     bool send_frame(uint8_t opcode, std::string_view payload) {

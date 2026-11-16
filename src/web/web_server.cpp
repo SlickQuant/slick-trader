@@ -1,4 +1,5 @@
 #include <slick-trader/web/web_server.hpp>
+#include <slick-trader/web/browser_policy.hpp>
 #include <slick-trader/core/position_tracker.hpp>
 #include <slick-trader/core/pnl_calculator.hpp>
 #include <slick-trader/core/risk_manager.hpp>
@@ -104,6 +105,11 @@ bool WebServer::initialize(const json& config) {
         LOG_INFO("WebServer: Using default ladder config");
     }
 
+    workspaces_.load(config.value("web_server_workspaces_file", std::string("state/workspaces.json")));
+    // Both off unless asked for: they change this user's Edge and Chrome settings, which keep them.
+    list_origin(config, "web_server_allow_popups", config_.port, POPUP_POLICY_KEYS);
+    list_origin(config, "web_server_secure_origin", config_.port, SECURE_POLICY_KEYS);
+
     // What the strategies subscribe is fixed once they start, and nothing runs them yet: their
     // get_subscriptions() read state their on_config() writes on the StrategyManager thread.
     // MANUAL's list grows: index_listings() takes it in as it does.
@@ -175,6 +181,7 @@ void WebServer::start() {
     LOG_INFO("  GET /api/pnl             - All PnL snapshots");
     LOG_INFO("  GET /api/pnl/:id         - Strategy PnL");
     LOG_INFO("  GET /api/strategies      - Strategy list");
+    LOG_INFO("  GET /api/workspaces      - Saved window layouts");
 }
 
 void WebServer::stop() {
@@ -415,6 +422,20 @@ void WebServer::setup_routes(uWS::App &app) {
     // PUT: Update ladder configuration
     app.put("/api/ladder-config", [this](auto* res, auto* req) {
         read_body(res, [this, res](std::string_view body) { handle_put_ladder_config(res, nullptr, std::string(body)); });
+    });
+
+    // Workspaces: saved window layouts. The name goes in the body, so it needs no URL decoding.
+    app.get("/api/workspaces", [this](auto* res, auto* req) {
+        send_json_response(res, workspaces_.doc().dump());
+    });
+    app.put("/api/workspaces", [this](auto* res, auto* req) {
+        read_body(res, [this, res](std::string_view body) { handle_workspace_change(res, body, WorkspaceChange::SAVE); });
+    });
+    app.del("/api/workspaces", [this](auto* res, auto* req) {
+        read_body(res, [this, res](std::string_view body) { handle_workspace_change(res, body, WorkspaceChange::REMOVE); });
+    });
+    app.put("/api/workspaces/last", [this](auto* res, auto* req) {
+        read_body(res, [this, res](std::string_view body) { handle_workspace_change(res, body, WorkspaceChange::USE); });
     });
 
     // WebSocket endpoint
@@ -1586,6 +1607,32 @@ void WebServer::broadcast_level2_update(const Level2UpdateEvent& event) {
     for (auto* ws : clients) {
         send_text(ws, level2_message_);
     }
+}
+
+void WebServer::handle_workspace_change(uWS::HttpResponse<false>* res, std::string_view body,
+                                        WorkspaceChange change) {
+    const json request = json::parse(body, nullptr, false);
+    const auto name = request.is_object() ? request.find("name") : request.end();
+    if (!request.is_object() || name == request.end() || !name->is_string()) {
+        send_error_response(res, "expected {\"name\":<workspace>}", 400);
+        return;
+    }
+    const auto& key = name->get_ref<const std::string&>();
+    WorkspaceStore::Result result;
+    switch (change) {
+    case WorkspaceChange::SAVE: {
+        const auto windows = request.find("windows");
+        result = workspaces_.save(key, windows == request.end() ? json() : *windows);
+        break;
+    }
+    case WorkspaceChange::REMOVE: result = workspaces_.remove(key); break;
+    case WorkspaceChange::USE: result = workspaces_.use(key); break;
+    }
+    if (!result.ok()) {
+        send_error_response(res, result.error, result.status);
+        return;
+    }
+    send_json_response(res, R"({"status":"ok"})");
 }
 
 void WebServer::handle_get_ladder_config(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {

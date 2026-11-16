@@ -6,9 +6,10 @@ import { connect, useConnection, useOnConnect, useWs } from './core/connection.j
 import { useInterval } from './core/hooks.js';
 import * as bus from './core/bus.js';
 import { LogRing, formatOrderLog, orderLogLevel } from './core/log.js';
-import { TOOLS, openTool } from './core/windows.js';
+import { TOOLS, openTool, registerMainWindow } from './core/windows.js';
 import { Icon } from './components/icons.js';
 import { Strategies } from './components/strategies.js';
+import { Workspaces } from './components/workspaces.js';
 
 const PNL_POLL_MS = 5000;
 const TOOLBAR = ['ladder', 'order', 'orders', 'fills', 'positions', 'pnl', 'log'];
@@ -75,6 +76,7 @@ function Toolbar() {
                         ${tool === 'log' && errors > 0 && html`<span class="badge" title="Errors since the log was last open">${errors}</span>`}
                     </button>`)}
             </nav>
+            <${Workspaces} log=${log} />
             <${ConnectionDot} />
         </header>`;
 }
@@ -94,7 +96,7 @@ function BrokerStatus() {
     const label = (name, c) => (!c.enabled ? `${name} (off)` : c.connected ? name : `${name} (disconnected)`);
     return html`
         <section class="panel">
-            <div class="panel-header"><h3>Brokers</h3></div>
+            <div class="panel-header"><h3>Venues</h3></div>
             <div class="panel-body brokers">
                 ${brokers === null && html`<span class="muted">Loading…</span>`}
                 ${brokers?.length === 0 && html`<span class="muted">No brokers configured</span>`}
@@ -159,6 +161,7 @@ function Main() {
         </div>`;
 }
 
+registerMainWindow();
 log('Dashboard initialized', 'info');
 bus.post('main-ready');
 render(html`<${Main} />`, document.getElementById('app'));

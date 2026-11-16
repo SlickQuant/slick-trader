@@ -351,7 +351,8 @@ production-ready market maker with:
 - Book imbalance: immediate microstructure pressure adjustment
 - Quote refresh via direct order modify (single round-trip, no quote gap)
 - A per-side quote-slot state machine (`EMPTY`/`PENDING_NEW`/`ACTIVE`/`PENDING_MODIFY`/`PENDING_CANCEL`)
-- Post-only GTC orders only (maker-friendly)
+- Post-only GTC orders only (maker-friendly). CME and ICE have no post-only order, so
+  `submit_order` drops the flag there and a quote that crosses fills as a taker
 
 Three things the slot machine has to get right, because each of the first two leaks live orders
 if it does not:
@@ -394,10 +395,10 @@ All of its config parameters are documented in the file's header comment, and
 
 [order_stacker.cpp](order_stacker.cpp) is the second reference plugin, and the one to read if you
 want to drive a **third-party order-management library** from `StrategyBase`. It maintains a
-two-sided ladder ("stack") of resting post-only orders using the header-only
-[slick-stacker](https://github.com/SlickQuant/slick-stacker) library: you hand the stacker one
-price and one quantity per side, and it lays down the configured rungs behind that and keeps the
-venue in agreement as acknowledgements, fills, cancels and rejects arrive.
+two-sided ladder ("stack") of resting orders, post-only where the venue has them, using the
+header-only [slick-stacker](https://github.com/SlickQuant/slick-stacker) library: you hand the
+stacker one price and one quantity per side, and it lays down the configured rungs behind that and
+keeps the venue in agreement as acknowledgements, fills, cancels and rejects arrive.
 
 With the shipped defaults (`offset_ticks: 0`, `levels: 4`, `level_gap_ticks: 1`, `tick_size: 0.01`):
 
@@ -430,6 +431,8 @@ With the shipped defaults (`offset_ticks: 0`, `levels: 4`, `level_gap_ticks: 1`,
   an identity and level 0 sits exactly on the best bid/ask. Set `tick_size` coarser and the quote
   snaps to the grid instead, sitting up to one tick behind — safe, but not what the name implies.
   Expect a higher post-only reject rate at offset 0; the stacker re-places those on the next pass.
+  On CME and ICE `submit_order` drops `post_only`, so a level 0 that crosses fills as a taker
+  instead of being rejected.
 - **One `reconcile()` per event.** The stacker's `on_*` handlers never send — all I/O happens in
   `reconcile()`. The library wants one reconcile per event *batch*, but the engine dispatches one
   event at a time, so the plugin reconciles at the end of every handler behind a re-entrancy guard.

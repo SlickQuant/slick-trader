@@ -42,6 +42,9 @@ add_executable(slick-trader-tests
     test_md_subscription.cpp
     test_level2_book.cpp
     test_fill_history.cpp
+    test_workspace_store.cpp
+    test_browser_policy.cpp
+    test_web_setup_script.cpp
     test_mbo_book.cpp
     test_instrument_status.cpp
     test_position_store.cpp
@@ -69,6 +72,7 @@ target_link_libraries(slick-trader-tests PRIVATE
 target_compile_definitions(slick-trader-tests PRIVATE
     SLICK_TRADER_TEST_PLUGIN_PATH="$<TARGET_FILE:probe_plugin>"
     SLICK_TRADER_TEST_STALE_PLUGIN_PATH="$<TARGET_FILE:stale_plugin>"
+    SLICK_TRADER_WEB_SETUP_SCRIPT="${CMAKE_SOURCE_DIR}/scripts/slick-trader-web.bat"
 )
 
 # Every broker the executable carries, so the registry test sees the same set - plus

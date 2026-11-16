@@ -1,3 +1,53 @@
+# v0.5.0 - 11-16-2026
+
+## Added
+
+- Workspaces. The toolbar's Workspaces menu saves the open tool windows under a name, with each
+  one's position and size and a ladder's instrument, and opening a saved one replaces what's open.
+  `Default` always exists. When the main window starts with no tool window up, it opens the last
+  used one. Unless popups are allowed for the site, the browser opens one window per click, so a
+  dialog opens the rest one click at a time. Each window opens inside one screen, and one saved on
+  a screen that's gone opens on the main window's. The engine keeps workspaces, with names
+  trimmed, in `web_server_workspaces_file` (default `state/workspaces.json`) behind
+  `GET|PUT|DELETE /api/workspaces` and `PUT /api/workspaces/last`.
+- Closing the main window closes the tool windows it opened. Reloading it keeps them.
+- `web_server_allow_popups` (`{"ip", "port"}`, opt-in, Windows): the engine lists that origin in
+  this user's Edge and Chrome `PopupsAllowedForUrls` policy as it starts, so a workspace opens all
+  its windows at once. `web_server_secure_origin`, same shape, does the same for
+  `OverrideSecurityRestrictionsOnInsecureOrigin` (the "Insecure origins treated as secure" flag),
+  so windows go on other screens when the dashboard is opened by IP over http.
+- `scripts/slick-trader-web.bat` sets both policies for a browser on another Windows PC when run
+  there, and adds a Desktop and Start menu shortcut that opens the dashboard as an app. `remove`
+  undoes it.
+
+## Changed
+
+- The Order window is now the Ticket, and the main window's Brokers panel is now Venues.
+- An order from a ladder or the Ticket starts at the instrument's `default_qty` in `ladder_config`,
+  else the smallest order its broker takes, else the config's `default_qty`. A qty typed in a
+  ladder becomes that instrument's default. The `instruments` WebSocket list carries each
+  instrument's min qty: `[<broker id>, <tick>, <min qty>]`.
+- The time in force starts at DAY on CME and ICE and GTC elsewhere, in ladders and in the Ticket,
+  which now lists DAY. A ladder's market order left on GTC or DAY goes IOC. A ladder used to start
+  on IOC and send a limit left there as GTC.
+- A ladder's qty, price and TIF boxes sit behind a toggle, hidden at first, and the ladder
+  remembers the choice. Hiding them clears a typed price.
+- `StrategyBase::submit_order` drops `post_only` for CME and ICE orders. Neither has a post-only
+  instruction, so their order entry would only check the order against its own view of the book
+  and reject it.
+- The strategy table shows no buttons for MANUAL, which always runs.
+
+## Fixed
+
+- Two dashboards open on one host, in two tabs or main windows, shared one message bus: each
+  main window's log took the other's tool messages, a Ticket prefill reached both Tickets, and
+  Clear in one Log window cleared both logs. A main window and the tool windows it opened now
+  form a dashboard of their own, and a workspace saves and replaces only that dashboard's windows.
+- A resized ladder clipped its ask column.
+- On CME and ICE, a ladder click on a price with nothing on it went out as a market order. It now
+  trades at that row's price. A book that starts one-sided now centers on the side it has instead
+  of around 100.
+
 # v0.4.0 - 11-10-2026
 
 ## Changed

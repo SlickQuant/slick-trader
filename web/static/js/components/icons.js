@@ -9,6 +9,7 @@ const PATHS = {
     positions: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
     pnl: 'M3 17l6-6 4 4 8-8M15 7h6v6',
     log: 'M4 4h16v16H4zM8 8h8M8 12h8M8 16h4',
+    workspace: 'M3 4h8v7H3zM13 4h8v7h-8zM3 13h8v7H3zM13 13h8v7h-8z',
 };
 
 export function Icon({ name }) {

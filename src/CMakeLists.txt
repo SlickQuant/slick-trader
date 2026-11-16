@@ -16,6 +16,8 @@ add_library(slick-trader-core STATIC
     core/strategy_manager.cpp
     utils/mapped_file.cpp
     web/web_server.cpp
+    web/workspace_store.cpp
+    web/browser_policy.cpp
 )
 
 target_include_directories(slick-trader-core PUBLIC

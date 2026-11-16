@@ -11,7 +11,7 @@ crypto exchanges over WebSocket/REST, routes market data and order events throug
 messaging core, runs trading strategies as hot-loadable plugins, and exposes a real-time web
 dashboard for monitoring and manual control.
 
-> **Status**: 0.4.0. The Coinbase and Hyperliquid brokers are built in, and more
+> **Status**: 0.5.0. The Coinbase and Hyperliquid brokers are built in, and more
 > can be built in from their own repositories (see
 > [Brokers and out-of-tree brokers](#brokers-and-out-of-tree-brokers)). Order execution needs
 > broker credentials (see [Broker configuration](#broker-configuration)). The sample config sends
@@ -57,7 +57,7 @@ dashboard for monitoring and manual control.
   order moves at the spread's price while the positions booked are the legs', where they clear.
 - **Live web dashboard** — a Preact frontend with no build step (`web/static/`) served over
   uWebSockets, with a REST API. A toolbar opens each tool, like the click-to-trade ladder, in its
-  own popup window.
+  own popup window, and saves the open windows as named workspaces.
 - **Manual + automated strategies side by side** — a built-in `ManualStrategy` owns orders placed
   by hand through the dashboard, coexisting with plugin strategies under the same risk/position
   tracking.
@@ -257,7 +257,7 @@ Top-level keys in `config.json` ([example](config/config_example.json)):
 | `brokers[]` | Per-broker `{name, enabled, market_data:{...}, order:{...}}` — see below |
 | `strategies` | `enabled`, `strategy_plugins_folder`, `strategy_configs_folder`, plus TOB (top-of-book) queue sizing, and `md_request_stall_timeout_ms` (5000): how long a market data connector can go without reading a request before it is logged, and before `stop()` gives up on it |
 | `position_store` | Optional. `path` (default `state/positions.dat`) and `capacity` (positions, default `1024`): keeps positions across restarts — see [below](#positions-across-restarts) |
-| `web_service` | `enabled`, `web_server_port`, `web_server_cors`, `web_server_static_path`, `ladder_config` (default order size, per-instrument overrides), `config_queue_size`/`config_control_size` (event-bus producer the dashboard publishes strategy parameter updates through) |
+| `web_service` | `enabled`, `web_server_port`, `web_server_cors`, `web_server_static_path`, `web_server_ladder_release_ms` (how long a ladder's instrument stays subscribed after the last ladder leaves it, default 5000), `web_server_workspaces_file` (saved window layouts, default `state/workspaces.json`), `web_server_allow_popups` (opt-in `{"ip", "port"}`: on Windows, lists `http://<ip>:<port>` in this user's Edge and Chrome `PopupsAllowedForUrls` policy so workspaces open every window at once), `web_server_secure_origin` (opt-in, same shape: lists it in their `OverrideSecurityRestrictionsOnInsecureOrigin` policy, the "Insecure origins treated as secure" flag, needed to place windows on other screens over plain http from any address but localhost), `ladder_config` (default order size, per-instrument overrides), `config_queue_size`/`config_control_size` (event-bus producer the dashboard publishes strategy parameter updates through) |
 
 ### Broker configuration
 
@@ -324,11 +324,15 @@ event bus as a `TOB` record - at most four times a second. Key endpoints (see
 - `POST /api/strategies/:strategy_id/{control,halt,resume}`
 - `GET|PUT /api/strategies/:strategy_id/{risk,config}`
 - `GET|PUT /api/ladder-config`
+- `GET|PUT|DELETE /api/workspaces`, `PUT /api/workspaces/last`
 
 The dashboard is a toolbar that opens each tool (ladder, order ticket, orders, fills, positions,
-P&L, log) in a popup window of its own. Its click-to-trade ladder uses `slick-ladder`, an
-`@slickquant` npm package (see [package.json](package.json)). The built-in `ManualStrategy` owns
-manual orders. A ladder lists the instruments brokers define (CME, ICE, Coinbase and Hyperliquid
+P&L, log) in a popup window of its own. It saves the open windows as named workspaces and reopens
+them where they were. If the browser runs on a different Windows PC than the engine, run
+[scripts/slick-trader-web.bat](scripts/slick-trader-web.bat) on that PC. It lets the dashboard
+open popups and act as a secure origin, and adds a Desktop and Start menu app for it. Its
+click-to-trade ladder uses `slick-ladder`, an `@slickquant` npm package (see
+[package.json](package.json)). The built-in `ManualStrategy` owns manual orders. A ladder lists the instruments brokers define (CME, ICE, Coinbase and Hyperliquid
 publish definitions), and MANUAL subscribes one only while a ladder shows it. MANUAL's config
 narrows the list, for example in `config/manual.config.json`:
 
