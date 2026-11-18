@@ -29,15 +29,7 @@ foreach(dir IN LISTS SLICK_TRADER_EXTERNAL_BROKERS)
     add_subdirectory("${dir}" "${CMAKE_BINARY_DIR}/external_brokers/${_slick_trader_external_name}")
     list(POP_BACK CMAKE_MESSAGE_INDENT)
 
-    # The version a broker's own project() declares. One that declares none inherits
-    # slick-trader's, which says nothing about the broker, so nothing is shown for it.
-    get_directory_property(_slick_trader_broker_project DIRECTORY "${dir}" DEFINITION PROJECT_NAME)
-    get_directory_property(_slick_trader_broker_version DIRECTORY "${dir}" DEFINITION PROJECT_VERSION)
-    if(_slick_trader_broker_project STREQUAL PROJECT_NAME OR NOT _slick_trader_broker_version)
-        set(_slick_trader_broker_version "")
-    else()
-        set(_slick_trader_broker_version " ${_slick_trader_broker_version}")
-    endif()
+    slick_trader_subproject_version(_slick_trader_broker_version "${dir}")
 
     # Compare lengths first: list(SUBLIST) fails when the begin index equals the length.
     get_property(_slick_trader_after GLOBAL PROPERTY SLICK_TRADER_ENABLED_BROKERS)
