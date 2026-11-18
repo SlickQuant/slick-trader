@@ -166,7 +166,8 @@ function blocked() {
     return null;
 }
 
-// What this tool window opens with again in a workspace, as URL params: a ladder's instrument.
+// What this tool window opens with again in a workspace, as URL params: a ladder's instrument and
+// settings.
 let windowParams = {};
 export function setWindowParams(params) {
     windowParams = params;

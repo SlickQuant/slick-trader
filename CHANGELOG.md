@@ -1,3 +1,17 @@
+# Unreleased
+
+## Added
+
+- A ⚙ right of a ladder's instrument dropdown opens its settings: auto-center, volume bars, empty
+  price rows (on CME and ICE, always or never) and row height. They apply to that ladder only,
+  last through a reload and are saved with it in a workspace. A new ladder starts on the defaults,
+  with auto-center off, since it moves rows under the mouse.
+
+## Changed
+
+- slick-ladder 0.4.0, up from 0.1.8. It redraws only the rows that change, and Space or a
+  middle-click on a ladder centers it.
+
 # v0.5.0 - 11-16-2026
 
 ## Added

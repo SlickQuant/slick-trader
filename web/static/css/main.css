@@ -269,6 +269,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .side-toggle .btn.buy.on { background: rgba(16, 185, 129, 0.2); border-color: var(--success); color: var(--success); }
 .side-toggle .btn.sell.on { background: rgba(239, 68, 68, 0.2); border-color: var(--danger); color: var(--danger); }
 .form-warning { font-size: 11px; color: var(--warning); }
+.form-hint { font-size: 11px; color: var(--text-secondary); margin-top: -6px; }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.check input { padding: 0; accent-color: var(--accent-primary); }
 
 /* Log */
 .log { font-family: var(--font-mono); font-size: 12px; padding: 6px 8px; }

@@ -24,7 +24,12 @@
   its instrument.
 - Uses the tick the broker defined. Without one it falls back to a small table, then 0.01.
 - On CME and ICE the ladder keeps a row for each price with nothing on it, so rows stay put as
-  levels come and go. A click on such a row trades at its price.
+  levels come and go. A click on such a row trades at its price. The settings can show those rows
+  everywhere or nowhere.
+- ⚙ opens this ladder's settings: auto-center, volume bars, empty price rows and row height. They
+  last through a reload and a workspace saves them with the ladder. A new ladder starts on the
+  defaults. Auto-center, off at first, keeps the midpoint on the middle row and stops the wheel
+  from scrolling. Off, the wheel scrolls and Space or a middle-click centers.
 - Click a level to trade the qty there. The qty starts at the instrument's default: its
   `default_qty` in the ladder config, else the smallest order its broker takes, else the config's
   `default_qty`. A qty you type becomes that instrument's default. Until the config loads, the qty box

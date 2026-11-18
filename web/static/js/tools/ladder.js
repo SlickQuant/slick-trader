@@ -7,7 +7,7 @@ import { ws, useOnConnect, useWs } from '../core/connection.js';
 import { useTitle } from '../core/hooks.js';
 import { GRID_BROKERS, defaultTifFor, instruments, watchInstruments } from '../core/instruments.js';
 import { loadScript } from '../core/load.js';
-import { notify } from '../core/notify.js';
+import { Dialog, notify } from '../core/notify.js';
 import { local, session } from '../core/store.js';
 import { setWindowParams } from '../core/windows.js';
 import * as bus from '../core/bus.js';
@@ -19,6 +19,27 @@ const DEFAULT_TICK = 0.01;
 const TIF = { GTC: '0', IOC: '1', FOK: '2', DAY: '4' };
 // The exchanges in GRID_BROKERS have fixed grids of price levels: their ladder keeps an empty row
 // for a price with nothing on it, so rows stay put as levels come and go.
+
+// The gear's settings, each ladder's own. Auto-center moves rows under the mouse as the midpoint
+// moves, so it starts off.
+const SETTINGS_KEY = 'ladder.settings';
+const DEFAULT_SETTINGS = { autoCenter: false, emptyRows: 'venue', volumeBars: false, rowHeight: 20 };
+const EMPTY_ROWS = { venue: 'Show on CME and ICE', show: 'Show', hide: 'Hide' };
+const ROW_HEIGHTS = [16, 18, 20, 24, 28];
+const sameSettings = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// This window's settings, kept across a reload, else those a workspace opened it with.
+function initialSettings(params) {
+    let saved = session.get(SETTINGS_KEY);
+    if (!saved) {
+        try {
+            saved = JSON.parse(params.get('settings'));
+        } catch {
+            // the defaults
+        }
+    }
+    return { ...DEFAULT_SETTINGS, ...saved };
+}
 
 const COLORS = {
     background: '#1e1e1e',
@@ -45,8 +66,9 @@ const cleanPrice = (price) => Number(price.toFixed(8));
 // would carry none and go out as a market order. Its price is where the row stands from the
 // centre, as the library draws it, and a click or hover on it gets that.
 function keepEmptyRowPrices(renderer) {
-    // The library centres on the midpoint, or on 100 when a side is missing, and keeps that
-    // centre: a book that starts one-sided would sit around 100. Centre on the side there is.
+    // With auto-center off the library centres on the midpoint, or on 100 when a side is missing,
+    // and keeps that centre: a book that starts one-sided would sit around 100. Centre on the side
+    // there is.
     const resolve = renderer.resolveReferencePrice.bind(renderer);
     renderer.resolveReferencePrice = (snapshot) => {
         if (renderer.centerPrice === 0 && !(snapshot.midPrice > 0) && renderer.tickSize > 0) {
@@ -88,21 +110,24 @@ export class LadderView {
         this.pending = new Map();   // order_id -> { instrument, price, sideEnum }
     }
 
-    show(instrument, tickSize) {
+    show(instrument, tickSize, settings) {
         this.destroy();
         this.instrument = instrument;
         if (!instrument) {
             return;
         }
+        const emptyRows = settings.emptyRows === 'venue' ? GRID_BROKERS.has(instruments.brokerFor(instrument))
+                                                         : settings.emptyRows === 'show';
         this.ladder = new SlickLadder.PriceLadder({
             container: this.container,
             width: 200,
             height: Math.max(this.container.clientHeight, 100),
-            rowHeight: 20,
+            rowHeight: settings.rowHeight,
             tickSize,
             mode: 'PriceLevel',
-            removalMode: GRID_BROKERS.has(instruments.brokerFor(instrument)) ? 'showEmpty' : 'removeRow',
-            showVolumeBars: false,
+            removalMode: emptyRows ? 'showEmpty' : 'removeRow',
+            autoCenter: settings.autoCenter,
+            showVolumeBars: settings.volumeBars,
             showOrderCount: false,
             minQuantityThreshold: 0.0001,
             colors: COLORS,
@@ -221,6 +246,40 @@ export class LadderView {
     }
 }
 
+function SettingsDialog({ settings, onSave, onClose }) {
+    const [draft, setDraft] = useState(settings);
+    const set = (key, value) => setDraft((d) => ({ ...d, [key]: value }));
+    return html`
+        <${Dialog} title="Ladder settings" onClose=${onClose}
+            footer=${html`<button class="btn" onClick=${onClose}>Cancel</button>
+                          <button class="btn btn-primary" onClick=${() => onSave(draft)}>Save</button>`}>
+            <div class="form">
+                <label class="check">
+                    <input type="checkbox" checked=${draft.autoCenter} onChange=${(e) => set('autoCenter', e.target.checked)} />
+                    Auto center
+                </label>
+                <div class="form-hint">${draft.autoCenter
+                    ? 'Keeps the bid/ask midpoint on the middle row, so rows move as it moves. The wheel does not scroll.'
+                    : 'The wheel scrolls. Space or a middle-click on the ladder centers it.'}</div>
+                <label class="check">
+                    <input type="checkbox" checked=${draft.volumeBars} onChange=${(e) => set('volumeBars', e.target.checked)} />
+                    Volume bars
+                </label>
+                <label class="field"><span>Empty price rows</span>
+                    <select value=${draft.emptyRows} onChange=${(e) => set('emptyRows', e.target.value)}>
+                        ${Object.entries(EMPTY_ROWS).map(([value, label]) => html`<option value=${value}>${label}</option>`)}
+                    </select>
+                </label>
+                <label class="field"><span>Row height</span>
+                    <select value=${draft.rowHeight} onChange=${(e) => set('rowHeight', parseInt(e.target.value))}>
+                        ${ROW_HEIGHTS.map((h) => html`<option value=${h}>${h}px</option>`)}
+                    </select>
+                </label>
+                <div class="form-hint">For this ladder only. A workspace saved with it keeps them.</div>
+            </div>
+        <//>`;
+}
+
 export default function Ladder({ params }) {
     const list = useInstruments();
     // The one picked here, kept across a reload, else the one a workspace opened it on.
@@ -229,6 +288,8 @@ export default function Ladder({ params }) {
     const [price, setPrice] = useState('');
     const [tifChoice, setTif] = useState('');   // what was picked; '' is the broker's default
     const [showControls, setShowControls] = useState(() => local.get('ladder.controls', false));
+    const [settings, setSettings] = useState(() => initialSettings(params));
+    const [editing, setEditing] = useState(false);   // the settings dialog is open
     const [ready, setReady] = useState(false);   // slick-ladder loaded
     const host = useRef(null);
     const view = useRef(null);
@@ -334,21 +395,24 @@ export default function Ladder({ params }) {
     const tif = tifChoice || defaultTifFor(shown ? instruments.brokerFor(shown) : undefined);
     controls.current = { qty, price, tif };
     useTitle(shown ?? 'Ladder');
-    useEffect(() => setWindowParams(shown ? { instrument: shown } : {}), [shown]);
+    useEffect(() => setWindowParams({
+        ...(shown && { instrument: shown }),
+        ...(!sameSettings(settings, DEFAULT_SETTINGS) && { settings: JSON.stringify(settings) }),
+    }), [shown, settings]);
 
-    // The ladder of what is shown, built anew as it changes or its tick comes, and its book asked
-    // for again: the new ladder has none.
+    // The ladder of what is shown, built anew as it changes, its tick comes or the settings change,
+    // and its book asked for again: the new ladder has none.
     const tick = shown ? tickFor(shown) : 0;
     useEffect(() => {
         if (!ready || !list.loaded) {
             return;
         }
-        view.current.show(shown, tick);
+        view.current.show(shown, tick, settings);
         stream(shown, true);
         if (shown) {
             seedOwnOrders();
         }
-    }, [ready, list.loaded, shown, tick]);
+    }, [ready, list.loaded, shown, tick, settings]);
 
     // The qty starts at the instrument's default once the ladder config and the instruments have
     // come, and only then: before them, the default is not known. What is typed after stays until
@@ -407,10 +471,20 @@ export default function Ladder({ params }) {
         setShowControls(next);
     };
 
+    // Unchanged settings keep the ladder: a new one would flash empty until its book comes.
+    const saveSettings = (next) => {
+        setEditing(false);
+        if (!sameSettings(next, settings)) {
+            session.set(SETTINGS_KEY, next);
+            setSettings(next);
+        }
+    };
+
     return html`
         <div class="tool-window">
             <div class="tool-bar">
                 <${Picker} value=${shown} onPick=${pick} autoFocus=${true} />
+                <button class="btn" title="Ladder settings" onClick=${() => setEditing(true)}>⚙</button>
                 <button class="btn" title=${showControls ? 'Hide qty, price and TIF' : 'Show qty, price and TIF'}
                         onClick=${toggleControls}>${showControls ? '▴' : '▾'}</button>
             </div>
@@ -433,5 +507,6 @@ export default function Ladder({ params }) {
             </div>`}
             ${!shown && html`<div class="tool-note">${list.loaded ? 'Pick an instrument to see its book.' : 'Loading instruments…'}</div>`}
             <div class=${`ladder-host${shown ? '' : ' hidden'}`} ref=${host}></div>
+            ${editing && html`<${SettingsDialog} settings=${settings} onSave=${saveSettings} onClose=${() => setEditing(false)} />`}
         </div>`;
 }
