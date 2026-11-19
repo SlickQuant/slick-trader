@@ -17,13 +17,14 @@ import { Picker, useInstruments } from '../components/picker.js';
 const FALLBACK_TICKS = { 'ES': 0.25, 'NQ': 0.25 };
 const DEFAULT_TICK = 0.01;
 const TIF = { GTC: '0', IOC: '1', FOK: '2', DAY: '4' };
+const TIF_NAMES = Object.fromEntries(Object.entries(TIF).map(([name, value]) => [value, name]));
 // The exchanges in GRID_BROKERS have fixed grids of price levels: their ladder keeps an empty row
 // for a price with nothing on it, so rows stay put as levels come and go.
 
 // The gear's settings, each ladder's own. Auto-center moves rows under the mouse as the midpoint
-// moves, so it starts off.
+// moves, so it starts off. A click asks before it sends an order unless confirmOrders is off.
 const SETTINGS_KEY = 'ladder.settings';
-const DEFAULT_SETTINGS = { autoCenter: false, emptyRows: 'venue', volumeBars: false, rowHeight: 20 };
+const DEFAULT_SETTINGS = { confirmOrders: true, autoCenter: false, emptyRows: 'venue', volumeBars: false, rowHeight: 20 };
 const EMPTY_ROWS = { venue: 'Show on CME and ICE', show: 'Show', hide: 'Hide' };
 const ROW_HEIGHTS = [16, 18, 20, 24, 28];
 const sameSettings = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -261,6 +262,13 @@ function SettingsDialog({ settings, onSave, onClose }) {
                           <button class="btn btn-primary" onClick=${() => onSave(draft)}>Save</button>`}>
             <div class="form">
                 <label class="check">
+                    <input type="checkbox" checked=${draft.confirmOrders} onChange=${(e) => set('confirmOrders', e.target.checked)} />
+                    Confirm orders
+                </label>
+                <div class="form-hint">${draft.confirmOrders
+                    ? 'A click on a level asks before it sends the order.'
+                    : 'A click on a level sends the order at once.'}</div>
+                <label class="check">
                     <input type="checkbox" checked=${draft.autoCenter} onChange=${(e) => set('autoCenter', e.target.checked)} />
                     Auto center
                 </label>
@@ -286,6 +294,44 @@ function SettingsDialog({ settings, onSave, onClose }) {
         <//>`;
 }
 
+// The second click of a double-click lands on the dialog the first one opened: a confirm this soon
+// after it opens is ignored.
+const ARM_MS = 500;
+
+// The order a click made, sent on Buy/Sell or Enter. Enter on a focused button does that button's
+// job. Neither button gets focus when the dialog opens: Space would press it, and Space centers
+// the ladder.
+function ConfirmDialog({ order, onConfirm, onClose }) {
+    const opened = useRef(performance.now());
+    const confirm = () => {
+        if (performance.now() - opened.current >= ARM_MS) {
+            onConfirm();
+        }
+    };
+    useEffect(() => {
+        const onKey = (e) => {
+            if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') {
+                e.preventDefault();
+                confirm();
+            }
+        };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+    }, [onConfirm]);
+    const limit = order.type === 'limit';
+    return html`
+        <${Dialog} title="Confirm order" onClose=${onClose}
+            footer=${html`<button class="btn" onClick=${onClose}>Cancel</button>
+                          <button class=${`btn ${order.side} on`} onClick=${confirm}>${order.side === 'buy' ? 'Buy' : 'Sell'}</button>`}>
+            <div class="order-confirm">
+                <div class="order-confirm-main">
+                    <span class=${order.side}>${order.side.toUpperCase()}</span> ${order.quantity} ${order.instrument}${limit ? ` @ ${order.price}` : ''}
+                </div>
+                <div class="order-confirm-detail">${limit ? 'Limit' : 'Market'}, ${TIF_NAMES[order.time_in_force] ?? order.time_in_force}</div>
+            </div>
+        <//>`;
+}
+
 export default function Ladder({ params }) {
     const list = useInstruments();
     // The one picked here, kept across a reload, else the one a workspace opened it on.
@@ -296,6 +342,7 @@ export default function Ladder({ params }) {
     const [showControls, setShowControls] = useState(() => local.get('ladder.controls', false));
     const [settings, setSettings] = useState(() => initialSettings(params));
     const [editing, setEditing] = useState(false);   // the settings dialog is open
+    const [confirming, setConfirming] = useState(null);   // the order waiting for a confirm
     const [ready, setReady] = useState(false);   // slick-ladder loaded
     const host = useRef(null);
     const view = useRef(null);
@@ -333,9 +380,28 @@ export default function Ladder({ params }) {
         }
     }, []);
 
-    // The click-to-trade order: at the price typed, else the level clicked, else market.
-    const onLevelClick = useCallback(async (inst, levelPrice, side) => {
-        const { qty: qtyText, price: priceText, tif: tifValue } = controls.current;
+    // Sends `order`, then clears the price and TIF: they last one order.
+    const send = useCallback(async (order) => {
+        try {
+            await api.submitOrder(order);
+            if (order.type === 'limit') {
+                view.current?.setOwn(order.instrument, order.price, sideEnum(order.side), true);
+            }
+            setPrice('');
+            setTif('');
+            const msg = `Order submitted: ${order.side.toUpperCase()} ${order.quantity} ${order.instrument}${order.type === 'limit' ? ` @ ${order.price}` : ''}`;
+            notify(msg, 'success');
+            bus.log(msg, 'success');
+        } catch (error) {
+            notify(`Order failed: ${error.message}`, 'error');
+            bus.log(`Order failed: ${order.instrument} ${error.message}`, 'error');
+        }
+    }, []);
+
+    // The click-to-trade order: at the price typed, else the level clicked, else market. When the
+    // settings ask for a confirm, it waits for one, unchanged from what the click built.
+    const onLevelClick = useCallback((inst, levelPrice, side) => {
+        const { qty: qtyText, price: priceText, tif: tifValue, confirm } = controls.current;
         if (!instruments.config) {
             notify('Order not sent: the ladder config has not loaded yet', 'error');
             return;
@@ -354,28 +420,19 @@ export default function Ladder({ params }) {
             notify(`Order not sent: no broker known for ${inst}`, 'error');
             return;
         }
-        const orderSide = side === 0 ? 'buy' : 'sell';
-        try {
-            await api.submitOrder({
-                instrument: inst,
-                broker_id: brokerId,
-                side: orderSide,
-                type,
-                quantity,
-                time_in_force: timeInForce,
-                ...(type === 'limit' && { price: orderPrice }),
-            });
-            if (type === 'limit') {
-                view.current?.setOwn(inst, orderPrice, side, true);
-            }
-            setPrice('');
-            setTif('');
-            const msg = `Order submitted: ${orderSide.toUpperCase()} ${quantity} ${inst}${type === 'limit' ? ` @ ${orderPrice}` : ''}`;
-            notify(msg, 'success');
-            bus.log(msg, 'success');
-        } catch (error) {
-            notify(`Order failed: ${error.message}`, 'error');
-            bus.log(`Order failed: ${inst} ${error.message}`, 'error');
+        const order = {
+            instrument: inst,
+            broker_id: brokerId,
+            side: side === 0 ? 'buy' : 'sell',
+            type,
+            quantity,
+            time_in_force: timeInForce,
+            ...(type === 'limit' && { price: orderPrice }),
+        };
+        if (confirm) {
+            setConfirming(order);
+        } else {
+            send(order);
         }
     }, []);
 
@@ -399,26 +456,29 @@ export default function Ladder({ params }) {
     // A restored pick no longer listed, after a restart, is dropped.
     const shown = list.loaded && instrument && !list.has(instrument) ? null : instrument;
     const tif = tifChoice || defaultTifFor(shown ? instruments.brokerFor(shown) : undefined);
-    controls.current = { qty, price, tif };
+    // confirmOrders doesn't change how the ladder looks, so toggling it doesn't rebuild the ladder.
+    const { confirmOrders, ...look } = settings;
+    const lookKey = JSON.stringify(look);
+    controls.current = { qty, price, tif, confirm: confirmOrders };
     useTitle(shown ?? 'Ladder');
     useEffect(() => setWindowParams({
         ...(shown && { instrument: shown }),
         ...(!sameSettings(settings, DEFAULT_SETTINGS) && { settings: JSON.stringify(settings) }),
     }), [shown, settings]);
 
-    // The ladder of what is shown, built anew as it changes, its tick comes or the settings change,
+    // The ladder of what is shown, built anew as it changes, its tick comes or its look changes,
     // and its book asked for again: the new ladder has none.
     const tick = shown ? tickFor(shown) : 0;
     useEffect(() => {
         if (!ready || !list.loaded) {
             return;
         }
-        view.current.show(shown, tick, settings);
+        view.current.show(shown, tick, look);
         stream(shown, true);
         if (shown) {
             seedOwnOrders();
         }
-    }, [ready, list.loaded, shown, tick, settings]);
+    }, [ready, list.loaded, shown, tick, lookKey]);
 
     // The qty starts at the instrument's default once the ladder config and the instruments have
     // come, and only then: before them, the default is not known. What is typed after stays until
@@ -514,5 +574,7 @@ export default function Ladder({ params }) {
             ${!shown && html`<div class="tool-note">${list.loaded ? 'Pick an instrument to see its book.' : 'Loading instruments…'}</div>`}
             <div class=${`ladder-host${shown ? '' : ' hidden'}`} ref=${host}></div>
             ${editing && html`<${SettingsDialog} settings=${settings} onSave=${saveSettings} onClose=${() => setEditing(false)} />`}
+            ${confirming && html`<${ConfirmDialog} order=${confirming} onClose=${() => setConfirming(null)}
+                                                   onConfirm=${() => { setConfirming(null); send(confirming); }} />`}
         </div>`;
 }

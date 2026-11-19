@@ -1,3 +1,12 @@
+# Unreleased
+
+## Added
+
+- A ladder asks before a click sends an order. The dialog shows side, qty, instrument, price, type
+  and TIF, and sends on Buy/Sell or Enter. Confirms in its first 500 ms are ignored, so a
+  double-click can't send. "Confirm orders" in the ladder's ⚙ turns it off for that ladder, saved
+  like its other settings. It's on for a new ladder and for one saved before it existed.
+
 # v0.6.0 - 11-18-2026
 
 ## Added

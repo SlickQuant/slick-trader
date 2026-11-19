@@ -339,8 +339,8 @@ them where they were. If the browser runs on a different Windows PC than the eng
 [scripts/slick-trader-web.bat](scripts/slick-trader-web.bat) on that PC. It lets the dashboard
 open popups and act as a secure origin, and adds a Desktop and Start menu app for it. Its
 click-to-trade ladder uses `slick-ladder`, an `@slickquant` npm package (see
-[package.json](package.json)), and each ladder's ⚙ sets its own auto-center, volume bars, empty
-rows and row height. The built-in `ManualStrategy` owns manual orders. A ladder lists the instruments brokers define (CME, ICE, Coinbase and Hyperliquid
+[package.json](package.json)), and each ladder's ⚙ sets its own order confirmation (on by
+default), auto-center, volume bars, empty rows and row height. The built-in `ManualStrategy` owns manual orders. A ladder lists the instruments brokers define (CME, ICE, Coinbase and Hyperliquid
 publish definitions), and MANUAL subscribes one only while a ladder shows it. MANUAL's config
 narrows the list, for example in `config/manual.config.json`:
 

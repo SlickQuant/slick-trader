@@ -282,8 +282,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .field > span { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
 .field input, .field select { width: 100%; }
 .side-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.side-toggle .btn.buy.on { background: rgba(16, 185, 129, 0.2); border-color: var(--success); color: var(--success); }
-.side-toggle .btn.sell.on { background: rgba(239, 68, 68, 0.2); border-color: var(--danger); color: var(--danger); }
+.btn.buy.on { background: rgba(16, 185, 129, 0.2); border-color: var(--success); color: var(--success); }
+.btn.sell.on { background: rgba(239, 68, 68, 0.2); border-color: var(--danger); color: var(--danger); }
 .form-warning { font-size: 11px; color: var(--warning); }
 .form-hint { font-size: 11px; color: var(--text-secondary); margin-top: -6px; }
 .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
@@ -326,6 +326,11 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .modal-body { padding: 4px 2px; overflow: auto; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--border-color); }
 .modal-error { color: var(--danger); font-size: 12px; padding: 0 12px; }
+.order-confirm { display: flex; flex-direction: column; gap: 4px; padding: 12px; }
+.order-confirm-main { font-family: var(--font-mono); font-size: 15px; }
+.order-confirm-main .buy { color: var(--success); font-weight: 600; }
+.order-confirm-main .sell { color: var(--danger); font-weight: 600; }
+.order-confirm-detail { font-size: 12px; color: var(--text-secondary); }
 .config-editor { width: 100%; min-height: 260px; font-family: var(--font-mono); font-size: 12px; resize: vertical; }
 
 /* Toasts */

@@ -29,11 +29,15 @@ NewRelease, ...), and the window title starts with it, as in `[Sim] Ladder`.
 - On CME and ICE the ladder keeps a row for each price with nothing on it, so rows stay put as
   levels come and go. A click on such a row trades at its price. The settings can show those rows
   everywhere or nowhere.
-- ⚙ opens this ladder's settings: auto-center, volume bars, empty price rows and row height. They
-  last through a reload and a workspace saves them with the ladder. A new ladder starts on the
-  defaults. Auto-center, off at first, keeps the midpoint on the middle row and stops the wheel
-  from scrolling. Off, the wheel scrolls and Space or a middle-click centers.
-- Left-click a level to trade the qty there. Middle and right clicks don't trade. The qty starts at the instrument's default: its
+- ⚙ opens this ladder's settings: order confirmation, auto-center, volume bars, empty price rows
+  and row height. They last through a reload and a workspace saves them with the ladder. A new
+  ladder starts on the defaults. Auto-center, off at first, keeps the midpoint on the middle row
+  and stops the wheel from scrolling. Off, the wheel scrolls and Space or a middle-click centers.
+- Left-click a level to trade the qty there. Order confirmation is on by default, so the click
+  first opens a dialog showing the order. Its Buy or Sell button, or Enter, sends it. Cancel,
+  Escape or a click outside the dialog drops it. The dialog won't send in its first half second,
+  so a double-click can't place the order. Middle and right clicks don't trade. The qty starts at
+  the instrument's default: its
   `default_qty` in the ladder config, else the smallest order its broker takes, else the config's
   `default_qty`. A qty you type becomes that instrument's default. Until the config loads, the qty box
   is disabled and clicks send nothing.
