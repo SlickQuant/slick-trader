@@ -1,7 +1,11 @@
-# Unreleased
+# v0.6.0 - 11-18-2026
 
 ## Added
 
+- A top-level `environment` in the config (`Sim`, `Cert`, `NewRelease`, ..., default `Production`),
+  since venues don't report which one a session is on. Off production every dashboard window,
+  tool windows included, shows an amber bar naming it and puts it in the title. The engine logs it
+  at start and `/api/health` returns it.
 - A ⚙ right of a ladder's instrument dropdown opens its settings: auto-center, volume bars, empty
   price rows (on CME and ICE, always or never) and row height. They apply to that ladder only,
   last through a reload and are saved with it in a workspace. A new ladder starts on the defaults,
@@ -9,8 +13,16 @@
 
 ## Changed
 
-- slick-ladder 0.4.0, up from 0.1.8. It redraws only the rows that change, and Space or a
-  middle-click on a ladder centers it.
+- slick-ladder 0.5.0, up from 0.1.8. It redraws only the rows that change, and Space or a
+  middle-click on a ladder centers it. With empty rows hidden, a row cut off at the bottom shows
+  its level instead of staying blank. Only a left click on a level trades: 0.5.0 passes middle
+  and right clicks to the ladder's handler too.
+- CMake shows a codec's version (cme-cpp, ice-cpp) when it comes from a source tree or its
+  repository, not only from an installed package.
+- The sample config is production (`"environment": "Production"`). Coinbase orders go to the
+  real exchange, as its market data already did, so they're live once credentials are set. It
+  used to send them to slick-sim but listen for their updates on real Coinbase. The README says
+  how to point it at slick-sim.
 
 # v0.5.0 - 11-16-2026
 

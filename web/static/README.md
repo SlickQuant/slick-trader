@@ -11,6 +11,10 @@ bar. Ladder opens a new window per click. The other buttons focus their window i
 open. Each window remembers its size and position. Closing the main window closes the tool windows
 it opened, and reloading it keeps them. See [FEATURES.md](FEATURES.md) for what each window does.
 
+When the config's top-level `environment` isn't production (`Sim`, `Cert`, `NewRelease`, ...),
+every window, tool windows included, shows an amber bar naming it on top, and its title starts
+with `[Sim]` or the like.
+
 Each main window is a dashboard of its own. Two open on one host, in tabs or windows, keep their
 tool windows and logs apart, and a workspace saves and replaces only its own dashboard's windows.
 The saved workspaces, and which one was last used, live in the engine, so every dashboard shares
@@ -18,7 +22,8 @@ them. If a main window dies without closing, as in a crash, its tool windows bel
 dashboard any more and have to be closed by hand.
 
 The Workspaces menu saves the open tool windows under a name, with each one's position and size
-and a ladder's instrument. Opening a workspace closes the open tool windows and opens its own.
+and a ladder's instrument and settings. Opening a workspace closes the open tool windows and opens
+its own.
 `Default` always exists and can't be deleted. When the main window starts and no tool window
 answers, it opens the last used workspace, so reloading the main window alone changes nothing.
 The main window isn't part of a workspace, since a page can't move a window the user opened.
@@ -84,8 +89,8 @@ css/main.css            the one stylesheet
 lib/                    preact 11.0.2, htm 3.1.1, chart.js 4.4.1 (vendored)
 js/main.js              toolbar, summary, the log the Log window shows
 js/tool.js              mounts one tool, picked from a fixed registry
-js/core/                api, websocket, connection hooks, windows, bus, instruments, log
-js/components/          picker, strategy control, workspaces menu, icons
+js/core/                api, websocket, connection hooks, health, windows, bus, instruments, log
+js/components/          picker, strategy control, workspaces menu, environment bar, icons
 js/tools/               ladder, order (the Ticket), orders, fills, positions, pnl, log
 js/slick-ladder.js      the ladder canvas (@slickquant/slick-ladder)
 ```
@@ -102,7 +107,7 @@ already open.
 
 ## API
 
-REST: `GET /api/health` (status and engine version), `/api/brokers`, `/api/strategies`,
+REST: `GET /api/health` (status, engine version, `environment` and `production`), `/api/brokers`, `/api/strategies`,
 `/api/positions` and `/api/pnl` (each also per `/:strategy_id`), `/api/orders`, `/api/fills` (the
 last 1,000 fills, oldest first), `/api/ladder-config`, `/api/workspaces`
 (`{"last":<name>,"workspaces":{<name>:{"windows":[...]}}}`). `PUT /api/ladder-config`.

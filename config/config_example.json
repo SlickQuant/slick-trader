@@ -1,4 +1,5 @@
 {
+  "environment": "Production",
   "log_file_path": "logs/slick_trader.log",
   "log_level": "info",
   "event_queue_size": 16777216,
@@ -15,7 +16,7 @@
       },
       "order": {
         "enabled": true,
-        "rest_url": "http://localhost:4000",
+        "rest_url": "https://api.coinbase.com",
         "websocket_url": "wss://advanced-trade-ws-user.coinbase.com"
       }
     },

@@ -8,6 +8,7 @@
 #include <slick-trader/web/level2_book.hpp>
 #include <slick-trader/web/workspace_store.hpp>
 #include <slick-trader/core/broker_status.hpp>
+#include <slick-trader/core/environment.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
 #include <atomic>
 #include <array>
@@ -69,8 +70,8 @@ public:
         stop();
     }
 
-    // Initialize with configuration
-    bool initialize(const json& config);
+    // Initialize with configuration. `environment` is the config's top-level one, for /api/health.
+    bool initialize(const json& config, std::string_view environment = PRODUCTION_ENVIRONMENT);
 
     // Start web server thread. start() and stop() are for one controlling thread.
     void start();
@@ -298,6 +299,9 @@ private:
 
     // Ladder configuration
     nlohmann::json ladder_config_;
+
+    // /api/health's body: version and environment, made once in initialize().
+    std::string health_json_;
 
     // The dashboard's saved window layouts, in web_server_workspaces_file.
     WorkspaceStore workspaces_;

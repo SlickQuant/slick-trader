@@ -1,5 +1,8 @@
 # Dashboard Windows
 
+Off production, an amber bar on top of every window names the config's `environment` (Sim, Cert,
+NewRelease, ...), and the window title starts with it, as in `[Sim] Ladder`.
+
 ## Main window
 
 - **Toolbar**: opens each tool. The engine's version shows next to the name, and the connection
@@ -30,7 +33,7 @@
   last through a reload and a workspace saves them with the ladder. A new ladder starts on the
   defaults. Auto-center, off at first, keeps the midpoint on the middle row and stops the wheel
   from scrolling. Off, the wheel scrolls and Space or a middle-click centers.
-- Click a level to trade the qty there. The qty starts at the instrument's default: its
+- Left-click a level to trade the qty there. Middle and right clicks don't trade. The qty starts at the instrument's default: its
   `default_qty` in the ladder config, else the smallest order its broker takes, else the config's
   `default_qty`. A qty you type becomes that instrument's default. Until the config loads, the qty box
   is disabled and clicks send nothing.

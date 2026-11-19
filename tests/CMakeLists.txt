@@ -51,6 +51,7 @@ add_executable(slick-trader-tests
     test_spread_fills.cpp
     test_web_server_shutdown.cpp
     test_web_server_http.cpp
+    test_environment.cpp
     # Building blocks under brokers/common, shared by out-of-tree brokers.
     test_broker_state_files.cpp
     test_level_book.cpp

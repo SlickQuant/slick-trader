@@ -28,9 +28,22 @@ export function useCoalesced(fn, ms) {
     }, [ms]);
 }
 
-// Sets document.title while mounted, and as it changes.
+// The window's title: the environment bar's prefix off production, then the view's own.
+let titleBase = document.title;
+let titlePrefix = '';
+const applyTitle = () => { document.title = titlePrefix + titleBase; };
+
+export function setTitle(title) {
+    titleBase = title;
+    applyTitle();
+}
+
+export function setTitlePrefix(prefix) {
+    titlePrefix = prefix;
+    applyTitle();
+}
+
+// Sets the title while mounted, and as it changes.
 export function useTitle(title) {
-    useEffect(() => {
-        document.title = title;
-    }, [title]);
+    useEffect(() => setTitle(title), [title]);
 }

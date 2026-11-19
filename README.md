@@ -11,11 +11,12 @@ crypto exchanges over WebSocket/REST, routes market data and order events throug
 messaging core, runs trading strategies as hot-loadable plugins, and exposes a real-time web
 dashboard for monitoring and manual control.
 
-> **Status**: 0.5.0. The Coinbase and Hyperliquid brokers are built in, and more
+> **Status**: 0.6.0. The Coinbase and Hyperliquid brokers are built in, and more
 > can be built in from their own repositories (see
 > [Brokers and out-of-tree brokers](#brokers-and-out-of-tree-brokers)). Order execution needs
-> broker credentials (see [Broker configuration](#broker-configuration)). The sample config sends
-> Coinbase orders to a local simulator and leaves Hyperliquid order entry disabled.
+> broker credentials (see [Broker configuration](#broker-configuration)). The sample config is
+> production (`"environment": "Production"`): Coinbase market data and orders go to the real
+> exchange, and Hyperliquid order entry is disabled.
 
 ## Features
 
@@ -233,6 +234,10 @@ package for Windows, Linux and macOS: the engine, its strategy plugins under `st
 dashboard under `web/static/`, and `config/config_example.json` pointed at those plugins. Run it
 from the package directory: `./slick-trader config/config_example.json`.
 
+The example trades on real Coinbase. With `COINBASE_API_KEY` / `COINBASE_API_SECRET` set, orders
+from the dashboard or a strategy are live. To try it on a simulator first, see
+[Broker configuration](#broker-configuration).
+
 The engine reads a single JSON config path as its only argument. Copy
 [`config/config_example.json`](config/config_example.json) to `config/config.json` (gitignored —
 only the example is checked in) and adjust it for your environment; on startup it will:
@@ -252,6 +257,7 @@ Top-level keys in `config.json` ([example](config/config_example.json)):
 
 | Key | Purpose |
 |---|---|
+| `environment` | The venue environment, e.g. `Sim`, `Cert`, `NewRelease` (default `Production`). Venues don't report it, so set it to match the endpoints. Anything but `Production`/`Prod` puts an amber bar naming it across every dashboard window. A value that isn't a string stops startup |
 | `log_file_path`, `log_level` | Log output path and verbosity (`trace`/`debug`/`info`/...) |
 | `event_queue_size`, `order_request_queue_size`, `md_request_queue_size` | Lock-free queue capacities (entries). `md_request_queue_size` is per broker |
 | `brokers[]` | Per-broker `{name, enabled, market_data:{...}, order:{...}}` — see below |
@@ -269,8 +275,9 @@ Top-level keys in `config.json` ([example](config/config_example.json)):
   order connector (see [`hyperliquid_order_connector.cpp`](src/brokers/hyperliquid/hyperliquid_order_connector.cpp));
   it is disabled (`order.enabled: false`) in both sample configs until that's configured.
 
-Both brokers' local dev config (`config/config.json`, gitignored) point at `localhost` mock
-endpoints rather than the real exchanges — check that file if you're running against simulators.
+To run against [slick-sim](https://github.com/SlickQuant/slick-sim) instead, set Coinbase
+`order.rest_url` to `http://localhost:4000` and `order.websocket_url` to `ws://localhost:4001`
+(its default ports), and `"environment": "Sim"` so the dashboard shows it isn't production.
 
 ### Positions across restarts
 
@@ -332,7 +339,8 @@ them where they were. If the browser runs on a different Windows PC than the eng
 [scripts/slick-trader-web.bat](scripts/slick-trader-web.bat) on that PC. It lets the dashboard
 open popups and act as a secure origin, and adds a Desktop and Start menu app for it. Its
 click-to-trade ladder uses `slick-ladder`, an `@slickquant` npm package (see
-[package.json](package.json)). The built-in `ManualStrategy` owns manual orders. A ladder lists the instruments brokers define (CME, ICE, Coinbase and Hyperliquid
+[package.json](package.json)), and each ladder's ⚙ sets its own auto-center, volume bars, empty
+rows and row height. The built-in `ManualStrategy` owns manual orders. A ladder lists the instruments brokers define (CME, ICE, Coinbase and Hyperliquid
 publish definitions), and MANUAL subscribes one only while a ladder shows it. MANUAL's config
 narrows the list, for example in `config/manual.config.json`:
 

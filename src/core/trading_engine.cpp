@@ -1,6 +1,7 @@
 #include <slick/logger.hpp>
 #include <slick-trader/core/trading_engine.hpp>
 #include <slick-trader/core/broker_registry.hpp>
+#include <slick-trader/core/environment.hpp>
 #include <slick-trader/web/web_server.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
 #include <slick-trader/brokers/imarket_data_connector.hpp>
@@ -70,6 +71,17 @@ bool TradingEngine::initialize(const std::string& config_path) {
     logger.add_file_sink(log_file);
     logger.set_level(log_level);
     logger.init();
+
+    std::string environment;
+    if (!read_environment(config, environment)) {
+        LOG_ERROR("Config 'environment' must be a string, such as \"Sim\" or \"Production\"");
+        return false;
+    }
+    if (is_production_environment(environment)) {
+        LOG_INFO("Environment: {}", environment);
+    } else {
+        LOG_WARN("Environment: {} (not production)", environment);
+    }
 
 #ifdef SLICK_TRADER_HAS_SLICK_NET
     // Route slick-net logs to slick-logger. The Coinbase and Hyperliquid SDKs use it for networking.
@@ -223,7 +235,7 @@ bool TradingEngine::initialize(const std::string& config_path) {
         LOG_INFO("          Initialize Web Service...");
         LOG_INFO("==================================================");
         web_server_ = std::make_unique<WebServer>(config_path, *strategy_manager_, position_tracker_, pnl_calculator_, risk_manager_, *event_mux_);
-        if (!web_server_->initialize(config["web_service"])) {
+        if (!web_server_->initialize(config["web_service"], environment)) {
             LOG_ERROR("Failed to initialize web server");
             return false;
         }

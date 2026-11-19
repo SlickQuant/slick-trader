@@ -2,7 +2,7 @@
 
 ## Current Status
 
-The web dashboard currently uses the **JavaScript version** of the SlickLadder price ladder component from the `@slickquant/slick-ladder` npm package (v0.4.0).
+The web dashboard currently uses the **JavaScript version** of the SlickLadder price ladder component from the `@slickquant/slick-ladder` npm package (v0.5.0).
 
 ## Why Not WASM?
 

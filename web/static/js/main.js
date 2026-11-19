@@ -3,10 +3,12 @@
 import { html, render, useCallback, useEffect, useState } from './core/html.js';
 import { api, colorClass, formatCurrency } from './core/api.js';
 import { connect, useConnection, useOnConnect, useWs } from './core/connection.js';
+import { useHealth } from './core/health.js';
 import { useInterval } from './core/hooks.js';
 import * as bus from './core/bus.js';
 import { LogRing, formatOrderLog, orderLogLevel } from './core/log.js';
 import { TOOLS, openTool, registerMainWindow } from './core/windows.js';
+import { EnvBar } from './components/env-bar.js';
 import { Icon } from './components/icons.js';
 import { Strategies } from './components/strategies.js';
 import { Workspaces } from './components/workspaces.js';
@@ -54,15 +56,7 @@ function Toolbar() {
         errorsListeners.add(setErrorsState);
         return () => errorsListeners.delete(setErrorsState);
     }, []);
-    // Asked on every connect: the engine that comes back may be a new version.
-    const [version, setVersion] = useState('');
-    useOnConnect(async () => {
-        try {
-            setVersion((await api.getHealth()).version ?? '');
-        } catch {
-            // keeps the last one known
-        }
-    });
+    const version = useHealth()?.version ?? '';
     return html`
         <header class="toolbar">
             <div class="brand">SlickTrader</div>
@@ -152,7 +146,10 @@ function Main() {
 
     return html`
         <div class="main-window">
-            <${Toolbar} />
+            <div class="topbar">
+                <${EnvBar} />
+                <${Toolbar} />
+            </div>
             <main class="summary">
                 <${BrokerStatus} />
                 <${PnlTotals} pnl=${pnl} />

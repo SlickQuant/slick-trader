@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@slickquant/slick-ladder": "^0.4.0",
+    "@slickquant/slick-ladder": "^0.5.0",
     "chart.js": "4.4.1",
     "htm": "3.1.1",
     "preact": "11.0.2"

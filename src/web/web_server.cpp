@@ -86,7 +86,13 @@ std::string_view status_line(int status) {
 
 } // namespace
 
-bool WebServer::initialize(const json& config) {
+bool WebServer::initialize(const json& config, std::string_view environment) {
+    // Set before start() makes the thread that reads it, and never after.
+    health_json_ = json{{"status", "ok"},
+                        {"version", SLICK_TRADER_VERSION},
+                        {"environment", environment},
+                        {"production", is_production_environment(environment)}}.dump();
+
     config_.port = config.value("web_server_port", 8080);
     config_.enable_cors = config.value("web_server_cors", true);
     config_.static_files_path = config.value("web_server_static_path", "web/static");
@@ -293,8 +299,7 @@ void WebServer::close_connections() {
 void WebServer::setup_routes(uWS::App &app) {
     // Health check
     app.get("/api/health", [this](auto* res, auto* req) {
-        static const std::string health = R"({"status":"ok","version":")" SLICK_TRADER_VERSION R"("})";
-        send_json_response(res, health);
+        send_json_response(res, health_json_);
     });
 
     // Broker status

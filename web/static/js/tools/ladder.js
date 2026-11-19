@@ -131,7 +131,13 @@ export class LadderView {
             showOrderCount: false,
             minQuantityThreshold: 0.0001,
             colors: COLORS,
-            onLevelClick: (price, side) => this.onLevelClick(instrument, price === null ? null : cleanPrice(price), side),
+            // Only a left click trades. Middle (re-center) and right clicks reach here too since
+            // 0.5.0, and returning nothing leaves the middle-click re-center to the ladder.
+            onLevelClick: (price, side, button) => {
+                if (button === SlickLadder.ClickButton.Left) {
+                    this.onLevelClick(instrument, price === null ? null : cleanPrice(price), side);
+                }
+            },
         });
         keepEmptyRowPrices(this.ladder.renderer);
         this.restoreOwnOrders();

@@ -47,7 +47,8 @@ protected:
         ASSERT_TRUE(server_.initialize(nlohmann::json{{"web_server_port", port_},
                                                       {"web_server_static_path", static_dir_.string()},
                                                       {"web_server_ladder_release_ms", release_ms_},
-                                                      {"web_server_workspaces_file", (static_dir_ / "workspaces.json").string()}}));
+                                                      {"web_server_workspaces_file", (static_dir_ / "workspaces.json").string()}},
+                                       environment_));
         server_.start();
         ASSERT_TRUE(wait_until_listening());
     }
@@ -158,6 +159,7 @@ protected:
 
     uint16_t port_ = 0;
     uint64_t release_ms_ = 50;   // web_server_ladder_release_ms
+    std::string environment_{PRODUCTION_ENVIRONMENT};   // the config's top-level "environment"
     std::filesystem::path static_dir_ = std::filesystem::temp_directory_path() /
         ("slick-trader-http-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     test::StrategyManagerFixture env_;
@@ -339,7 +341,28 @@ TEST_F(WebServerHttpTest, HealthNamesTheVersion) {
     RawClient client(port_);
     ASSERT_TRUE(client.get("/api/health", "HTTP/1.1 200")) << client.head();
     EXPECT_EQ(nlohmann::json::parse(client.body()),
-              (nlohmann::json{{"status", "ok"}, {"version", SLICK_TRADER_VERSION}}));
+              (nlohmann::json{{"status", "ok"},
+                              {"version", SLICK_TRADER_VERSION},
+                              {"environment", "Production"},
+                              {"production", true}}));
+}
+
+namespace {
+
+class WebServerSimTest : public WebServerHttpTest {
+protected:
+    WebServerSimTest() { environment_ = "Sim"; }
+};
+
+} // namespace
+
+// Off production, every dashboard window shows a bar naming the environment, read from /api/health.
+TEST_F(WebServerSimTest, HealthNamesAnEnvironmentThatIsNotProduction) {
+    RawClient client(port_);
+    ASSERT_TRUE(client.get("/api/health", "HTTP/1.1 200")) << client.head();
+    const auto health = nlohmann::json::parse(client.body());
+    EXPECT_EQ(health.value("environment", ""), "Sim");
+    EXPECT_EQ(health.value("production", true), false);
 }
 
 // The dashboard saves, lists, opens and deletes workspaces by name, and each change reaches the file.

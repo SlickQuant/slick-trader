@@ -1,8 +1,10 @@
-// The shell every tool window runs: tool.html?t=<tool>. It mounts that tool, and nothing else,
-// over the whole window, with a socket of its own.
+// The shell every tool window runs: tool.html?t=<tool>. It mounts that tool over the whole window,
+// under the environment bar off production, with a socket of its own.
 import { html, render } from './core/html.js';
 import { connect } from './core/connection.js';
+import { setTitle } from './core/hooks.js';
 import { TOOLS, registerToolWindow } from './core/windows.js';
+import { EnvBar } from './components/env-bar.js';
 
 // Only these: the name in the URL never becomes an import path.
 const REGISTRY = {
@@ -22,9 +24,9 @@ const app = document.getElementById('app');
 if (!Object.hasOwn(REGISTRY, tool)) {
     app.innerHTML = '<div class="tool-note">Unknown tool</div>';
 } else {
-    document.title = TOOLS[tool].title;
+    setTitle(TOOLS[tool].title);
     registerToolWindow(tool);
     const { default: Tool } = await REGISTRY[tool]();
-    render(html`<${Tool} params=${params} />`, app);
+    render(html`<div class="tool-shell"><${EnvBar} /><${Tool} params=${params} /></div>`, app);
     connect();
 }
