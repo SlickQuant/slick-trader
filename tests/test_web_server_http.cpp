@@ -100,6 +100,50 @@ protected:
         return message.is_object() && message.value("type", "") == "pong";
     }
 
+    // BROKER's ack of a ZNZ6 buy. With no `cid`, it names the order by `oid` alone.
+    void publish_ack(const std::string& cid, const std::string& oid, OrderStatus status, double price, double quantity) {
+        EventSerializer::publish<OrderAckEvent>(*producer_, [&](OrderAckEvent& event) {
+            event.broker_id = BROKER;
+            event.set_instrument("ZNZ6");
+            event.set_client_order_id(cid.c_str());
+            event.set_order_id(oid.c_str());
+            event.side = Side::BUY;
+            event.price = to_price_t(price);
+            event.quantity = to_qty_t(quantity);
+            event.status = status;
+        });
+    }
+
+    // The order_update messages `browser` is sent: `count` of them, then any more before a ping's
+    // pong. The server reads the bus in order, so what was published ahead of the last one counted
+    // has been read.
+    static std::vector<nlohmann::json> order_updates(RawClient& browser, size_t count) {
+        std::vector<nlohmann::json> sent;
+        while (sent.size() < count) {
+            const auto message = next(browser);
+            if (!message.is_object()) {
+                break;
+            }
+            if (message["type"] == "order_update") {
+                sent.push_back(message);
+            }
+        }
+        EXPECT_TRUE(browser.send_text(R"({"type":"ping"})"));
+        for (auto message = next(browser); message.is_object() && message["type"] != "pong"; message = next(browser)) {
+            if (message["type"] == "order_update") {
+                sent.push_back(message);
+            }
+        }
+        return sent;
+    }
+
+    // What /api/orders lists.
+    nlohmann::json open_orders() const {
+        RawClient client(port_);
+        EXPECT_TRUE(client.get("/api/orders", "HTTP/1.1 200 OK\r\n")) << client.head();
+        return nlohmann::json::parse(client.body());
+    }
+
     // The next hold or release the server put on the bus within `timeout`, read from `cursor_`.
     std::optional<LadderSubscriptionEvent> next_ladder_event(std::chrono::milliseconds timeout) {
         for (const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -453,6 +497,94 @@ TEST_F(WebServerHttpTest, AFillIsListedAndBroadcastWithItsSeq) {
     RawClient client(port_);
     ASSERT_TRUE(client.get("/api/fills", "HTTP/1.1 200 OK\r\n")) << client.head();
     EXPECT_EQ(nlohmann::json::parse(client.body()), nlohmann::json::array({sent}));
+}
+
+// A broker repeating itself reached every Log window: a pending ack again with qty 0, an open ack
+// with qty 0, and a cancel per report, each after the first as "CANCELLED 0@0". A cancel asked for
+// here went out at once too, as "CANCELLED @", and dropped the order, so the broker's cancels that
+// followed had nothing to name it with. What a browser gets now is one message per change, each
+// with the order's price and qty.
+TEST_F(WebServerHttpTest, AnOrderUpdateGoesOutOncePerChange) {
+    RawClient browser(port_);
+    ASSERT_TRUE(browser.upgrade());
+    EXPECT_EQ(next(browser)["type"], "welcome");
+
+    const auto ack = [&](const char* id, OrderStatus status, double quantity) {
+        publish_ack(std::string("MANUAL_") + id, std::string("OID") + id, status, 110.5, quantity);
+    };
+    const auto cancel = [&] {
+        EventSerializer::publish<OrderCancelEvent>(*producer_, [](OrderCancelEvent& cancel) {
+            cancel.broker_id = BROKER;
+            cancel.set_order_id("OID1");
+            cancel.set_client_order_id("MANUAL_1");
+        });
+    };
+    const auto updates = [&](size_t count) { return order_updates(browser, count); };
+
+    ack("1", OrderStatus::PENDING_NEW, 2.0);
+    ack("1", OrderStatus::PENDING_NEW, 0.0);
+    ack("1", OrderStatus::ACKNOWLEDGED, 0.0);
+    auto sent = updates(2);
+    ASSERT_EQ(sent.size(), 2u) << nlohmann::json(sent).dump();
+    EXPECT_EQ(sent[0]["status"], "PENDING_NEW");
+    EXPECT_EQ(sent[0]["qty"], 2.0);
+    EXPECT_EQ(sent[1]["status"], "ACKNOWLEDGED");
+    EXPECT_EQ(sent[1]["qty"], 2.0) << "an ack's unknown qty goes out as the one known";
+    EXPECT_EQ(sent[1]["price"], 110.5);
+
+    // Asked to cancel: nothing goes out, and the order stays listed, until the broker says.
+    {
+        RawClient client(port_);
+        ASSERT_TRUE(client.del("/api/orders/MANUAL/OID1", R"({"client_order_id":"MANUAL_1"})", "HTTP/1.1 202"))
+            << client.body();
+    }
+    EXPECT_TRUE(updates(0).empty());
+    auto orders = open_orders();
+    ASSERT_EQ(orders.size(), 1u) << orders.dump();
+    EXPECT_EQ(orders[0]["status"], "ACKNOWLEDGED");
+
+    // The broker's cancel three times, then another order's ack to show they were all read.
+    cancel();
+    cancel();
+    cancel();
+    ack("2", OrderStatus::ACKNOWLEDGED, 1.0);
+    sent = updates(2);
+    ASSERT_EQ(sent.size(), 2u) << nlohmann::json(sent).dump();
+    EXPECT_EQ(sent[0]["event"], "cancel");
+    EXPECT_EQ(sent[0]["instrument"], "ZNZ6");
+    EXPECT_EQ(sent[0]["side"], "buy");
+    EXPECT_EQ(sent[0]["price"], 110.5);
+    EXPECT_EQ(sent[0]["qty"], 2.0);
+    EXPECT_EQ(sent[1]["order_id"], "OID2");
+    orders = open_orders();
+    ASSERT_EQ(orders.size(), 1u) << orders.dump();
+    EXPECT_EQ(orders[0]["order_id"], "OID2");
+}
+
+// Coinbase's open ack can come without the client_order_id. It was dropped as noise, so an order
+// its REST response had acked pending stayed pending in /api/orders. Its order_id names it now.
+TEST_F(WebServerHttpTest, AnAckWithoutAClientOrderIdUpdatesItsOrder) {
+    RawClient browser(port_);
+    ASSERT_TRUE(browser.upgrade());
+    EXPECT_EQ(next(browser)["type"], "welcome");
+
+    publish_ack("MANUAL_1", "OID1", OrderStatus::PENDING_NEW, 110.5, 2.0);
+    publish_ack("", "OID1", OrderStatus::ACKNOWLEDGED, 0.0, 0.0);
+    publish_ack("", "OID9", OrderStatus::ACKNOWLEDGED, 110.5, 1.0);   // no order here: dropped
+    publish_ack("MANUAL_2", "OID2", OrderStatus::ACKNOWLEDGED, 110.5, 1.0);   // shows the rest were read
+    const auto sent = order_updates(browser, 3);
+    ASSERT_EQ(sent.size(), 3u) << nlohmann::json(sent).dump();
+    EXPECT_EQ(sent[1]["order_id"], "OID1");
+    EXPECT_EQ(sent[1]["status"], "ACKNOWLEDGED");
+    EXPECT_EQ(sent[1]["price"], 110.5);
+    EXPECT_EQ(sent[1]["qty"], 2.0);
+    EXPECT_EQ(sent[2]["order_id"], "OID2");
+
+    const auto orders = open_orders();
+    ASSERT_EQ(orders.size(), 2u) << orders.dump();
+    for (const auto& order : orders) {
+        EXPECT_EQ(order["status"], "ACKNOWLEDGED") << order.dump();
+    }
 }
 
 // uWS drops a message for a client too far behind, and what send() said went unread: that

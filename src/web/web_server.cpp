@@ -1370,22 +1370,9 @@ void WebServer::handle_delete_order(uWS::HttpResponse<false>* res, uWS::HttpRequ
 
         reinterpret_pointer_cast<StrategyBase>(strategy)->cancel_order(order_id, client_order_id);
 
-        // Optimistically remove from WebServer-side tracking; ORDER_CANCEL event will confirm
-        auto it = open_orders_.find(client_order_id);
-        if (it != open_orders_.end()) {
-            if (!it->second.order_id.empty()) oid_to_cid_.erase(it->second.order_id);
-            open_orders_.erase(it);
-        }
-
-        // Notify WebSocket clients immediately so the UI updates without waiting for the event
-        {
-            json msg;
-            msg["type"]             = "order_update";
-            msg["event"]            = "cancel";
-            msg["order_id"]         = order_id;
-            msg["client_order_id"]  = client_order_id;
-            broadcast_order_update(msg.dump());
-        }
+        // The order stays tracked until the broker's ORDER_CANCEL says it's gone: a cancel can be
+        // refused, or fail on the way, and leave it live. That event tells the UI, with the
+        // order's details, which went missing when it came after the order was dropped here.
 
         LOG_INFO("WebServer: Cancel order {} for strategy {}", order_id, strategy_id);
         send_json_response(res, R"({"success":true,"message":"Cancel request submitted"})", 202);
@@ -1453,9 +1440,7 @@ void WebServer::handle_delete_all_orders(uWS::HttpResponse<false>* res, uWS::Htt
             ++strategy_count;
         }
 
-        // Clear WebServer-side tracking optimistically
-        open_orders_.clear();
-        oid_to_cid_.clear();
+        // Each order stays tracked until its ORDER_CANCEL, as for one cancel.
 
         LOG_INFO("WebServer: Cancel all orders across {} strategies", strategy_count);
         json response = {
@@ -1682,66 +1667,80 @@ void WebServer::handle_order_ack(const OrderAckEvent& ack) {
     std::string cid(ack.client_order_id);
     std::string oid(ack.order_id);
 
-    // Update WebServer-side tracking.
-    // Only use ACKs with a valid client_order_id to avoid the empty-cid
-    // second ACK from the Coinbase WebSocket callback overwriting our map.
-    if (!cid.empty()) {
-        auto it = open_orders_.find(cid);
-        if (it != open_orders_.end()) {
-            // Update existing entry — covers both initial new-order ACK and modify-ack
-            if (!oid.empty()) {
-                it->second.order_id = oid;
-                oid_to_cid_[oid]    = cid;
-            }
-            it->second.status           = "ACKNOWLEDGED";
-            it->second.last_update_time = ack.timestamp_ns;
-            if (ack.price != NULL_PRICE && ack.price != 0) {
-                it->second.price = from_price_t(ack.price);
-            }
-            if (ack.quantity != 0) {
-                it->second.qty           = from_qty_t(ack.quantity);
-                it->second.remaining_qty = from_qty_t(ack.quantity);
-            }
-        } else if (!oid.empty()) {
-            // Algo-submitted order: not yet in open_orders_ — create entry now.
-            // We can derive strategy from client_order_id prefix (name_<timestamp>)
-            std::string strategy_id;
-            auto sep = cid.rfind('_');
-            if (sep != std::string::npos) strategy_id = cid.substr(0, sep);
-
-            TrackedOrder t;
-            t.strategy_id      = strategy_id;
-            t.client_order_id  = cid;
-            t.order_id         = oid;
-            t.instrument       = std::string(ack.instrument);
-            t.side             = (ack.side == Side::BUY) ? "buy" : "sell";
-            t.type             = static_cast<int>(ack.order_type);
-            t.price            = (ack.price != NULL_PRICE) ? from_price_t(ack.price) : 0.0;
-            t.qty              = from_qty_t(ack.quantity);
-            t.remaining_qty    = from_qty_t(ack.quantity);
-            t.status           = "ACKNOWLEDGED";
-            t.created_time     = ack.timestamp_ns;
-            t.last_update_time = ack.timestamp_ns;
-            open_orders_[cid]  = std::move(t);
-            oid_to_cid_[oid]   = cid;
+    // An ack can come without its client_order_id, as Coinbase's OPEN can: its order_id names the
+    // order. One that names no order here is kept off the map and the UI.
+    if (cid.empty()) {
+        const auto cid_it = oid_to_cid_.find(oid);
+        if (cid_it == oid_to_cid_.end()) {
+            return;
         }
+        cid = cid_it->second;
     }
 
-    // Only broadcast ACKs with a valid client_order_id.
-    // The Coinbase WebSocket sends a second ACK (OPEN status) with empty client_order_id
-    // and price=0 — that's exchange noise and should not be forwarded to the UI.
-    if (!cid.empty()) {
-        json msg;
-        msg["type"]       = "order_update";
-        msg["event"]      = "ack";
-        msg["order_id"]   = oid;
-        msg["instrument"] = std::string(ack.instrument);
-        msg["side"]       = (ack.side == Side::BUY) ? "buy" : "sell";
-        msg["price"]      = from_price_t(ack.price);
-        msg["qty"]        = from_qty_t(ack.quantity);
-        msg["status"]     = std::string(to_string(ack.status));
-        broadcast_order_update(msg.dump());
+    // A price or qty of 0 (or NULL_PRICE) is one the ack didn't know: the tracked one stands, and
+    // goes out. An ack that changes nothing tracked, a broker repeating itself, goes out not at all.
+    const bool has_price = ack.price != NULL_PRICE && ack.price != 0;
+    const std::string status(to_string(ack.status));
+    double price = has_price ? from_price_t(ack.price) : 0.0;
+    double qty   = from_qty_t(ack.quantity);
+    auto it = open_orders_.find(cid);
+    if (it != open_orders_.end()) {
+        // Update existing entry — covers both initial new-order ACK and modify-ack
+        auto& t = it->second;
+        const bool changed = (!oid.empty() && t.order_id != oid) || t.status != status ||
+                             (has_price && t.price != price) || (ack.quantity != 0 && t.qty != qty);
+        if (!oid.empty()) {
+            t.order_id       = oid;
+            oid_to_cid_[oid] = cid;
+        }
+        t.status           = status;
+        t.last_update_time = ack.timestamp_ns;
+        if (has_price) {
+            t.price = price;
+        }
+        if (ack.quantity != 0) {
+            t.qty           = qty;
+            t.remaining_qty = qty;
+        }
+        if (!changed) {
+            return;
+        }
+        price = t.price;
+        qty   = t.qty;
+    } else if (!oid.empty()) {
+        // Algo-submitted order: not yet in open_orders_ — create entry now.
+        // We can derive strategy from client_order_id prefix (name_<timestamp>)
+        std::string strategy_id;
+        auto sep = cid.rfind('_');
+        if (sep != std::string::npos) strategy_id = cid.substr(0, sep);
+
+        TrackedOrder t;
+        t.strategy_id      = strategy_id;
+        t.client_order_id  = cid;
+        t.order_id         = oid;
+        t.instrument       = std::string(ack.instrument);
+        t.side             = (ack.side == Side::BUY) ? "buy" : "sell";
+        t.type             = static_cast<int>(ack.order_type);
+        t.price            = price;
+        t.qty              = qty;
+        t.remaining_qty    = qty;
+        t.status           = status;
+        t.created_time     = ack.timestamp_ns;
+        t.last_update_time = ack.timestamp_ns;
+        open_orders_[cid]  = std::move(t);
+        oid_to_cid_[oid]   = cid;
     }
+
+    json msg;
+    msg["type"]       = "order_update";
+    msg["event"]      = "ack";
+    msg["order_id"]   = oid;
+    msg["instrument"] = std::string(ack.instrument);
+    msg["side"]       = (ack.side == Side::BUY) ? "buy" : "sell";
+    msg["price"]      = price;
+    msg["qty"]        = qty;
+    msg["status"]     = status;
+    broadcast_order_update(msg.dump());
 }
 
 void WebServer::handle_order_fill(const OrderFillEvent& fill) {
@@ -1828,6 +1827,7 @@ void WebServer::handle_order_cancel(const OrderCancelEvent& cancel) {
     // Capture tracked order fields before erasure
     std::string instrument, side;
     double price = 0.0, qty = 0.0;
+    bool tracked = false;
 
     auto cid_it = oid_to_cid_.find(oid);
     if (cid_it != oid_to_cid_.end()) {
@@ -1838,8 +1838,14 @@ void WebServer::handle_order_cancel(const OrderCancelEvent& cancel) {
             price      = it->second.price;
             qty        = it->second.qty;
             open_orders_.erase(it);
+            tracked = true;
         }
         oid_to_cid_.erase(cid_it);
+    }
+    // One gone already, as a broker repeating the cancel says: nothing on any window to take off.
+    if (!tracked) {
+        LOG_DEBUG("WebServer: cancel of order {}, not open here - not sent on", oid);
+        return;
     }
 
     json msg;

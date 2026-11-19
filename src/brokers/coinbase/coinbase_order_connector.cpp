@@ -245,6 +245,13 @@ void CoinbaseOrderConnector::handle_order_request(const NewOrderEvent& request) 
             LOG_INFO("Order submitted successfully: order_id={}, client_order_id={}",
                         response.success_response.order_id,
                         response.success_response.client_order_id);
+            // The user channel's pending update can beat this response here, saying the same.
+            price_t price = request.price;
+            price_t stop_price = request.stop_price;
+            qty_t quantity = request.quantity;
+            if (!order_states_.ack(response.success_response.order_id, OrderStatus::PENDING_NEW, price, stop_price, quantity)) {
+                return;
+            }
             EventSerializer::publish<OrderAckEvent>(*event_buffer_, [&request, &response](OrderAckEvent &event) {
                 event.type = EventType::ORDER_ACK;
                 event.broker_id = BrokerId::COINBASE;
@@ -330,6 +337,13 @@ void CoinbaseOrderConnector::handle_modify_request(const ModifyOrderEvent& reque
 
         if (response.success) {
             LOG_INFO("Order modified successfully: order_id={}", request.order_id);
+            // A stop of NULL_PRICE is one the modify left alone: the ack names the one known.
+            price_t price = request.new_price;
+            price_t stop_price = request.new_stop_price;
+            qty_t quantity = request.new_quantity;
+            if (!order_states_.ack(std::string(request.order_id), OrderStatus::ACKNOWLEDGED, price, stop_price, quantity)) {
+                return;
+            }
             EventSerializer::publish<OrderAckEvent>(*event_buffer_, [&](OrderAckEvent& ev) {
                 ev.type          = EventType::ORDER_ACK;
                 ev.broker_id     = BrokerId::COINBASE;
@@ -338,9 +352,9 @@ void CoinbaseOrderConnector::handle_modify_request(const ModifyOrderEvent& reque
                 ev.set_client_order_id(request.client_order_id);
                 ev.set_order_id(request.order_id);
                 ev.side          = request.side;
-                ev.price         = request.new_price;
-                ev.stop_price    = request.new_stop_price;
-                ev.quantity      = request.new_quantity;
+                ev.price         = price;
+                ev.stop_price    = stop_price;
+                ev.quantity      = quantity;
                 ev.time_in_force = request.new_time_in_force;
                 ev.post_only     = request.new_post_only;
                 ev.status        = OrderStatus::ACKNOWLEDGED;
@@ -376,18 +390,26 @@ void CoinbaseOrderConnector::handle_cancel_request(const CancelOrderEvent& reque
     try {
         auto responses = rest_client_->cancel_orders({ request.order_id });
 
+        const std::string order_id(request.order_id);
         for (const auto& response : responses) {
             if (response.success) {
                 LOG_INFO("Order cancelled successfully: order_id={}", response.order_id);
-                publish_cancel("CANCELLED");
+                // The user channel says it too, once or more: whichever comes first goes out.
+                if (order_states_.end(order_id)) {
+                    publish_cancel("CANCELLED");
+                }
             } else {
                 LOG_ERROR("Order cancellation failed: order_id={}, reason={}",
                           response.order_id, response.failure_reason);
                 // Coinbase responded but says the order is gone (filled, expired, not found).
-                // Publish a cancel event so WebServer & strategy remove the order locally.
+                // Publish a cancel event so WebServer & strategy remove the order locally,
+                // unless the user channel already said it ended.
                 // Note: we do NOT publish on network/parse exceptions since the order may still
-                // be live on the exchange in that case.
-                publish_cancel(response.failure_reason);
+                // be live on the exchange in that case. Nor is it marked ended: a refused cancel
+                // can leave it live, and its updates must still come through.
+                if (!order_states_.ended(order_id)) {
+                    publish_cancel(response.failure_reason);
+                }
             }
         }
     } catch (const std::exception& e) {
@@ -459,11 +481,15 @@ void CoinbaseOrderConnector::process_order_update(const coinbase::Order& order) 
         case coinbase::OrderStatus::FILLED:
             publish_order_fill(order);
             fill_states_.erase(order.order_id);
+            order_states_.end(order.order_id);   // no cancel or ack of it after
             break;
         case coinbase::OrderStatus::CANCELLED:
         case coinbase::OrderStatus::EXPIRED:
             LOG_INFO("{} Order {} cancelled/expired", order.product_id, order.order_id);
-            publish_order_cancel(order);
+            // Coinbase can send it twice, and the cancel's REST response may have said it already.
+            if (order_states_.end(order.order_id)) {
+                publish_order_cancel(order);
+            }
             fill_states_.erase(order.order_id);
             break;
         case coinbase::OrderStatus::CANCEL_QUEUED:
@@ -482,9 +508,11 @@ void CoinbaseOrderConnector::process_order_update(const coinbase::Order& order) 
 }
 
 void CoinbaseOrderConnector::publish_order_ack(const coinbase::Order& order) {
-    double price = 0.0;
+    double price = order.limit_price;
     double stop_price = 0.0;
-    double quantity = 0.0;
+    // The user channel builds an order configuration with no base size: what is filled and
+    // what is left make the qty.
+    double quantity = order.cumulative_quantity + order.leaves_quantity;
 
     if (order.order_configuration.limit_limit_gtc.has_value()) {
         price = order.order_configuration.limit_limit_gtc->limit_price;
@@ -497,12 +525,16 @@ void CoinbaseOrderConnector::publish_order_ack(const coinbase::Order& order) {
         if (order.order_configuration.stop_limit_stop_limit_gtc->base_size.has_value()) {
             quantity = order.order_configuration.stop_limit_stop_limit_gtc->base_size.value();
         }
-    } else {
-        price = order.limit_price;
-        quantity = order.cumulative_quantity + order.leaves_quantity;
     }
 
-    EventSerializer::publish<OrderAckEvent>(*event_buffer_, [this, &order, price, stop_price, quantity](OrderAckEvent& event) {
+    price_t event_price = to_price_t(price);
+    price_t event_stop_price = to_price_t(stop_price);
+    qty_t event_quantity = to_qty_t(quantity);
+    if (!order_states_.ack(order.order_id, map_order_status(order.status), event_price, event_stop_price, event_quantity)) {
+        return;   // said already, by the REST response or an earlier update
+    }
+
+    EventSerializer::publish<OrderAckEvent>(*event_buffer_, [this, &order, event_price, event_stop_price, event_quantity](OrderAckEvent& event) {
         event.type = EventType::ORDER_ACK;
         event.broker_id = BrokerId::COINBASE;
         event.timestamp_ns = get_timestamp_ns();
@@ -511,9 +543,9 @@ void CoinbaseOrderConnector::publish_order_ack(const coinbase::Order& order) {
         event.set_order_id(order.order_id);
         event.set_client_order_id(order.client_order_id);
         event.side = static_cast<Side>(order.side);
-        event.price = to_price_t(price);
-        event.stop_price = to_price_t(stop_price);
-        event.quantity = to_qty_t(quantity);
+        event.price = event_price;
+        event.stop_price = event_stop_price;
+        event.quantity = event_quantity;
         event.order_type = static_cast<OrderType>(order.order_type);
         event.status = map_order_status(order.status);
     });

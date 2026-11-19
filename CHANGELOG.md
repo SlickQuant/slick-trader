@@ -7,6 +7,20 @@
   double-click can't send. "Confirm orders" in the ladder's ⚙ turns it off for that ladder, saved
   like its other settings. It's on for a new ladder and for one saved before it existed.
 
+## Fixed
+
+- Coinbase acked a new order up to three times (the REST response, then the user channel's
+  pending and open updates) and reported a cancel up to three times. The channel's acks also
+  had qty 0, since it gives no base size, and that set a strategy's own record of the order to 0.
+  Each ack and cancel now goes out once per change of status, price, stop or qty, with the
+  order's qty.
+- A cancel asked for from the dashboard went to every window at once as `CANCELLED @` and dropped
+  the order, so the broker's own cancel came after it as `CANCELLED 0@0`. An order now stays
+  listed until its broker says it's cancelled, after Cancel all too. The Log shows each change
+  once, and an ack's status is the broker's (`PENDING_NEW` until the order opens), not always
+  `ACKNOWLEDGED`. An ack without a client order ID, as Coinbase's open can be, finds its order by
+  order ID.
+
 # v0.6.0 - 11-18-2026
 
 ## Added

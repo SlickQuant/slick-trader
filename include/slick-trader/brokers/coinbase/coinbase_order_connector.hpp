@@ -1,5 +1,6 @@
 #pragma once
 
+#include <slick-trader/brokers/coinbase/coinbase_order_states.hpp>
 #include <slick-trader/brokers/iorder_connector.hpp>
 #include <slick-trader/utils/order_types.hpp>
 #include <slick/stream_buffer_multiplexer.hpp>
@@ -114,6 +115,7 @@ private:
     };
 
     std::unordered_map<std::string, FillState> fill_states_;  // keyed by order_id
+    CoinbaseOrderStates order_states_;   // so each ack and cancel goes out once
 };
 
 } // namespace slick::trader
