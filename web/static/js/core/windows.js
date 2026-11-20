@@ -25,6 +25,7 @@ const CLOSE_TRIES = 6;
 const CLOSE_GRACE_MS = 100;   // a window gone quiet may still hold its name a moment
 const MAIN_CHECKS = 8;
 const MAIN_CHECK_MS = 250;    // a main window says it goes before it shows as closed
+const MAIN_POLL_MS = 1000;    // how often a tool window looks for one that can't say so
 
 const geometryKey = (name) => `st.win.${name}`;
 
@@ -193,16 +194,18 @@ export function registerToolWindow(tool) {
     on('layout-query', ({ id }) => post('layout-report', { id, window: { name, tool, ...geometry(), params: windowParams } }));
     on('workspace-close', () => window.close());
     // It closes with the main window that opened it. A reload says it goes too, but keeps the window.
+    // A main window on the browser's error page, as when it reloaded while the engine was down, runs
+    // nothing to say it goes: it is looked at each second too.
     const main = window.opener;
     if (main) {
+        const closeWithMain = () => main.closed && window.close();
         on('main-closing', async () => {
             for (let i = 0; i < MAIN_CHECKS && !main.closed; ++i) {
                 await settle(MAIN_CHECK_MS);
             }
-            if (main.closed) {
-                window.close();
-            }
+            closeWithMain();
         });
+        setInterval(closeWithMain, MAIN_POLL_MS);
     }
 }
 

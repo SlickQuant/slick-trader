@@ -20,6 +20,9 @@
   once, and an ack's status is the broker's (`PENDING_NEW` until the order opens), not always
   `ACKNOWLEDGED`. An ack without a client order ID, as Coinbase's open can be, finds its order by
   order ID.
+- Closing the main window left its tool windows open when the main window was on the browser's
+  error page, as after a reload while the engine was down: that page runs nothing to tell them.
+  Tool windows now also check each second whether the main window is still open.
 
 # v0.6.0 - 11-18-2026
 
