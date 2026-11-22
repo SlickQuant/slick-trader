@@ -337,7 +337,8 @@ The dashboard is a toolbar that opens each tool (ladder, order ticket, orders, f
 P&L, log) in a popup window of its own. It saves the open windows as named workspaces and reopens
 them where they were. If the browser runs on a different Windows PC than the engine, run
 [scripts/slick-trader-web.bat](scripts/slick-trader-web.bat) on that PC. It lets the dashboard
-open popups and act as a secure origin, and adds a Desktop and Start menu app for it. Its
+open popups and act as a secure origin, and adds a Desktop and Start menu app for it whose windows
+come to the front together. On the engine's PC, run it with `localhost` for the app. Its
 click-to-trade ladder uses `slick-ladder`, an `@slickquant` npm package (see
 [package.json](package.json)), and each ladder's ⚙ sets its own order confirmation (on by
 default), auto-center, volume bars, empty rows and row height. The built-in `ManualStrategy` owns manual orders. A ladder lists the instruments brokers define (CME, ICE, Coinbase and Hyperliquid

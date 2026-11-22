@@ -16,7 +16,8 @@ export const TOOLS = {
 };
 
 const MAX_LADDERS = 64;
-const opened = new Map();   // window name -> the window this one opened by it
+const MAIN_NAME = 'st-main';
+const opened = new Map();   // window name -> the window this one opened by it, or one that said it is open
 const BLOCKED = Symbol('blocked');
 
 // How long tool windows get to say where they are, and how often closeTools() asks again.
@@ -26,6 +27,7 @@ const CLOSE_GRACE_MS = 100;   // a window gone quiet may still hold its name a m
 const MAIN_CHECKS = 8;
 const MAIN_CHECK_MS = 250;    // a main window says it goes before it shows as closed
 const MAIN_POLL_MS = 1000;    // how often a tool window looks for one that can't say so
+const SWITCH_MS = 500;        // a focus this close to another window's blur came from inside the dashboard
 
 const geometryKey = (name) => `st.win.${name}`;
 
@@ -206,6 +208,17 @@ export function registerToolWindow(tool) {
             closeWithMain();
         });
         setInterval(closeWithMain, MAIN_POLL_MS);
+        // The main window keeps every tool window, for one raising the rest. A reload forgets them.
+        const join = () => {
+            try {
+                main.stTools?.set(name, window);
+            } catch {
+                // the main window on another page, as the browser's error one
+            }
+        };
+        join();
+        on('main-ready', join);
+        raiseTogether(main);
     }
 }
 
@@ -213,8 +226,91 @@ export function registerToolWindow(tool) {
 // with it.
 export function registerMainWindow() {
     startDashboard();
+    window.name = MAIN_NAME;
+    window.stTools = opened;
+    window.stGrouped = new URLSearchParams(location.search).has('grouped');
     window.addEventListener('pagehide', () => post('main-closing'));
     knowScreens(false);   // a window the toolbar opens goes back on the screen it was on
+    raiseTogether(window);
+}
+
+// A window brought forward from another app brings the rest of the dashboard along. A page may
+// raise windows only on a user's input: the first click or key in it, once done, so a click still
+// lands. Moving between the dashboard's own windows raises none: one's focus comes with another's blur.
+function raiseTogether(main) {
+    const frame = document.createElement('iframe');
+    frame.hidden = true;
+    document.body.append(frame);
+    let focusAt = 0;
+    let awayAt = 0;   // when another of the dashboard's windows last lost focus, or this one raised them
+    on('window-away', ({ at }) => {
+        awayAt = Math.max(awayAt, at);
+    });
+    window.addEventListener('focus', () => {
+        focusAt = Date.now();
+    });
+    window.addEventListener('blur', () => {
+        focusAt = 0;
+        post('window-away', { at: Date.now() });
+    });
+    const input = () => {
+        if (!focusAt || Math.abs(focusAt - awayAt) < SWITCH_MS || navigator.userActivation?.isActive === false) {
+            return;
+        }
+        focusAt = 0;
+        awayAt = Date.now();
+        post('window-away', { at: awayAt });
+        raise(main, frame.contentWindow);
+    };
+    window.addEventListener('pointerup', input, true);
+    window.addEventListener('keyup', input, true);
+}
+
+// `name` while `win` is open under it on a dashboard page, else '': opening a name no window holds
+// opens a blank one.
+function nameOf(win, name) {
+    try {
+        return !win.closed && win.name === name ? name : '';
+    } catch {
+        return '';   // on the browser's error page
+    }
+}
+
+// Raises the dashboard's other windows by name, then this one. A window opened by name takes the
+// caller for its opener, so each gets the main window back. None may raise itself, but its hidden
+// frame shares the input, and may once it is the window's opener. The app slick-trader-web.bat
+// adds opens the main window `?grouped`: it keeps them together itself, on any way to the front.
+function raise(main, frame) {
+    const own = main === window;
+    let tools;
+    try {
+        if (main.stGrouped) {
+            return;
+        }
+        tools = [...main.stTools].map(([name, win]) => (name === window.name ? '' : nameOf(win, name))).filter(Boolean);
+    } catch {
+        return;   // no main window, or one on the browser's error page
+    }
+    if (!nameOf(main, MAIN_NAME) || (own && !tools.length)) {
+        return;
+    }
+    for (const name of tools) {
+        window.open('', name);
+    }
+    if (!own) {
+        window.open('', MAIN_NAME);
+        main.opener = null;
+        for (const name of tools) {
+            main.open('', name);
+        }
+    }
+    frame.open('', window.name);
+    new frame.Function('win', 'win.focus()')(window);
+    if (own) {
+        window.opener = null;
+    } else {
+        main.open('', window.name);
+    }
 }
 
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

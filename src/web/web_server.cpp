@@ -461,6 +461,16 @@ void WebServer::setup_routes(uWS::App &app) {
     app.get("/*", [this](auto* res, auto* req) {
         std::string url(req->getUrl());
 
+        // The app slick-trader-web.bat adds opens each dashboard at /app/<token>/. Edge and Chrome
+        // name the windows of an app after the path it opened at, so each dashboard's windows can
+        // be told from another's. The page itself is the root's, told it is grouped.
+        if (url.starts_with("/app/")) {
+            res->writeStatus("302 Found");
+            res->writeHeader("Location", "/?grouped");
+            res->end();
+            return;
+        }
+
         // Default to index.html for root path
         if (url == "/" || url == "") {
             url = "/index.html";

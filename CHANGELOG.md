@@ -6,6 +6,14 @@
   and TIF, and sends on Buy/Sell or Enter. Confirms in its first 500 ms are ignored, so a
   double-click can't send. "Confirm orders" in the ladder's ⚙ turns it off for that ladder, saved
   like its other settings. It's on for a new ladder and for one saved before it existed.
+- A dashboard window brought to the front brings the rest of its dashboard along, right under it.
+  The app `slick-trader-web.bat` adds now opens through `slick-trader-app.exe`, which the script
+  builds into `%LOCALAPPDATA%\SlickTrader`. It watches the front window from outside the browser,
+  so a click, the title bar, the taskbar and Alt+Tab all work. Run the script again to get it.
+  Each launch opens at `/app/<token>/`, which the engine sends on to the dashboard. Edge and Chrome
+  name an app's windows after that path, so two dashboards, on one host or two of its ports, keep
+  apart. Opened any other way, the dashboard does it itself on the first click or key in the
+  window: a page may raise windows only then.
 
 ## Fixed
 

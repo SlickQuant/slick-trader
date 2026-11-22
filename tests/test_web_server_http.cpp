@@ -225,6 +225,15 @@ TEST_F(WebServerHttpTest, StaticFilesAreNotKept) {
     EXPECT_EQ(browser.head().find("max-age"), std::string::npos) << browser.head();
 }
 
+// The app's helper grouped windows by the browser's name for them, which came from the host alone,
+// so two dashboards' windows came to the front together. Each now opens at a path of its own,
+// which the browser names its windows after.
+TEST_F(WebServerHttpTest, AnAppPathOpensTheDashboardGrouped) {
+    RawClient browser(port_);
+    ASSERT_TRUE(browser.get("/app/0123abcd/", "HTTP/1.1 302")) << browser.head();
+    EXPECT_NE(browser.head().find("Location: /?grouped"), std::string::npos) << browser.head();
+}
+
 // An API error went out as 200 OK: send_json_response() wrote the CORS headers before the
 // status, and uWS sends 200 with the first header written ahead of one. The dashboard took an
 // order the server refused for one it had sent. Then its status line had no reason phrase.

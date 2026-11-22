@@ -11,6 +11,15 @@ bar. Ladder opens a new window per click. The other buttons focus their window i
 open. Each window remembers its size and position. Closing the main window closes the tool windows
 it opened, and reloading it keeps them. See [FEATURES.md](FEATURES.md) for what each window does.
 
+Bringing any of the windows to the front brings the others along, right under it. The app
+[slick-trader-web.bat](../../scripts/slick-trader-web.bat) adds does it however a window comes
+forward, title bar and taskbar included: it opens the dashboard through `slick-trader-app.exe`,
+which watches the front window from outside the browser. Each launch is a dashboard of its own,
+opened at `/app/<token>/` (the engine sends it on to `/?grouped`), and only its windows come along.
+Opened any other way, the dashboard does it on the first click or key in the window, since a page
+may raise windows only then. That part relies on how Chrome and Edge treat windows opened by name,
+and is checked in Edge.
+
 When the config's top-level `environment` isn't production (`Sim`, `Cert`, `NewRelease`, ...),
 every window, tool windows included, shows an amber bar naming it on top, and its title starts
 with `[Sim]` or the like.
