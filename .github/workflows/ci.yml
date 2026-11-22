@@ -31,21 +31,31 @@ jobs:
     # tuned to the CPU of the runner that built them. Restored onto a runner with a
     # narrower instruction set they die with SIGILL (slick-sim saw exactly that), so
     # the cache is keyed on the runner's CPU features and only reused on compatible
-    # hardware.
-    - name: CPU signature for the vcpkg cache key
+    # hardware. It is keyed on the compiler vcpkg builds with too: on Windows their
+    # Release libraries carry /GL code, which links only with the MSVC that made it.
+    # A runner image with a newer MSVC restored the old cache and failed with C1047.
+    - name: CPU and compiler signatures for the vcpkg cache key
       id: cpusig
       shell: bash
       run: |
         if [ "$RUNNER_OS" = "Linux" ]; then
           raw=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2 | tr ' ' '\n' \
                 | grep -E '^(sse4_[12]|avx|avx2|avx512[a-z0-9_]*|bmi[12]|fma)$' | sort -u | tr '\n' ',')
+          cc=$(c++ --version 2>/dev/null | sed -n 1p)
         elif [ "$RUNNER_OS" = "macOS" ]; then
           raw=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)
+          cc=$(c++ --version 2>/dev/null | sed -n 1p)
         else
           raw=$(wmic cpu get Name /value 2>/dev/null | tr -d '\r' | grep '=' || echo "windows-unknown")
+          vs=$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' \
+               -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | tr -d '\r' || true)
+          cc=$(cat "$(cygpath -u "$vs")/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt" 2>/dev/null \
+               | tr -d '\r\n' || echo "msvc-unknown")
         fi
         echo "CPU signature source: $raw"
+        echo "Compiler: $cc"
         echo "sig=$(printf '%s' "$raw" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+        echo "cc=$(printf '%s' "$cc" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
     # No vcpkg.json manifest is committed in this repo by design, so dependencies
     # are installed explicitly in classic mode below.
@@ -56,7 +66,7 @@ jobs:
           ${{ runner.temp }}/vcpkg/installed
           ${{ runner.temp }}/vcpkg/downloads
           ${{ runner.temp }}/vcpkg/packages
-        key: vcpkg-${{ runner.os }}-cpu${{ steps.cpusig.outputs.sig }}-${{ hashFiles('.github/workflows/ci.yml') }}
+        key: vcpkg-${{ runner.os }}-cpu${{ steps.cpusig.outputs.sig }}-cc${{ steps.cpusig.outputs.cc }}-${{ hashFiles('.github/workflows/ci.yml') }}
 
     - name: Bootstrap vcpkg (Windows)
       if: runner.os == 'Windows'
@@ -198,14 +208,15 @@ jobs:
       shell: bash
       run: git clone --depth 1 https://github.com/microsoft/vcpkg.git "${{ runner.temp }}/vcpkg"
 
-    # Reuse cached vcpkg binaries only on compatible CPUs, as in build-and-test.
-    - name: CPU signature for the vcpkg cache key
+    # Reuse cached vcpkg binaries only on compatible CPUs and the same compiler, as in build-and-test.
+    - name: CPU and compiler signatures for the vcpkg cache key
       id: cpusig
       shell: bash
       run: |
         raw=$(grep -m1 '^flags' /proc/cpuinfo | cut -d: -f2 | tr ' ' '\n' \
               | grep -E '^(sse4_[12]|avx|avx2|avx512[a-z0-9_]*|bmi[12]|fma)$' | sort -u | tr '\n' ',')
         echo "sig=$(printf '%s' "$raw" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+        echo "cc=$(c++ --version 2>/dev/null | sed -n 1p | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
     # Include the matrix entry in the cache key because each installs different packages.
     - name: Cache vcpkg
@@ -215,7 +226,7 @@ jobs:
           ${{ runner.temp }}/vcpkg/installed
           ${{ runner.temp }}/vcpkg/downloads
           ${{ runner.temp }}/vcpkg/packages
-        key: vcpkg-brokers-${{ matrix.slug }}-${{ runner.os }}-cpu${{ steps.cpusig.outputs.sig }}-${{ hashFiles('.github/workflows/ci.yml') }}
+        key: vcpkg-brokers-${{ matrix.slug }}-${{ runner.os }}-cpu${{ steps.cpusig.outputs.sig }}-cc${{ steps.cpusig.outputs.cc }}-${{ hashFiles('.github/workflows/ci.yml') }}
 
     - name: Bootstrap vcpkg
       shell: bash
