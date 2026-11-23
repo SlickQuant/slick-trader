@@ -6,7 +6,7 @@ import { on, post, startDashboard } from './bus.js';
 import { notify } from './notify.js';
 
 export const TOOLS = {
-    ladder:    { title: 'Ladder',    width: 360, height: 720, multi: true },
+    ladder:    { title: 'Ladder',    width: 420, height: 720, multi: true },   // Work, Bid, Price, Ask and LTQ
     order:     { title: 'Ticket',    width: 380, height: 560 },
     orders:    { title: 'Orders',    width: 960, height: 420 },
     fills:     { title: 'Fills',     width: 1000, height: 420 },

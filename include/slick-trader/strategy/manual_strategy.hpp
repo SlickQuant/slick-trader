@@ -1,6 +1,8 @@
 #pragma once
 
+#include <slick-trader/events/ladder_subscription_event.hpp>
 #include <slick-trader/strategy/strategy_base.hpp>
+#include <slick-trader/utils/string_hash.hpp>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -17,32 +19,40 @@ namespace slick::trader {
 
 // Lightweight strategy that owns all orders placed manually through the Web UI.
 // Always registered at startup. It lists the instruments brokers define for the Web UI's
-// ladders to pick from, and subscribes one's level 2 book only while a ladder shows it: the
-// WebServer holds and releases them over the bus. In MANUAL.config.json (any <name>.config.json
-// naming it), parameter "instruments" narrows the list: symbols, or prefixes ending in '*'
-// ("ZN*"). With no such parameter it lists everything defined, with [] nothing.
+// ladders to pick from, and subscribes an instrument's level 2 book and trades only while a
+// ladder shows it: the WebServer holds and releases them over the bus. In MANUAL.config.json (any
+// <name>.config.json naming it), parameter "instruments" narrows the list: symbols, or prefixes
+// ending in '*' ("ZN*"). With no such parameter it lists everything defined, with [] nothing.
 class ManualStrategy : public StrategyBase {
 public:
     static constexpr const char* ID = "MANUAL";
     static constexpr uint32_t CHUNK_SIZE = 256;
     static constexpr uint32_t MAX_INSTRUMENTS = CHUNK_SIZE * 256;
-    // What it subscribes of each instrument a ladder holds.
-    static constexpr SubscriptionType SUBSCRIPTION = SubscriptionType::LEVEL2;
+    // What it subscribes of each instrument a ladder holds, SUBSCRIPTIONS[i] for LadderFeed bit i:
+    // the book, and the trades for its LTQ.
+    static constexpr std::array<SubscriptionType, 2> SUBSCRIPTIONS{SubscriptionType::LEVEL2, SubscriptionType::TRADE};
+    static_assert(LADDER_BOOK == 1 << 0 && LADDER_TRADES == 1 << 1, "LadderFeed bits follow SUBSCRIPTIONS");
 
     ManualStrategy() : StrategyBase(ID, "1.0.0") {}
 
-    // The level 2 book of what ladders hold, one request per broker. Each is subscribed as it is
-    // held, not at start(). Read where the StrategyManager thread is not running: by
-    // add_strategy(), when nothing is held, and by stop() after the worker has joined, which
-    // unsubscribes them and has release_all() let go of them.
+    // The feeds ladders hold, one request per broker and type. Each is subscribed as it is held,
+    // not at start(). Read where the StrategyManager thread is not running: by add_strategy(),
+    // when nothing is held, and by stop() after the worker has joined, which unsubscribes them
+    // and has release_all() let go of them.
     std::vector<SubscriptionRequest> get_subscriptions() const override {
         std::vector<SubscriptionRequest> subs;
         for (size_t b = 0; b < held_.size(); ++b) {
-            if (held_[b].empty()) {
-                continue;
+            for (size_t i = 0; i < SUBSCRIPTIONS.size(); ++i) {
+                std::vector<std::string> instruments;
+                for (const auto& [instrument, feeds] : held_[b]) {
+                    if (feeds & (1u << i)) {
+                        instruments.push_back(instrument);
+                    }
+                }
+                if (!instruments.empty()) {
+                    subs.emplace_back(static_cast<BrokerId>(b), SUBSCRIPTIONS[i], std::move(instruments));
+                }
             }
-            auto& sub = subs.emplace_back(static_cast<BrokerId>(b), SUBSCRIPTION, std::vector<std::string>{});
-            sub.instruments.assign(held_[b].begin(), held_[b].end());
         }
         return subs;
     }
@@ -111,25 +121,26 @@ public:
                std::ranges::any_of(prefixes_, [&](const std::string& prefix) { return instrument.starts_with(prefix); });
     }
 
-    // A ladder shows `instrument`: true when that makes it held. Only one listed at `broker` can
-    // be, or one `subscribed` there by a strategy, which ladders list too. release() lets go, true
-    // when it was held. StrategyManager thread only.
-    bool hold(BrokerId broker, std::string_view instrument, bool subscribed = false) {
+    // A ladder shows `instrument`: true when that makes its `feeds` (LadderFeed bits) held. Only
+    // one listed at `broker` can be, or one `subscribed` there by a strategy, which ladders list
+    // too. release() lets go, and returns the feeds it held, 0 for none. StrategyManager thread only.
+    bool hold(BrokerId broker, std::string_view instrument, bool subscribed = false, uint8_t feeds = LADDER_ALL) {
         const auto b = static_cast<size_t>(broker);
-        return b < held_.size() && (subscribed || listed_[b].contains(instrument)) &&
-               held_[b].emplace(instrument).second;
+        return feeds != 0 && b < held_.size() && (subscribed || listed_[b].contains(instrument)) &&
+               held_[b].try_emplace(std::string(instrument), feeds).second;
     }
-    bool release(BrokerId broker, std::string_view instrument) {
+    uint8_t release(BrokerId broker, std::string_view instrument) {
         const auto b = static_cast<size_t>(broker);
         if (b >= held_.size()) {
-            return false;
+            return 0;
         }
         const auto it = held_[b].find(instrument);
         if (it == held_[b].end()) {
-            return false;
+            return 0;
         }
+        const uint8_t feeds = it->second;
         held_[b].erase(it);
-        return true;
+        return feeds;
     }
     void release_all() {
         for (auto& held : held_) {
@@ -185,7 +196,7 @@ private:
     std::atomic<uint32_t> count_{0};
     // Writer only: what it lists and holds, by broker, and what the config takes.
     std::array<StringSet, BROKER_COUNT> listed_;
-    std::array<StringSet, BROKER_COUNT> held_;
+    std::array<StringMap<uint8_t>, BROKER_COUNT> held_;   // instrument -> the LadderFeed bits held
     StringSet symbols_;
     std::vector<std::string> prefixes_;
     bool all_ = true;     // no "instruments" list: everything

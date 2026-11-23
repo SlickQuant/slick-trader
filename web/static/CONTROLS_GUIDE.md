@@ -5,7 +5,8 @@ risk limits apply before it is sent.
 
 ## From the dashboard
 
-- **Ladder**: click a level. See [FEATURES.md](FEATURES.md#ladder).
+- **Ladder**: click a level. Left-click a Work cell to cancel MANUAL's orders on that row, or
+  right-click it to pick which. See [FEATURES.md](FEATURES.md#ladder).
 - **Order** window: instrument, broker, side, market or limit, time in force, quantity, price.
 - **Orders** window: Modify (new price and quantity), Cancel, or Cancel all after a confirm.
 - **Main window, Strategies**: ▶ start, ■ stop, ⚙ parameters as JSON. Saving applies them on the
@@ -29,4 +30,5 @@ curl -X POST http://localhost:3000/api/strategies/MM/control -H "Content-Type: a
 
 `POST /api/orders` answers 202 once the order is sent. It answers 400 for a bad request or an unknown broker, 503
 when the broker takes no orders now, and 422 when risk limits turn the order down. Each error comes
-with the reason.
+with the reason. A `DELETE` answers 202 once the cancel is sent, and the order stays in `/api/orders`
+until its broker confirms it.

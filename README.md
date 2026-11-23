@@ -11,7 +11,7 @@ crypto exchanges over WebSocket/REST, routes market data and order events throug
 messaging core, runs trading strategies as hot-loadable plugins, and exposes a real-time web
 dashboard for monitoring and manual control.
 
-> **Status**: 0.6.0. The Coinbase and Hyperliquid brokers are built in, and more
+> **Status**: 0.7.0. The Coinbase and Hyperliquid brokers are built in, and more
 > can be built in from their own repositories (see
 > [Brokers and out-of-tree brokers](#brokers-and-out-of-tree-brokers)). Order execution needs
 > broker credentials (see [Broker configuration](#broker-configuration)). The sample config is
@@ -341,9 +341,12 @@ open popups and act as a secure origin, and adds a Desktop and Start menu app fo
 come to the front together. On the engine's PC, run it with `localhost` for the app. Its
 click-to-trade ladder uses `slick-ladder`, an `@slickquant` npm package (see
 [package.json](package.json)), and each ladder's ⚙ sets its own order confirmation (on by
-default), auto-center, volume bars, empty rows and row height. The built-in `ManualStrategy` owns manual orders. A ladder lists the instruments brokers define (CME, ICE, Coinbase and Hyperliquid
-publish definitions), and MANUAL subscribes one only while a ladder shows it. MANUAL's config
-narrows the list, for example in `config/manual.config.json`:
+default), auto-center, empty rows and row height. The Work column shows MANUAL's resting orders
+and cancels them on a click, and the LTQ column shows the last trade. The built-in
+`ManualStrategy` owns manual orders. A ladder lists the instruments brokers define (CME, ICE,
+Coinbase and Hyperliquid publish definitions), and MANUAL subscribes an instrument's book and
+trades only while a ladder shows it. MANUAL's config narrows the list, for example in
+`config/manual.config.json`:
 
 ```json
 { "name": "MANUAL", "parameters": { "instruments": ["ZNZ6", "ZB*"] } }

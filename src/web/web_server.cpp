@@ -133,6 +133,9 @@ bool WebServer::initialize(const json& config, std::string_view environment) {
                 if (streams_book(sub.type) && sub.broker_id == listing.broker) {
                     listing.book = true;
                 }
+                if (sub.type == SubscriptionType::TRADE && sub.broker_id == listing.broker) {
+                    listing.trades = true;
+                }
             }
         }
     }
@@ -768,6 +771,11 @@ void WebServer::handle_ws_message(uWS::WebSocket<false, true, void*>* ws, std::s
                                          }
                                      });
                 send_text(ws, level2_message_);
+                // Its LTQ, from the trade before this browser asked.
+                if (const LastTrade* trade = level2_streams_.last_trade(instrument); trade && !stale) {
+                    write_trade_message(trade_message_, instrument, *trade);
+                    send_text(ws, trade_message_);
+                }
             } else {
                 LOG_WARN("WebServer: Invalid subscription request - channel: {}, instrument: {}", channel, instrument);
             }
@@ -1486,6 +1494,9 @@ void WebServer::process_events() {
                 broadcast_level2_update(*level2_event);
                 break;
             }
+            case EventType::TRADE:
+                broadcast_trade(*reinterpret_cast<const TradeEvent*>(event));
+                break;
             case EventType::TOB:
                 // A mark moved. Many arrive per pass on a busy book and a browser needs
                 // none of them individually, so they only raise a flag.
@@ -1609,6 +1620,18 @@ void WebServer::broadcast_level2_update(const Level2UpdateEvent& event) {
     }
 }
 
+void WebServer::broadcast_trade(const TradeEvent& event) {
+    const auto& clients = level2_streams_.trade(event);
+    if (clients.empty()) {
+        return;
+    }
+    write_trade_message(trade_message_, std::string_view(event.instrument),
+                        LastTrade{event.price, event.quantity, event.side});
+    for (auto* ws : clients) {
+        send_text(ws, trade_message_);
+    }
+}
+
 void WebServer::handle_workspace_change(uWS::HttpResponse<false>* res, std::string_view body,
                                         WorkspaceChange change) {
     const json request = json::parse(body, nullptr, false);
@@ -1693,6 +1716,8 @@ void WebServer::handle_order_ack(const OrderAckEvent& ack) {
     const std::string status(to_string(ack.status));
     double price = has_price ? from_price_t(ack.price) : 0.0;
     double qty   = from_qty_t(ack.quantity);
+    double remaining = qty;
+    std::string strategy_id;
     auto it = open_orders_.find(cid);
     if (it != open_orders_.end()) {
         // Update existing entry — covers both initial new-order ACK and modify-ack
@@ -1715,12 +1740,13 @@ void WebServer::handle_order_ack(const OrderAckEvent& ack) {
         if (!changed) {
             return;
         }
-        price = t.price;
-        qty   = t.qty;
+        price       = t.price;
+        qty         = t.qty;
+        remaining   = t.remaining_qty;
+        strategy_id = t.strategy_id;
     } else if (!oid.empty()) {
         // Algo-submitted order: not yet in open_orders_ — create entry now.
         // We can derive strategy from client_order_id prefix (name_<timestamp>)
-        std::string strategy_id;
         auto sep = cid.rfind('_');
         if (sep != std::string::npos) strategy_id = cid.substr(0, sep);
 
@@ -1741,15 +1767,20 @@ void WebServer::handle_order_ack(const OrderAckEvent& ack) {
         oid_to_cid_[oid]   = cid;
     }
 
+    // A cancel needs strategy_id and client_order_id, and a ladder's Work column cancels MANUAL's
+    // orders from what the ack says.
     json msg;
-    msg["type"]       = "order_update";
-    msg["event"]      = "ack";
-    msg["order_id"]   = oid;
-    msg["instrument"] = std::string(ack.instrument);
-    msg["side"]       = (ack.side == Side::BUY) ? "buy" : "sell";
-    msg["price"]      = price;
-    msg["qty"]        = qty;
-    msg["status"]     = status;
+    msg["type"]            = "order_update";
+    msg["event"]           = "ack";
+    msg["order_id"]        = oid;
+    msg["instrument"]      = std::string(ack.instrument);
+    msg["side"]            = (ack.side == Side::BUY) ? "buy" : "sell";
+    msg["price"]           = price;
+    msg["qty"]             = qty;
+    msg["remaining_qty"]   = remaining;
+    msg["status"]          = status;
+    msg["strategy_id"]     = strategy_id;
+    msg["client_order_id"] = cid;
     broadcast_order_update(msg.dump());
 }
 
@@ -1984,10 +2015,15 @@ bool WebServer::watched(std::string_view instrument) {
     }
     index_listings();
     const auto listing = listings_.find(instrument);
-    if (listing == listings_.end() || listing->second.book) {
-        return true;   // a strategy streams its book already, and a name nobody lists is only watched
+    if (listing == listings_.end()) {
+        return true;   // a name nobody lists is only watched
     }
-    if (!publish_ladder_subscription(listing->second.broker, instrument, true)) {
+    // Skip what a strategy already streams. It reaches the ladder anyway.
+    const uint8_t feeds = (listing->second.book ? 0 : LADDER_BOOK) | (listing->second.trades ? 0 : LADDER_TRADES);
+    if (feeds == 0) {
+        return true;
+    }
+    if (!publish_ladder_subscription(listing->second.broker, instrument, true, feeds)) {
         return false;
     }
     ladder_holds_.try_emplace(std::string(instrument), LadderHold{listing->second.broker, 0});
@@ -2023,7 +2059,8 @@ void WebServer::release_holds(uint64_t now_ns) {
     }
 }
 
-bool WebServer::publish_ladder_subscription(BrokerId broker, std::string_view instrument, bool subscribe) {
+bool WebServer::publish_ladder_subscription(BrokerId broker, std::string_view instrument, bool subscribe,
+                                            uint8_t feeds) {
     if (!config_producer_buffer_) {
         LOG_ERROR("WebServer: no bus producer registered, so {} on {} is not {}", instrument, to_string(broker),
                   subscribe ? "held" : "released");
@@ -2035,6 +2072,7 @@ bool WebServer::publish_ladder_subscription(BrokerId broker, std::string_view in
             event.broker_id = broker;
             event.set_instrument(instrument);
             event.subscribe = subscribe;
+            event.feeds = feeds;
         });
 }
 

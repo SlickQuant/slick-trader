@@ -346,7 +346,10 @@ void CoinbaseMDConnector::publish_trade(const coinbase::MarketTrade& trade) {
 
         event.price = to_price_t(trade.price);
         event.quantity = to_qty_t(trade.size);
-        event.is_buyer_maker = (trade.side == coinbase::Side::SELL);
+        // market_trades' side is the maker's, as Coinbase's schema has it: the aggressor took the
+        // other side. A BUY maker was a resting bid that a seller hit.
+        event.side = trade.side == coinbase::Side::BUY ? Side::SELL : Side::BUY;
+        event.is_buyer_maker = (trade.side == coinbase::Side::BUY);
         event.trade_id = std::stoull(trade.trade_id);
     });
 }

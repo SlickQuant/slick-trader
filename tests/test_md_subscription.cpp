@@ -28,6 +28,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <iterator>
 #include <memory>
 #include <new>
 #include <set>
@@ -122,12 +123,14 @@ protected:
         return manager;
     }
 
-    // The requests published within 5 s, as soon as there are any.
-    std::vector<Request> wait_for_requests() {
+    // The requests published within 5 s, as soon as there are `count`: a ladder's hold is one
+    // request per type MANUAL subscribes, published one after another.
+    std::vector<Request> wait_for_requests(size_t count = 1) {
         std::vector<Request> sent;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (sent.empty() && std::chrono::steady_clock::now() < deadline) {
-            sent = requests();
+        while (sent.size() < count && std::chrono::steady_clock::now() < deadline) {
+            auto more = requests();
+            sent.insert(sent.end(), std::make_move_iterator(more.begin()), std::make_move_iterator(more.end()));
             std::this_thread::yield();
         }
         return sent;
@@ -214,11 +217,12 @@ InstrumentDefinitionEvent definition(BrokerId broker, const char* instrument, do
     return event;
 }
 
-LadderSubscriptionEvent ladder(BrokerId broker, const char* instrument, bool subscribe) {
+LadderSubscriptionEvent ladder(BrokerId broker, const char* instrument, bool subscribe, uint8_t feeds = LADDER_ALL) {
     LadderSubscriptionEvent event;
     event.broker_id = broker;
     event.set_instrument(instrument);
     event.subscribe = subscribe;
+    event.feeds = feeds;
     return event;
 }
 
@@ -252,8 +256,9 @@ TEST_F(MdSubscriptionTest, ManualListsWhatBrokersDefineAndSubscribesNothing) {
     EXPECT_TRUE(requests().empty()) << "MANUAL subscribed what no ladder showed";
 }
 
-// A ladder showing one of MANUAL's has its book subscribed, once however often it is asked, and
-// unsubscribed when it lets go. Through the bus, as the WebServer sends it, to a running worker.
+// A ladder showing one of MANUAL's instruments gets its book and trades (the LTQ column)
+// subscribed once, however often it asks, and unsubscribed on release. The hold goes over the bus,
+// as the WebServer sends it, to a running worker.
 TEST_F(MdSubscriptionTest, ALadderHoldReachesTheBrokerAndItsReleaseUnsubscribes) {
     add_strategy(std::make_shared<ManualStrategy>(), manual_lists({"ZN*"}));
     auto producer = mux_.add_producer(mux_.producer_count(), 1u << 16, 4096);
@@ -263,18 +268,23 @@ TEST_F(MdSubscriptionTest, ALadderHoldReachesTheBrokerAndItsReleaseUnsubscribes)
     send(*producer, ladder(BrokerId::CME, "ZNZ6", true));
     send(*producer, ladder(BrokerId::CME, "ZNZ6", true));
 
-    auto sent = wait_for_requests();
-    ASSERT_EQ(sent.size(), 1u);
-    EXPECT_EQ(sent[0].type, EventType::SUBSCRIBE);
-    EXPECT_EQ(sent[0].broker, BrokerId::CME);
-    EXPECT_EQ(sent[0].subscription, SubscriptionType::LEVEL2);
-    EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZNZ6"});
+    auto sent = wait_for_requests(2);
+    ASSERT_EQ(sent.size(), 2u);
+    for (size_t i = 0; i < sent.size(); ++i) {
+        EXPECT_EQ(sent[i].type, EventType::SUBSCRIBE);
+        EXPECT_EQ(sent[i].broker, BrokerId::CME);
+        EXPECT_EQ(sent[i].subscription, ManualStrategy::SUBSCRIPTIONS[i]);
+        EXPECT_EQ(sent[i].instruments, std::vector<std::string>{"ZNZ6"});
+    }
 
     send(*producer, ladder(BrokerId::CME, "ZNZ6", false));
-    sent = wait_for_requests();
-    ASSERT_EQ(sent.size(), 1u);
-    EXPECT_EQ(sent[0].type, EventType::UNSUBSCRIBE);
-    EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZNZ6"});
+    sent = wait_for_requests(2);
+    ASSERT_EQ(sent.size(), 2u);
+    for (size_t i = 0; i < sent.size(); ++i) {
+        EXPECT_EQ(sent[i].type, EventType::UNSUBSCRIBE);
+        EXPECT_EQ(sent[i].subscription, ManualStrategy::SUBSCRIPTIONS[i]);
+        EXPECT_EQ(sent[i].instruments, std::vector<std::string>{"ZNZ6"});
+    }
 
     manager_.stop();
     EXPECT_TRUE(requests().empty()) << "what was let go was unsubscribed again";
@@ -288,15 +298,17 @@ TEST_F(MdSubscriptionTest, StopReleasesWhatLaddersHold) {
     manager_.process_event(&defined);
     const auto hold = ladder(BrokerId::CME, "ZNZ6", true);
     manager_.process_event(&hold);
-    ASSERT_EQ(requests().size(), 1u);
+    ASSERT_EQ(requests().size(), ManualStrategy::SUBSCRIPTIONS.size());
     manager_.start();
     EXPECT_TRUE(requests().empty()) << "start() subscribed a ladder's hold again";
 
     manager_.stop();
     const auto sent = requests();
-    ASSERT_EQ(sent.size(), 1u);
-    EXPECT_EQ(sent[0].type, EventType::UNSUBSCRIBE);
-    EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZNZ6"});
+    ASSERT_EQ(sent.size(), ManualStrategy::SUBSCRIPTIONS.size());
+    for (const auto& request : sent) {
+        EXPECT_EQ(request.type, EventType::UNSUBSCRIBE);
+        EXPECT_EQ(request.instruments, std::vector<std::string>{"ZNZ6"});
+    }
 
     manager_.start();
     manager_.stop();
@@ -304,27 +316,30 @@ TEST_F(MdSubscriptionTest, StopReleasesWhatLaddersHold) {
     EXPECT_TRUE(manager_.manual()->get_subscriptions().empty());
 }
 
-// A ladder holding and letting go of a book a strategy subscribed leaves it as it was. The hold of
-// another instrument after them marks when the worker has handled both.
+// A ladder holding and letting go of a book and trades strategies subscribed leaves them as they
+// were. The hold of another instrument after them marks when the worker has handled both.
 TEST_F(MdSubscriptionTest, AReleaseKeepsWhatAStrategyHolds) {
     add("Maker", {SubscriptionRequest(BrokerId::CME, SubscriptionType::LEVEL2, {"ZNZ6"})});
+    add("Taker", {SubscriptionRequest(BrokerId::CME, SubscriptionType::TRADE, {"ZNZ6"})});
     add_strategy(std::make_shared<ManualStrategy>());
     auto producer = mux_.add_producer(mux_.producer_count(), 1u << 16, 4096);
     manager_.start();
-    ASSERT_EQ(requests().size(), 1u);   // the strategy's
+    ASSERT_EQ(requests().size(), 2u);   // the strategies'
 
     send(*producer, definition(BrokerId::CME, "ZNZ6"));
     send(*producer, definition(BrokerId::CME, "ZBZ6"));
     send(*producer, ladder(BrokerId::CME, "ZNZ6", true));
     send(*producer, ladder(BrokerId::CME, "ZNZ6", false));
     send(*producer, ladder(BrokerId::CME, "ZBZ6", true));
-    const auto sent = wait_for_requests();
-    ASSERT_EQ(sent.size(), 1u) << "the ladder's hold or release of the strategy's book reached the broker";
-    EXPECT_EQ(sent[0].type, EventType::SUBSCRIBE);
-    EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZBZ6"});
+    const auto sent = wait_for_requests(2);
+    ASSERT_EQ(sent.size(), 2u) << "the ladder's hold or release of the strategies' ZNZ6 reached the broker";
+    for (const auto& request : sent) {
+        EXPECT_EQ(request.type, EventType::SUBSCRIBE);
+        EXPECT_EQ(request.instruments, std::vector<std::string>{"ZBZ6"});
+    }
 
     manager_.stop();
-    EXPECT_EQ(requests().size(), 2u);   // ZNZ6 at last, and ZBZ6
+    EXPECT_EQ(requests().size(), 4u);   // ZNZ6's two at last, and ZBZ6's
 }
 
 // A strategy quoting an instrument streams no book of it, and MANUAL's list can leave it out. The
@@ -337,12 +352,44 @@ TEST_F(MdSubscriptionTest, ALadderHoldsTheBookOfWhatAStrategyOnlyQuotes) {
     ASSERT_EQ(requests().size(), 1u);   // the quotes
 
     send(*producer, ladder(BrokerId::CME, "ZNZ6", true));
-    const auto sent = wait_for_requests();
-    ASSERT_EQ(sent.size(), 1u) << "MANUAL turned the ladder down";
-    EXPECT_EQ(sent[0].type, EventType::SUBSCRIBE);
-    EXPECT_EQ(sent[0].subscription, SubscriptionType::LEVEL2);
-    EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZNZ6"});
+    const auto sent = wait_for_requests(2);
+    ASSERT_EQ(sent.size(), 2u) << "MANUAL turned the ladder down";
+    for (size_t i = 0; i < sent.size(); ++i) {
+        EXPECT_EQ(sent[i].type, EventType::SUBSCRIBE);
+        EXPECT_EQ(sent[i].subscription, ManualStrategy::SUBSCRIPTIONS[i]);
+        EXPECT_EQ(sent[i].instruments, std::vector<std::string>{"ZNZ6"});
+    }
     manager_.stop();
+}
+
+// A ladder on an instrument whose book a strategy streams, but not its trades, still gets its LTQ.
+// The WebServer asks for the trades only, and MANUAL subscribes and releases just those, at stop()
+// too, leaving the strategy's book as it was.
+TEST_F(MdSubscriptionTest, AHoldOfTradesAloneLeavesTheBookAlone) {
+    add_strategy(std::make_shared<ManualStrategy>());
+    const auto defined = definition(BrokerId::CME, "ZNZ6");
+    manager_.process_event(&defined);
+    const auto expect_trades = [&](EventType type) {
+        const auto sent = requests();
+        ASSERT_EQ(sent.size(), 1u);
+        EXPECT_EQ(sent[0].type, type);
+        EXPECT_EQ(sent[0].subscription, SubscriptionType::TRADE);
+        EXPECT_EQ(sent[0].instruments, std::vector<std::string>{"ZNZ6"});
+    };
+
+    const auto hold = ladder(BrokerId::CME, "ZNZ6", true, LADDER_TRADES);
+    const auto release = ladder(BrokerId::CME, "ZNZ6", false);
+    manager_.process_event(&hold);
+    expect_trades(EventType::SUBSCRIBE);
+    manager_.process_event(&release);
+    expect_trades(EventType::UNSUBSCRIBE);
+
+    manager_.process_event(&hold);
+    expect_trades(EventType::SUBSCRIBE);
+    manager_.start();
+    manager_.stop();
+    expect_trades(EventType::UNSUBSCRIBE);
+    EXPECT_TRUE(manager_.manual()->get_subscriptions().empty());
 }
 
 // MANUAL holds only what it lists, at the broker that defined it.
@@ -572,19 +619,19 @@ TEST_F(MdSubscriptionTest, ARequestWaitingOnOneConnectorHoldsUpNoOtherBroker) {
     };
     hold(BrokerId::CME, "C0");
     hold(BrokerId::ICE, "J0");
-    ice_defined.insert("J0");
+    ice_defined.insert({"J0", "J0"});   // its book and its trades
     EXPECT_TRUE(wait_until(std::chrono::steady_clock::now() + std::chrono::seconds(3),
                            [&] { return ice.subscribed_count() > COUNT; }))
         << "ICE's request waited behind CME's";
 
     cme.resume();
-    EXPECT_TRUE(wait_until(deadline, [&] { return cme.subscribed_count() == 1; }));
+    EXPECT_TRUE(wait_until(deadline, [&] { return cme.subscribed_count() == 2; }));
     manager_.stop();
     cme.stop();
     ice.stop();
 
-    EXPECT_EQ(cme.subscribed, std::multiset<std::string>{"C0"});
-    EXPECT_EQ(cme.unsubscribed, std::multiset<std::string>{"C0"});
+    EXPECT_EQ(cme.subscribed, (std::multiset<std::string>{"C0", "C0"}));
+    EXPECT_EQ(cme.unsubscribed, (std::multiset<std::string>{"C0", "C0"}));
     EXPECT_EQ(ice.subscribed, ice_defined);
     EXPECT_EQ(ice.unsubscribed, ice_defined);
 }

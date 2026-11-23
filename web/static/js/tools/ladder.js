@@ -2,7 +2,7 @@
 // Nothing streams until one is picked: the server has MANUAL subscribe it while a ladder shows
 // it, and lets it go a grace period after the last one closes or switches away.
 import { html, useCallback, useEffect, useRef, useState } from '../core/html.js';
-import { api } from '../core/api.js';
+import { api, formatPrice } from '../core/api.js';
 import { ws, useOnConnect, useWs } from '../core/connection.js';
 import { useTitle } from '../core/hooks.js';
 import { GRID_BROKERS, defaultTifFor, instruments, watchInstruments } from '../core/instruments.js';
@@ -24,12 +24,13 @@ const TIF_NAMES = Object.fromEntries(Object.entries(TIF).map(([name, value]) => 
 // The gear's settings, each ladder's own. Auto-center moves rows under the mouse as the midpoint
 // moves, so it starts off. A click asks before it sends an order unless confirmOrders is off.
 const SETTINGS_KEY = 'ladder.settings';
-const DEFAULT_SETTINGS = { confirmOrders: true, autoCenter: false, emptyRows: 'venue', volumeBars: false, rowHeight: 20 };
+const DEFAULT_SETTINGS = { confirmOrders: true, autoCenter: false, emptyRows: 'venue', rowHeight: 20 };
 const EMPTY_ROWS = { venue: 'Show on CME and ICE', show: 'Show', hide: 'Hide' };
 const ROW_HEIGHTS = [16, 18, 20, 24, 28];
 const sameSettings = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-// This window's settings, kept across a reload, else those a workspace opened it with.
+// This window's settings, kept across a reload, else those a workspace opened it with. Keys it no
+// longer knows are dropped, such as volumeBars (slick-ladder 0.6.0 draws bars only in MBO mode).
 function initialSettings(params) {
     let saved = session.get(SETTINGS_KEY);
     if (!saved) {
@@ -39,7 +40,8 @@ function initialSettings(params) {
             // the defaults
         }
     }
-    return { ...DEFAULT_SETTINGS, ...saved };
+    const known = Object.entries(saved ?? {}).filter(([key]) => key in DEFAULT_SETTINGS);
+    return { ...DEFAULT_SETTINGS, ...Object.fromEntries(known) };
 }
 
 const COLORS = {
@@ -47,25 +49,21 @@ const COLORS = {
     bidQtyBackground: '#1a2f3a',
     askQtyBackground: '#3a1a1f',
     priceBackground: '#2a2a2a',
-    bidBar: '#4caf50',
-    askBar: '#f44336',
     text: '#e0e0e0',
     gridLine: '#444444',
-    ownOrderBorder: '#ffd700',
     hoverBackground: 'rgba(255, 255, 255, 0.1)',
-};
+};   // merged over the library's, which color the Work, LTQ and header cells
 
 export function tickFor(instrument) {
     return instruments.tickFor(instrument) || FALLBACK_TICKS[instrument] || DEFAULT_TICK;
 }
 
-// The ladder rounds a price to its tick in floating point: 4.991 comes back as 4.9910000000000005.
-// Prices have at most 8 decimals, as price_t keeps them.
-const cleanPrice = (price) => Number(price.toFixed(8));
+// The ladder rounds a price to its tick in floating point: 4.991 comes back as 4.9910000000000005,
+// and sums of quantities drift the same way. Both have at most 8 decimals, as price_t and qty_t keep them.
+const clean = (value) => Number(value.toFixed(8));
 
-// In 'showEmpty' mode the library knows no price for a row with nothing on it, so a click there
-// would carry none and go out as a market order. Its price is where the row stands from the
-// centre, as the library draws it, and a click or hover on it gets that.
+// In 'showEmpty' mode the library knows no level for a row with nothing on it, so a click there
+// would carry no price and go out as a market order. The price the row is drawn with stands in.
 function keepEmptyRowPrices(renderer) {
     // With auto-center off the library centres on the midpoint, or on 100 when a side is missing,
     // and keeps that centre: a book that starts one-sided would sit around 100. Centre on the side
@@ -85,63 +83,91 @@ function keepEmptyRowPrices(renderer) {
     const levelInfo = renderer.rowToLevelInfo.bind(renderer);
     renderer.rowToLevelInfo = (row) => {
         const info = levelInfo(row);
-        if (info || renderer.removalMode !== 'showEmpty' || !renderer.currentSnapshot) {
+        if (info || renderer.removalMode !== 'showEmpty') {
             return info;
         }
-        const tick = renderer.tickSize;
-        const centre = renderer.centerPrice !== 0 ? renderer.centerPrice : renderer.currentSnapshot.midPrice;
-        if (!(tick > 0) || !(centre > 0)) {
-            return null;
-        }
-        const price = centre - (row - Math.floor(renderer.visibleRows / 2)) * tick;
-        return { price: Math.round(price / tick) * tick, quantity: 0, side: SlickLadder.Side.BID };
+        const price = renderer.rowPrice(row);
+        return price === null ? null : { price, quantity: 0, side: SlickLadder.Side.BID };
     };
 }
 
-const sideEnum = (side) => (side === 'buy' ? 0 : 1);
+const sideEnum = (side) => (side === 'buy' ? 0 : 1);   // SlickLadder.Side: BID 0, ASK 1
+const SIDE_NAMES = ['BUY', 'SELL'];
+const MANUAL = 'MANUAL';
 
-// One instrument's SlickLadder in `container`, and the levels this engine's orders rest at, so
-// the ladder borders them.
+// One of MANUAL's orders resting at a price, as the Work column shows it: from /api/orders or an
+// ack, with `remaining` left of it. Null for another strategy's, a market order, one not acked yet
+// (no order_id to cancel it by) or one with nothing left.
+function workingOrder(o, remaining) {
+    if (o.strategy_id !== MANUAL || !o.order_id || !(o.price > 0) || !(remaining > 0)) {
+        return null;
+    }
+    return {
+        orderId: o.order_id, clientOrderId: o.client_order_id, strategyId: o.strategy_id,
+        instrument: o.instrument, price: o.price, side: sideEnum(o.side), remaining,
+    };
+}
+
+// One instrument's SlickLadder in `container`: its book, MANUAL's working orders in the Work
+// column and the last trade in LTQ. `handlers`: onLevelClick(instrument, price, side), and for the
+// Work column onWorkCancel(orders) on a left click, onWorkList(price) on a right one, and
+// onOrdersChanged() as MANUAL's orders change.
 export class LadderView {
-    constructor(container, onLevelClick) {
+    constructor(container, handlers) {
         this.container = container;
-        this.onLevelClick = onLevelClick;
+        this.handlers = handlers;
         this.ladder = null;
         this.instrument = null;
-        this.pending = new Map();   // order_id -> { instrument, price, sideEnum }
+        this.tick = 0;
+        this.orders = new Map();   // order_id -> workingOrder(), every instrument's
+        this.lastTrade = null;     // the shown instrument's, as processTrade() takes it
     }
 
     show(instrument, tickSize, settings) {
         this.destroy();
         this.instrument = instrument;
+        this.tick = tickSize;
+        this.lastTrade = null;   // the server sends it again after the book
         if (!instrument) {
             return;
         }
         const emptyRows = settings.emptyRows === 'venue' ? GRID_BROKERS.has(instruments.brokerFor(instrument))
                                                          : settings.emptyRows === 'show';
+        const { Left, Middle } = SlickLadder.ClickButton;
         this.ladder = new SlickLadder.PriceLadder({
             container: this.container,
-            width: 200,
             height: Math.max(this.container.clientHeight, 100),
             rowHeight: settings.rowHeight,
             tickSize,
             mode: 'PriceLevel',
             removalMode: emptyRows ? 'showEmpty' : 'removeRow',
             autoCenter: settings.autoCenter,
-            showVolumeBars: settings.volumeBars,
             showOrderCount: false,
             minQuantityThreshold: 0.0001,
             colors: COLORS,
-            // Only a left click trades. Middle (re-center) and right clicks reach here too since
-            // 0.5.0, and returning nothing leaves the middle-click re-center to the ladder.
+            // Only a left click trades. Returning nothing lets the ladder re-center on a middle click.
             onLevelClick: (price, side, button) => {
-                if (button === SlickLadder.ClickButton.Left) {
-                    this.onLevelClick(instrument, price === null ? null : cleanPrice(price), side);
+                if (button === Left) {
+                    this.handlers.onLevelClick(instrument, price === null ? null : clean(price), side);
                 }
+            },
+            // A left click cancels the orders on the row, both sides, and a right click lists them.
+            // A middle click, or one on a row with none, is left to the ladder.
+            onWorkClick: (price, button) => {
+                const orders = button === Middle ? [] : this.ordersAt(price);
+                if (orders.length === 0) {
+                    return false;
+                }
+                if (button === Left) {
+                    this.handlers.onWorkCancel(orders);
+                } else {
+                    this.handlers.onWorkList(clean(price));
+                }
+                return true;
             },
         });
         keepEmptyRowPrices(this.ladder.renderer);
-        this.restoreOwnOrders();
+        this.pushRows(this.shownRows());
     }
 
     destroy() {
@@ -166,17 +192,27 @@ export class LadderView {
         ladder.renderer.resize(ladder.renderer.width, h);
     }
 
+    // A new connection: the server sends the book and the last trade again.
     clear() {
-        this.ladder?.clear();
+        this.lastTrade = null;
+        if (this.ladder) {
+            this.ladder.clear();
+            this.pushRows(this.shownRows());
+        }
     }
 
-    // A level2 message: a snapshot replaces the book.
+    // A level2 message: a snapshot replaces the book. ladder.clear() takes the Work column and the
+    // LTQ with it, so they are put back.
     apply(data) {
         if (!this.ladder || data.instrument !== this.instrument) {
             return;   // on its way when the ladder switched from it
         }
         if (data.is_snapshot) {
             this.ladder.clear();
+            this.pushRows(this.shownRows());
+            if (this.lastTrade) {
+                this.ladder.processTrade(this.lastTrade);
+            }
         }
         if (Array.isArray(data.levels)) {
             this.ladder.processBatch(data.levels.map(([price, qty, side]) => ({
@@ -185,71 +221,119 @@ export class LadderView {
                 quantity: parseFloat(qty),
                 numOrders: data.seq_num,
             })));
-            // A level removed and added again lost its own-order flag.
-            this.restoreOwnOrders();
         }
     }
 
-    setOwn(instrument, price, side, value) {
-        if (this.ladder && instrument === this.instrument) {
-            this.ladder.setHasOwnOrders(price, side, value);
+    // A trade message: the LTQ column shows its qty at its price, colored by who crossed the spread.
+    onTrade(data) {
+        if (!this.ladder || data.instrument !== this.instrument) {
+            return;
         }
+        const aggressor = data.side === 0 ? SlickLadder.Side.BID : data.side === 1 ? SlickLadder.Side.ASK : null;
+        this.lastTrade = { price: data.price, quantity: data.qty, aggressor };
+        this.ladder.processTrade(this.lastTrade);
     }
 
     // The orders open as the window connects, from /api/orders.
     seed(orders) {
-        this.pending.clear();
+        const before = this.shownRows();
+        this.orders.clear();
         for (const o of orders ?? []) {
-            if (o.order_id && o.price) {
-                this.pending.set(o.order_id, { instrument: o.instrument, price: o.price, sideEnum: sideEnum(o.side) });
+            const order = workingOrder(o, o.remaining_qty);
+            if (order) {
+                this.orders.set(order.orderId, order);
             }
         }
-        this.restoreOwnOrders();
-    }
-
-    hasOrdersAt(instrument, price, side) {
-        for (const o of this.pending.values()) {
-            if (o.instrument === instrument && o.price === price && o.sideEnum === side) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    forget(orderId) {
-        const order = this.pending.get(orderId);
-        if (order) {
-            this.pending.delete(orderId);
-            if (!this.hasOrdersAt(order.instrument, order.price, order.sideEnum)) {
-                this.setOwn(order.instrument, order.price, order.sideEnum, false);
-            }
-        }
+        this.pushRows(new Map([...before, ...this.shownRows()]));
+        this.handlers.onOrdersChanged?.();
     }
 
     // ack: an order rests at its price, a modify at its new one under the same order_id. A fill
-    // that leaves nothing, or a cancel, takes it off.
+    // leaves less of it, or nothing, and a cancel or reject takes it off.
     onOrderUpdate(data) {
-        if (data.event === 'ack' && data.order_id && data.instrument && data.price != null) {
-            const side = sideEnum(data.side);
-            const previous = this.pending.get(data.order_id);
-            this.pending.set(data.order_id, { instrument: data.instrument, price: data.price, sideEnum: side });
-            if (previous && (previous.instrument !== data.instrument || previous.price !== data.price ||
-                             previous.sideEnum !== side) &&
-                !this.hasOrdersAt(previous.instrument, previous.price, previous.sideEnum)) {
-                this.setOwn(previous.instrument, previous.price, previous.sideEnum, false);
+        const id = data.order_id;
+        if (!id) {
+            return;
+        }
+        if (data.event === 'ack') {
+            this.set(id, workingOrder(data, data.remaining_qty ?? data.qty));
+        } else if (data.event === 'fill') {
+            const order = this.orders.get(id);
+            if (order) {
+                this.set(id, data.remaining_qty > 0 ? { ...order, remaining: data.remaining_qty } : null);
             }
-            this.setOwn(data.instrument, data.price, side, true);
-        } else if (data.event === 'fill' && data.order_id && data.remaining_qty === 0) {
-            this.forget(data.order_id);
-        } else if (data.event === 'cancel' && data.order_id) {
-            this.forget(data.order_id);
+        } else if (data.event === 'cancel' || data.event === 'reject') {
+            this.set(id, null);
         }
     }
 
-    restoreOwnOrders() {
-        for (const o of this.pending.values()) {
-            this.setOwn(o.instrument, o.price, o.sideEnum, true);
+    // MANUAL's orders on the shown instrument whose Work row is the one at `price`, bids first.
+    ordersAt(price) {
+        if (!this.ladder || price === null) {
+            return [];
         }
+        const half = this.tick / 2;
+        return [...this.orders.values()]
+            .filter((o) => o.instrument === this.instrument && Math.abs(this.rowOf(o) - price) < half)
+            .sort((a, b) => a.side - b.side || b.price - a.price);
+    }
+
+    // Puts `next` in place of order `id`, or takes it off with null, and redraws the Work rows it
+    // left and came to.
+    set(id, next) {
+        const previous = this.orders.get(id);
+        if (!previous && !next) {
+            return;
+        }
+        if (next) {
+            this.orders.set(id, next);
+        } else {
+            this.orders.delete(id);
+        }
+        for (const o of [previous, next]) {
+            if (o && this.ladder && o.instrument === this.instrument) {
+                this.pushRow(o.side, this.rowOf(o));
+            }
+        }
+        this.handlers.onOrdersChanged?.();
+    }
+
+    // The price of the row an order shows on.
+    rowOf(order) {
+        return clean(this.ladder.displayPrice(order.price, order.side));
+    }
+
+    // The shown instrument's Work rows, as [side, price] by a key of both.
+    shownRows() {
+        const rows = new Map();
+        if (this.ladder) {
+            for (const o of this.orders.values()) {
+                if (o.instrument === this.instrument) {
+                    const price = this.rowOf(o);
+                    rows.set(`${o.side}:${price}`, [o.side, price]);
+                }
+            }
+        }
+        return rows;
+    }
+
+    pushRows(rows) {
+        for (const [side, price] of rows.values()) {
+            this.pushRow(side, price);
+        }
+    }
+
+    // One Work cell: the total left of the orders on its row and side, and how many. 0 clears it.
+    pushRow(side, price) {
+        let qty = 0;
+        let count = 0;
+        for (const o of this.orders.values()) {
+            if (o.instrument === this.instrument && o.side === side && this.rowOf(o) === price) {
+                qty += o.remaining;
+                ++count;
+            }
+        }
+        this.ladder.setWorkingOrders(price, side, clean(qty), count);
     }
 }
 
@@ -275,10 +359,6 @@ function SettingsDialog({ settings, onSave, onClose }) {
                 <div class="form-hint">${draft.autoCenter
                     ? 'Keeps the bid/ask midpoint on the middle row, so rows move as it moves. The wheel does not scroll.'
                     : 'The wheel scrolls. Space or a middle-click on the ladder centers it.'}</div>
-                <label class="check">
-                    <input type="checkbox" checked=${draft.volumeBars} onChange=${(e) => set('volumeBars', e.target.checked)} />
-                    Volume bars
-                </label>
                 <label class="field"><span>Empty price rows</span>
                     <select value=${draft.emptyRows} onChange=${(e) => set('emptyRows', e.target.value)}>
                         ${Object.entries(EMPTY_ROWS).map(([value, label]) => html`<option value=${value}>${label}</option>`)}
@@ -332,6 +412,42 @@ function ConfirmDialog({ order, onConfirm, onClose }) {
         <//>`;
 }
 
+// What a cancel of `orders` names in the log: the order, or how many and the row they were on.
+function describe(orders) {
+    const o = orders[0];
+    return orders.length === 1 ? `${SIDE_NAMES[o.side]} ${o.remaining} ${o.instrument} @ ${o.price}`
+                               : `${orders.length} orders on ${o.instrument} @ ${o.price}`;
+}
+
+// The end of an order ID, enough to tell a row's orders apart: Coinbase's are 36-char UUIDs, too
+// wide for a ladder's window. The whole one is the cell's tooltip.
+const shortId = (id) => (id.length > 12 ? `…${id.slice(-8)}` : id);
+
+// A right click on a Work cell: MANUAL's orders on that row, each to cancel, or all at once. The
+// rows follow fills and cancels as they come, and the dialog closes once none is left.
+function WorkOrdersDialog({ instrument, price, orders, onCancel, onClose }) {
+    return html`
+        <${Dialog} title=${`Working orders: ${instrument} @ ${price}`} onClose=${onClose}
+            footer=${html`<button class="btn" onClick=${onClose}>Close</button>
+                          <button class="btn btn-danger" onClick=${() => onCancel(orders)}>Cancel all</button>`}>
+            <table class="data-table">
+                <thead><tr>
+                    <th>Side</th><th class="num">Price</th><th class="num">Remaining</th><th>Order</th><th></th>
+                </tr></thead>
+                <tbody>
+                    ${orders.map((o) => html`
+                        <tr key=${o.orderId}>
+                            <td class=${o.side === 0 ? 'positive' : 'negative'}>${SIDE_NAMES[o.side]}</td>
+                            <td class="num">${formatPrice(o.price)}</td>
+                            <td class="num">${o.remaining}</td>
+                            <td class="mono muted" title=${o.orderId}>${shortId(o.orderId)}</td>
+                            <td><button class="btn btn-danger" onClick=${() => onCancel([o])}>Cancel</button></td>
+                        </tr>`)}
+                </tbody>
+            </table>
+        <//>`;
+}
+
 export default function Ladder({ params }) {
     const list = useInstruments();
     // The one picked here, kept across a reload, else the one a workspace opened it on.
@@ -343,11 +459,15 @@ export default function Ladder({ params }) {
     const [settings, setSettings] = useState(() => initialSettings(params));
     const [editing, setEditing] = useState(false);   // the settings dialog is open
     const [confirming, setConfirming] = useState(null);   // the order waiting for a confirm
+    const [listing, setListing] = useState(null);   // the Work row price whose orders the dialog lists
+    const [, setOrdersSeen] = useState(0);   // bumped as MANUAL's orders change, while it lists them
     const [ready, setReady] = useState(false);   // slick-ladder loaded
     const host = useRef(null);
     const view = useRef(null);
     const streamed = useRef(null);   // what this window's socket streams
     const controls = useRef({});
+    const listingRef = useRef(null);
+    listingRef.current = listing;
 
     useEffect(() => watchInstruments(), []);
 
@@ -384,9 +504,6 @@ export default function Ladder({ params }) {
     const send = useCallback(async (order) => {
         try {
             await api.submitOrder(order);
-            if (order.type === 'limit') {
-                view.current?.setOwn(order.instrument, order.price, sideEnum(order.side), true);
-            }
             setPrice('');
             setTif('');
             const msg = `Order submitted: ${order.side.toUpperCase()} ${order.quantity} ${order.instrument}${order.type === 'limit' ? ` @ ${order.price}` : ''}`;
@@ -436,11 +553,36 @@ export default function Ladder({ params }) {
         }
     }, []);
 
+    // Cancels `orders`, all at once: a click on a Work cell, or the dialog's. Each stays on the
+    // ladder until its broker says it's cancelled.
+    const cancelOrders = useCallback(async (orders) => {
+        const results = await Promise.allSettled(
+            orders.map((o) => api.cancelOrder(o.strategyId, o.orderId, o.clientOrderId)));
+        const failed = orders.filter((_, i) => results[i].status === 'rejected');
+        const sent = orders.filter((_, i) => results[i].status === 'fulfilled');
+        if (sent.length > 0) {
+            const msg = `Cancel submitted: ${describe(sent)}`;
+            notify(msg, 'success');
+            bus.log(msg, 'info');
+        }
+        if (failed.length > 0) {
+            const reason = results.find((r) => r.status === 'rejected').reason.message;
+            const msg = `Cancel failed: ${describe(failed)}: ${reason}`;
+            notify(msg, 'error');
+            bus.log(msg, 'error');
+        }
+    }, []);
+
     useEffect(() => {
         let alive = true;
         loadScript('js/slick-ladder.js').then(() => {
             if (alive) {
-                view.current = new LadderView(host.current, onLevelClick);
+                view.current = new LadderView(host.current, {
+                    onLevelClick,
+                    onWorkCancel: cancelOrders,
+                    onWorkList: setListing,
+                    onOrdersChanged: () => listingRef.current !== null && setOrdersSeen((n) => n + 1),
+                });
                 setReady(true);
             }
         }).catch((error) => notify(error.message, 'error'));
@@ -506,8 +648,17 @@ export default function Ladder({ params }) {
         }
     });
     useWs('level2', (data) => view.current?.apply(data));
+    useWs('trade', (data) => view.current?.onTrade(data));
     useWs('order_update', (data) => view.current?.onOrderUpdate(data));
     useWs('subscription_error', (data) => notify(`${data.instrument}: ${data.message}`, 'error'));
+
+    // What the dialog lists: none once the last of them is gone, or the ladder shows another.
+    const listed = listing !== null ? view.current?.ordersAt(listing) ?? [] : [];
+    useEffect(() => {
+        if (listing !== null && listed.length === 0) {
+            setListing(null);
+        }
+    }, [listing, listed.length]);
 
     const pick = (name) => {
         session.set('ladder.instrument', name);
@@ -576,5 +727,7 @@ export default function Ladder({ params }) {
             ${editing && html`<${SettingsDialog} settings=${settings} onSave=${saveSettings} onClose=${() => setEditing(false)} />`}
             ${confirming && html`<${ConfirmDialog} order=${confirming} onClose=${() => setConfirming(null)}
                                                    onConfirm=${() => { setConfirming(null); send(confirming); }} />`}
+            ${listed.length > 0 && html`<${WorkOrdersDialog} instrument=${shown} price=${listing} orders=${listed}
+                                                onCancel=${cancelOrders} onClose=${() => setListing(null)} />`}
         </div>`;
 }

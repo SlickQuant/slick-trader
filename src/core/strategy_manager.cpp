@@ -743,18 +743,32 @@ void StrategyManager::dispatch_ladder_subscription(const LadderSubscriptionEvent
     // one holder, so a strategy holding the same book keeps it.
     // One a strategy only quotes or trades is the ladder's to hold too: it streams no book.
     const std::string_view instrument(event.instrument);
-    if (!manual_ || !(event.subscribe
-                          ? manual_->hold(event.broker_id, instrument, subscribed(event.broker_id, instrument))
-                          : manual_->release(event.broker_id, instrument))) {
+    if (!manual_) {
         return;
     }
-    const SubscriptionRequest request(event.broker_id, ManualStrategy::SUBSCRIPTION, {std::string(instrument)});
+    const uint8_t asked = event.feeds;
+    const uint8_t feeds = !event.subscribe ? manual_->release(event.broker_id, instrument)
+                          : manual_->hold(event.broker_id, instrument, subscribed(event.broker_id, instrument), asked)
+                              ? asked
+                              : 0;
+    if (feeds == 0) {
+        return;
+    }
     if (event.subscribe) {
         LOG_INFO("StrategyManager: a ladder holds {} on {}", instrument, to_string(event.broker_id));
-        subscribe(request, false);
     } else {
         LOG_INFO("StrategyManager: no ladder holds {} on {} now", instrument, to_string(event.broker_id));
-        unsubscribe(request);
+    }
+    for (size_t i = 0; i < ManualStrategy::SUBSCRIPTIONS.size(); ++i) {
+        if (!(feeds & (1u << i))) {
+            continue;   // a strategy streams it
+        }
+        const SubscriptionRequest request(event.broker_id, ManualStrategy::SUBSCRIPTIONS[i], {std::string(instrument)});
+        if (event.subscribe) {
+            subscribe(request, false);
+        } else {
+            unsubscribe(request);
+        }
     }
 }
 

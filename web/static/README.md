@@ -84,11 +84,11 @@ A ladder lists the instruments brokers define, narrowed by MANUAL's `instruments
 It also lists what other strategies subscribe. Coinbase and Hyperliquid define their products when
 they start. Coinbase reads them from `market_data.rest_url`.
 
-Nothing streams until a ladder picks an instrument. MANUAL then subscribes its level 2 book, and
-unsubscribes it `web_server_ladder_release_ms` (5000) after the last ladder on it closes or
-switches away. That never drops a book a strategy also subscribed. If a strategy already streams
-the book (LEVEL2 or ORDER_BOOK), the ladder uses that stream and MANUAL subscribes nothing. A
-strategy's quotes or trades carry no book, so they don't count.
+Nothing streams until a ladder picks an instrument. MANUAL then subscribes its level 2 book and
+its trades (for LTQ), and unsubscribes them `web_server_ladder_release_ms` (5000) after the last
+ladder on it closes or switches away. That never drops a feed a strategy also subscribed. If a
+strategy already streams the book (LEVEL2 or ORDER_BOOK) or the trades, the ladder uses that
+stream and MANUAL doesn't subscribe it. A strategy's quotes carry neither, so they don't count.
 
 ## Files
 
@@ -138,8 +138,12 @@ Server to client:
 - `instruments` / `instruments_added`: `{"instruments":{"ZNZ6":[<broker id>,<tick>,<min qty>]}}`.
   The tick and the min qty are 0 when the broker gives none.
 - `level2`: a snapshot when `is_snapshot` is set, then changes.
-- `order_update` with `event` `ack`, `fill`, `leg_fill`, `cancel` or `reject`. Fills carry `seq`,
-  `strategy_id`, `fill_id`, `fee` and `timestamp_ns`.
+- `trade`: `{"instrument","price","qty","side"}` to the clients watching the instrument's level 2,
+  and the last one again after each snapshot. `side` is 0 when the buyer was the aggressor, 1 when
+  the seller was, 2 when unknown.
+- `order_update` with `event` `ack`, `fill`, `leg_fill`, `cancel` or `reject`. Acks carry
+  `strategy_id`, `client_order_id` and `remaining_qty`. Fills carry `seq`, `strategy_id`,
+  `fill_id`, `fee` and `timestamp_ns`.
 - `pnl_update`, `broker_status`.
 - `subscription_error`: the server couldn't pass a ladder's subscribe on to MANUAL.
 

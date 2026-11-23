@@ -1,6 +1,7 @@
 #pragma once
 
 #include <slick-trader/events/level2_update_event.hpp>
+#include <slick-trader/events/trade_event.hpp>
 #include <slick-trader/utils/order_types.hpp>
 #include <slick-trader/utils/types.hpp>
 #include <algorithm>
@@ -202,6 +203,28 @@ void write_level2_message(std::string& out, std::string_view instrument, uint64_
     out += "]}";
 }
 
+// The last trade of an instrument, as a ladder's LTQ column shows it. `side` is the aggressor's,
+// UNKNOWN when the broker did not say; qty 0 is no trade yet.
+struct LastTrade {
+    price_t price = 0;
+    qty_t qty = 0;
+    Side side = Side::UNKNOWN;
+};
+
+// Writes the dashboard's trade message into `out`, cleared first as write_level2_message() does:
+// {"type":"trade","instrument":...,"price":...,"qty":...,"side":<0 buy, 1 sell, 2 unknown>}.
+inline void write_trade_message(std::string& out, std::string_view instrument, const LastTrade& trade) {
+    out.assign(R"({"type":"trade","instrument":)");
+    append_json_string(out, instrument);
+    out += R"(,"price":)";
+    append_json_number(out, from_price_t(trade.price));
+    out += R"(,"qty":)";
+    append_json_number(out, from_qty_t(trade.qty));
+    out += R"(,"side":)";
+    append_json_number(out, static_cast<int>(trade.side));
+    out += '}';
+}
+
 // Every instrument's level 2 book as it streams, and the clients watching each. A book that has
 // streamed is kept, watched or not, for the life of the process: a client that subscribes late
 // starts from it. One only asked for goes with its last watcher, so what clients ask for cannot
@@ -222,6 +245,25 @@ public:
         ++stream.events;
         stream.book.apply(event);
         return stream.clients;
+    }
+
+    // Keeps `event` as the last trade of its instrument and returns who watches it. A trade for an
+    // instrument with no stream is dropped. Trades never create a stream, so a strategy's trade
+    // feed costs one lookup here.
+    const Clients& trade(const TradeEvent& event) {
+        static const Clients none;
+        const auto it = streams_.find(std::string_view(event.instrument));
+        if (it == streams_.end()) {
+            return none;
+        }
+        it->second.last_trade = LastTrade{event.price, event.quantity, event.side};
+        return it->second.clients;
+    }
+
+    // The last trade of `instrument`, nullptr when none came.
+    const LastTrade* last_trade(std::string_view instrument) const {
+        const auto it = streams_.find(instrument);
+        return it != streams_.end() && it->second.last_trade.qty != 0 ? &it->second.last_trade : nullptr;
     }
 
     // Adds `client` to the watchers of `instrument` and returns the book to send it as a
@@ -305,6 +347,7 @@ public:
         stream.released = false;
         if (stream.events == stream.events_at_release) {
             stream.book = Level2Book{};
+            stream.last_trade = LastTrade{};   // stale along with the book
         }
     }
 
@@ -315,6 +358,7 @@ private:
     struct Stream {
         Clients clients;
         Level2Book book;
+        LastTrade last_trade;
         std::string_view instrument;   // its key in streams_
         bool streamed = false;         // an event came for it
         uint64_t events = 0;           // how many came

@@ -1,4 +1,4 @@
-# Unreleased
+# v0.7.0 - 11-23-2026
 
 ## Added
 
@@ -14,6 +14,21 @@
   name an app's windows after that path, so two dashboards, on one host or two of its ports, keep
   apart. Opened any other way, the dashboard does it itself on the first click or key in the
   window: a page may raise windows only then.
+- A ladder's Work column shows MANUAL's resting orders on each row as total qty and count, green
+  for buys and red for sells. A left click on a Work cell cancels that row's orders at once, and a
+  right click lists them so you can cancel one or all. The LTQ column shows the last trade's qty,
+  colored by who crossed the spread.
+- The engine streams trades to the ladders watching an instrument as `trade` messages, and sends
+  the last one after each book snapshot. MANUAL now subscribes a ladder's trades along with its
+  book, and skips any feed a strategy already streams. Acks now carry `strategy_id`,
+  `client_order_id` and `remaining_qty`, which the ladder needs to cancel an order.
+
+## Changed
+
+- slick-ladder 0.6.0, up from 0.5.0, for the Work and LTQ columns and a header row. The gold
+  outline on levels with our orders is gone, since Work shows them. The Volume bars setting is gone
+  too, because 0.6.0 draws bars only in MBO mode and the ladder runs in Price Level mode. A ladder
+  window now opens 420 px wide to fit the two new columns.
 
 ## Fixed
 
@@ -31,6 +46,9 @@
 - Closing the main window left its tool windows open when the main window was on the browser's
   error page, as after a reload while the engine was down: that page runs nothing to tell them.
   Tool windows now also check each second whether the main window is still open.
+- Coinbase trades went out with no aggressor side, and `is_buyer_maker` was backwards. Coinbase's
+  `market_trades` side is the maker's, so the engine now reports the other side as the aggressor
+  and sets `is_buyer_maker` when the maker was a buyer.
 
 # v0.6.0 - 11-18-2026
 

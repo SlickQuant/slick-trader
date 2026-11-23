@@ -29,8 +29,8 @@ NewRelease, ...), and the window title starts with it, as in `[Sim] Ladder`.
 - On CME and ICE the ladder keeps a row for each price with nothing on it, so rows stay put as
   levels come and go. A click on such a row trades at its price. The settings can show those rows
   everywhere or nowhere.
-- ⚙ opens this ladder's settings: order confirmation, auto-center, volume bars, empty price rows
-  and row height. They last through a reload and a workspace saves them with the ladder. A new
+- ⚙ opens this ladder's settings: order confirmation, auto-center, empty price rows and row
+  height. They last through a reload and a workspace saves them with the ladder. A new
   ladder starts on the defaults. Auto-center, off at first, keeps the midpoint on the middle row
   and stops the wheel from scrolling. Off, the wheel scrolls and Space or a middle-click centers.
 - Left-click a level to trade the qty there. Order confirmation is on by default, so the click
@@ -44,7 +44,15 @@ NewRelease, ...), and the window title starts with it, as in `[Sim] Ladder`.
 - ▾ shows the qty, price and TIF boxes, hidden at first, and the ladder remembers the choice. A
   price you type overrides the level, and hiding the boxes clears it. The TIF starts at DAY on CME and
   ICE and GTC elsewhere. A market order left on GTC or DAY goes out IOC.
-- Your resting orders are outlined in gold, kept through a reload and moved on a modify.
+- The columns are Work, Bid, Price, Ask and LTQ, under a header row.
+- Work shows MANUAL's resting orders on each row as total qty and count, `0.65 (2)`, green for
+  buys and red for sells. It updates on acks, modifies, fills and cancels, and comes back after a
+  reload. Other strategies' orders don't show. Left-click a Work cell to cancel every order on
+  that row, on both sides, right away with no confirm. Right-click it for a list of them, each with
+  its own Cancel, plus Cancel all. The list updates on fills and cancels and closes when the last
+  order is gone. An order stays on the ladder until its broker says it's cancelled.
+- LTQ shows the last trade's qty at its price: green when a buyer lifted the offer, red when a
+  seller hit the bid, white when the venue didn't say.
 - Several ladders can run side by side, each streaming one book.
 
 ## Ticket
@@ -55,8 +63,8 @@ at the instrument's default, as on the ladder, and the TIF at DAY on CME and ICE
 
 ## Orders
 
-Open orders across strategies, with modify, cancel and cancel all. A burst of updates reloads the
-list once.
+Open orders across strategies, with modify, cancel and cancel all. A cancelled order stays listed
+until its broker says it's gone. A burst of updates reloads the list once.
 
 ## Fills
 

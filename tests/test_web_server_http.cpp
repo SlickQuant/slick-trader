@@ -8,6 +8,7 @@
 #include <slick-trader/events/ladder_subscription_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
 #include <slick-trader/events/order_event.hpp>
+#include <slick-trader/events/trade_event.hpp>
 #include <slick-trader/strategy/manual_strategy.hpp>
 #include <slick-trader/web/web_server.hpp>
 
@@ -666,6 +667,62 @@ TEST_F(WebServerHttpTest, ABookWhoseFeedIsDownIsSentEmpty) {
     EXPECT_EQ(subscribed_levels(browser), 4u);
 }
 
+// A ladder's LTQ column: the trades of the instrument a browser watches go to it, and to it alone,
+// and a ladder opened later starts from the last one, right after its book.
+TEST_F(WebServerHttpTest, ATradeGoesToItsLaddersAndALaterOneStartsFromIt) {
+    const auto publish_trade = [&](const char* instrument, double price, double qty, Side aggressor) {
+        EventSerializer::publish<TradeEvent>(*producer_, [&](TradeEvent& event) {
+            event.broker_id = BROKER;
+            event.set_instrument(instrument);
+            event.price = to_price_t(price);
+            event.quantity = to_qty_t(qty);
+            event.side = aggressor;
+        });
+    };
+    RawClient watcher(port_);
+    RawClient other(port_);
+    ASSERT_TRUE(watcher.upgrade());
+    ASSERT_TRUE(other.upgrade());
+    EXPECT_EQ(next(other)["type"], "welcome");
+    ASSERT_EQ(subscribed_levels(watcher), 0u);
+
+    publish_trade("ESZ6", 5000.0, 1.0, Side::BUY);   // nobody watches it
+    publish_trade("ZNZ6", 110.5, 3.0, Side::SELL);
+    const auto trade = next(watcher);
+    EXPECT_EQ(trade["type"], "trade");
+    EXPECT_EQ(trade["instrument"], "ZNZ6");
+    EXPECT_EQ(trade["price"], 110.5);
+    EXPECT_EQ(trade["qty"], 3.0);
+    EXPECT_EQ(trade["side"], 1);
+    EXPECT_TRUE(nothing_came(watcher)) << "a trade of ESZ6, which it doesn't watch, went to it";
+    EXPECT_TRUE(nothing_came(other)) << "a trade went to a browser with no ladder on it";
+
+    ASSERT_EQ(subscribed_levels(other), 0u);
+    const auto last = next(other);
+    EXPECT_EQ(last["type"], "trade") << "a ladder opened after the trade had no LTQ";
+    EXPECT_EQ(last["price"], 110.5);
+    EXPECT_EQ(last["qty"], 3.0);
+}
+
+// A ladder's Work column shows MANUAL's orders and cancels them, which takes the strategy and the
+// client order ID. An ack carries both, and what is left of the order.
+TEST_F(WebServerHttpTest, AnAckNamesWhatACancelOfItTakes) {
+    RawClient browser(port_);
+    ASSERT_TRUE(browser.upgrade());
+    EXPECT_EQ(next(browser)["type"], "welcome");
+
+    publish_ack("MANUAL_1", "OID1", OrderStatus::ACKNOWLEDGED, 110.5, 2.0);    // new here
+    publish_ack("MANUAL_1", "OID1", OrderStatus::ACKNOWLEDGED, 110.25, 0.0);   // its price modified
+    const auto sent = order_updates(browser, 2);
+    ASSERT_EQ(sent.size(), 2u) << nlohmann::json(sent).dump();
+    for (const auto& ack : sent) {
+        EXPECT_EQ(ack["strategy_id"], "MANUAL");
+        EXPECT_EQ(ack["client_order_id"], "MANUAL_1");
+        EXPECT_EQ(ack["remaining_qty"], 2.0);
+    }
+    EXPECT_EQ(sent[1]["price"], 110.25);
+}
+
 // A request's body reached its handler as the last chunk uWS read, alone: one that came in more
 // than one, as a long MANUAL "instruments" list does, was parsed from its middle and refused.
 TEST_F(WebServerHttpTest, ABodyInMoreThanOneChunkIsReadWhole) {
@@ -712,30 +769,37 @@ protected:
 
 namespace {
 
-// Subscribes ZNZ6 at CME as `type`.
+// Subscribes ZNZ6 at CME as each of `types`.
 class ZNZ6Strategy : public StrategyBase {
 public:
-    explicit ZNZ6Strategy(SubscriptionType type) : StrategyBase("ZNZ6", "1.0.0"), type_(type) {}
+    explicit ZNZ6Strategy(std::vector<SubscriptionType> types)
+        : StrategyBase("ZNZ6", "1.0.0"), types_(std::move(types)) {}
 
     std::vector<SubscriptionRequest> get_subscriptions() const override {
-        return {SubscriptionRequest(BrokerId::CME, type_, {"ZNZ6"})};
+        std::vector<SubscriptionRequest> subs;
+        for (const auto type : types_) {
+            subs.emplace_back(BrokerId::CME, type, std::vector<std::string>{"ZNZ6"});
+        }
+        return subs;
     }
 
 private:
-    SubscriptionType type_;
+    std::vector<SubscriptionType> types_;
 };
 
-template <SubscriptionType TYPE>
+template <SubscriptionType... TYPES>
 class WebServerWithAZNZ6StrategyTest : public WebServerHttpTest {
 protected:
     void SetUp() override {
-        env_.add_strategy(std::make_shared<ZNZ6Strategy>(TYPE));
+        env_.add_strategy(std::make_shared<ZNZ6Strategy>(std::vector<SubscriptionType>{TYPES...}));
         WebServerHttpTest::SetUp();
     }
 };
 
 using WebServerWithAQuotingStrategyTest = WebServerWithAZNZ6StrategyTest<SubscriptionType::QUOTE>;
 using WebServerWithAnOrderBookStrategyTest = WebServerWithAZNZ6StrategyTest<SubscriptionType::ORDER_BOOK>;
+using WebServerWithABookAndTradesStrategyTest =
+    WebServerWithAZNZ6StrategyTest<SubscriptionType::ORDER_BOOK, SubscriptionType::TRADE>;
 
 } // namespace
 
@@ -751,16 +815,28 @@ TEST_F(WebServerWithAQuotingStrategyTest, ALadderHoldsTheBookOfAnInstrumentAStra
     EXPECT_TRUE(held->subscribe);
     EXPECT_EQ(held->broker_id, BrokerId::CME);
     EXPECT_EQ(std::string_view(held->instrument), "ZNZ6");
+    EXPECT_EQ(held->feeds, LADDER_ALL) << "its book and its trades";
 }
 
 // A ladder on what a strategy streams as ORDER_BOOK had MANUAL hold its LEVEL2 as well. Coinbase
 // serves both on one channel, so the hold's release unsubscribed the running strategy's book.
-// ORDER_BOOK feeds a ladder as LEVEL2 does: nothing is held.
-TEST_F(WebServerWithAnOrderBookStrategyTest, ALadderOnWhatAStrategyStreamsAsAnOrderBookHoldsNothing) {
+// ORDER_BOOK feeds a ladder as LEVEL2 does: the book is not held, only the trades for its LTQ.
+TEST_F(WebServerWithAnOrderBookStrategyTest, ALadderOnWhatAStrategyStreamsAsAnOrderBookHoldsItsTradesAlone) {
     RawClient browser(port_);
     ASSERT_TRUE(browser.upgrade());
     ASSERT_EQ(subscribed_levels(browser), 0u);
-    EXPECT_FALSE(next_ladder_event(std::chrono::milliseconds(300))) << "MANUAL held a book a strategy streams";
+    const auto held = next_ladder_event(std::chrono::seconds(5));
+    ASSERT_TRUE(held) << "the ladder's trades were not asked for";
+    EXPECT_TRUE(held->subscribe);
+    EXPECT_EQ(held->feeds, LADDER_TRADES) << "MANUAL held a book a strategy streams";
+}
+
+// A strategy streaming the book and the trades leaves nothing for a ladder to hold.
+TEST_F(WebServerWithABookAndTradesStrategyTest, ALadderOnWhatAStrategyStreamsWhollyHoldsNothing) {
+    RawClient browser(port_);
+    ASSERT_TRUE(browser.upgrade());
+    ASSERT_EQ(subscribed_levels(browser), 0u);
+    EXPECT_FALSE(next_ladder_event(std::chrono::milliseconds(300))) << "MANUAL held what a strategy streams";
 }
 
 // A dashboard connecting had the server call each strategy's get_subscriptions() on its own
@@ -775,7 +851,9 @@ TEST_F(WebServerWithAStrategyTest, AStrategysInstrumentsAreListedWithNoCallOffIt
                                              {"instruments", {{"ZBZ6", {static_cast<int>(BrokerId::CME), 0, 0}}}}}));
     EXPECT_FALSE(strategy_->asked_off_thread.load(std::memory_order_relaxed));
 
-    // A ladder on it streams what the strategy subscribed: MANUAL holds nothing for it.
+    // A ladder on it streams the book the strategy subscribed, so MANUAL holds only the trades.
     ASSERT_TRUE(browser.send_text(R"({"type":"subscribe","channel":"level2","instrument":"ZBZ6"})"));
-    EXPECT_FALSE(next_ladder_event(std::chrono::milliseconds(300)));
+    const auto held = next_ladder_event(std::chrono::seconds(5));
+    ASSERT_TRUE(held);
+    EXPECT_EQ(held->feeds, LADDER_TRADES);
 }

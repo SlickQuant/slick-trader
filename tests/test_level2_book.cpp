@@ -335,6 +335,68 @@ TEST(Level2StreamsTest, ABookStillStreamingAfterItWasLetGoIsKept) {
     EXPECT_EQ(levels_of(*book).size(), 2u);
 }
 
+namespace {
+
+TradeEvent trade(const char* instrument, double price, double qty, Side aggressor) {
+    TradeEvent event;
+    event.set_instrument(instrument);
+    event.price = to_price_t(price);
+    event.quantity = to_qty_t(qty);
+    event.side = aggressor;
+    return event;
+}
+
+} // namespace
+
+// The ladder's LTQ column reads the trade message: price and qty as numbers, the aggressor as
+// 0 (buy), 1 (sell) or 2 (unknown), as level2 gives a side.
+TEST(TradeMessageTest, ItReadsAsTheDashboardExpects) {
+    std::string out = "what the last message left";
+    write_trade_message(out, "ZN \"Z6\"", LastTrade{to_price_t(110.5), to_qty_t(3.0), Side::SELL});
+    const auto message = nlohmann::json::parse(out);
+    EXPECT_EQ(message["type"], "trade");
+    EXPECT_EQ(message["instrument"], "ZN \"Z6\"");
+    EXPECT_EQ(message["price"], 110.5);
+    EXPECT_EQ(message["qty"], 3.0);
+    EXPECT_EQ(message["side"], 1);
+
+    write_trade_message(out, "ZNZ6", LastTrade{to_price_t(110.25), to_qty_t(0.5), Side::UNKNOWN});
+    EXPECT_EQ(out, R"({"type":"trade","instrument":"ZNZ6","price":110.25,"qty":0.5,"side":2})");
+}
+
+// A trade goes to those watching its instrument's book and is kept for a later subscriber. A trade
+// for an instrument with no stream, like one from a strategy's trade feed, creates none.
+TEST(Level2StreamsTest, ATradeGoesToItsWatchersAndIsKeptForLaterOnes) {
+    Streams streams;
+    Tab tab;
+    streams.subscribe(&tab, "ZNZ6");
+    EXPECT_EQ(streams.last_trade("ZNZ6"), nullptr) << "no trade came yet";
+
+    EXPECT_EQ(streams.trade(trade("ZNZ6", 110.5, 3.0, Side::BUY)), Streams::Clients{&tab});
+    EXPECT_EQ(streams.trade(trade("ZNZ6", 110.25, 2.0, Side::SELL)), Streams::Clients{&tab});
+    const LastTrade* last = streams.last_trade("ZNZ6");
+    ASSERT_NE(last, nullptr);
+    EXPECT_EQ(last->price, to_price_t(110.25));
+    EXPECT_EQ(last->qty, to_qty_t(2.0));
+    EXPECT_EQ(last->side, Side::SELL);
+
+    EXPECT_TRUE(streams.trade(trade("ESZ6", 5000.0, 1.0, Side::BUY)).empty());
+    EXPECT_EQ(streams.size(), 1u) << "a trade of an instrument nobody watched added a stream";
+    EXPECT_EQ(streams.last_trade("ESZ6"), nullptr);
+}
+
+// The last trade from before an instrument's release is as stale as its book, so holding the
+// instrument again clears both.
+TEST(Level2StreamsTest, TheLastTradeGoesWithABookEmptiedWhenHeldAgain) {
+    Streams streams;
+    stream_znz6(streams);
+    streams.trade(trade("ZNZ6", 110.5, 3.0, Side::BUY));
+    streams.release("ZNZ6");
+    ASSERT_NE(streams.last_trade("ZNZ6"), nullptr);
+    streams.renew("ZNZ6");
+    EXPECT_EQ(streams.last_trade("ZNZ6"), nullptr);
+}
+
 // A snapshot went in a level at a time, each kept worst first. A broker lists one best first, so
 // every level went in at the front of its side and moved all the others: a full-depth book took
 // the server's event loop seconds. It is taken in whole now, and sorted once.

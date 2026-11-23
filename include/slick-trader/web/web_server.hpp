@@ -3,6 +3,7 @@
 #include <slick/queue.hpp>
 #include <uwebsockets/App.h>
 #include <slick-trader/events/event.hpp>
+#include <slick-trader/events/ladder_subscription_event.hpp>
 #include <slick-trader/events/level2_update_event.hpp>
 #include <slick-trader/web/fill_history.hpp>
 #include <slick-trader/web/level2_book.hpp>
@@ -179,6 +180,8 @@ private:
     void handle_order_reject(const OrderRejectEvent& reject);
 
     void broadcast_level2_update(const Level2UpdateEvent& event);
+    // A trade to the ladders watching its instrument, for their LTQ column.
+    void broadcast_trade(const TradeEvent& event);
     void broadcast_order_update(const std::string& message);
     // Keeps a fill in fills_ and sends it to every client.
     void broadcast_fill(json& message);
@@ -197,7 +200,9 @@ private:
     bool watched(std::string_view instrument);
     void unwatched(std::string_view instrument);
     void release_holds(uint64_t now_ns);
-    bool publish_ladder_subscription(BrokerId broker, std::string_view instrument, bool subscribe);
+    // A hold covers `feeds` (LadderFeed bits). A release frees whatever MANUAL held.
+    bool publish_ladder_subscription(BrokerId broker, std::string_view instrument, bool subscribe,
+                                     uint8_t feeds = LADDER_ALL);
 
     // PnL broadcasting
     void broadcast_pnl_update();
@@ -243,6 +248,7 @@ private:
         // a ladder. One a strategy only quotes or trades streams no book: it is held.
         bool book;
         qty_t min_qty{0};   // smallest order, 0 when its broker did not say
+        bool trades{false};   // a strategy streams its trades at `broker`: a ladder's hold leaves them out
     };
     static constexpr uint64_t INSTRUMENTS_ADDED_INTERVAL_NS = 250'000'000;
     StringMap<Listing> listings_;
@@ -268,6 +274,7 @@ private:
 
     // Each level2 message is written here: one buffer, its capacity kept from one to the next.
     std::string level2_message_;
+    std::string trade_message_;   // same for each trade message
 
     // Producer side of the same bus: strategy parameter updates are published here from the
     // uWS event loop thread and applied by the StrategyManager worker, so a strategy's
