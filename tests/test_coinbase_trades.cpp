@@ -36,7 +36,8 @@ TEST(CoinbaseTradesTest, ATradeNamesItsAggressorAsTheMakersOtherSide) {
     ASSERT_EQ(trades.size(), 2u);
     EXPECT_EQ(trades[0].side, Side::SELL) << "a seller hit the resting bid";
     EXPECT_TRUE(trades[0].is_buyer_maker);
-    EXPECT_EQ(trades[0].quantity, to_qty_t(0.5));
+    // A copy: EXPECT_EQ takes a reference, and the packed event's field is misaligned.
+    EXPECT_EQ(qty_t{trades[0].quantity}, to_qty_t(0.5));
     EXPECT_EQ(trades[1].side, Side::BUY) << "a buyer lifted the resting offer";
     EXPECT_FALSE(trades[1].is_buyer_maker);
 }
