@@ -28,6 +28,11 @@ public:
     virtual bool start() = 0;
     virtual void stop() = 0;
 
+    // Called before the strategies stop, while the broker still processes their requests. A
+    // broker with a policy for what stopping cancels applies it to the cancels the strategies
+    // send as they stop. Does nothing by default.
+    virtual void begin_stop() {}
+
     // Connector access
     // virtual std::shared_ptr<IMarketDataConnector> get_market_data_connector() = 0;
     // virtual std::shared_ptr<IOrderConnector> get_order_connector() = 0;

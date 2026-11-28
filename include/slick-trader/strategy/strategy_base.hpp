@@ -402,10 +402,11 @@ protected:
         LOG_DEBUG("Strategy {}: Cancelled order {}", name_, order_id);
     }
 
-    // Cancel all open orders
+    // Cancel all open orders, including one with a modify in flight (is_open() leaves it out).
+    // One still waiting for its ack has no broker order id yet and is skipped.
     void cancel_all_orders() {
         for (const auto& [cid, order] : orders_by_client_id_) {
-            if (order.is_open() && !order.order_id.empty()) {
+            if ((order.is_open() || order.status == OrderStatus::PENDING_MODIFY) && !order.order_id.empty()) {
                 cancel_order(order.order_id, order.client_order_id);
             }
         }

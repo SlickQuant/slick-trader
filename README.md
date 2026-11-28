@@ -11,7 +11,7 @@ crypto exchanges over WebSocket/REST, routes market data and order events throug
 messaging core, runs trading strategies as hot-loadable plugins, and exposes a real-time web
 dashboard for monitoring and manual control.
 
-> **Status**: 0.7.0. The Coinbase and Hyperliquid brokers are built in, and more
+> **Status**: 0.8.0. The Coinbase and Hyperliquid brokers are built in, and more
 > can be built in from their own repositories (see
 > [Brokers and out-of-tree brokers](#brokers-and-out-of-tree-brokers)). Order execution needs
 > broker credentials (see [Broker configuration](#broker-configuration)). The sample config is
@@ -205,6 +205,11 @@ second one:
 ```bash
 cmake -S . -B build "-DSLICK_TRADER_EXTERNAL_BROKERS=/path/to/broker-a;/path/to/broker-b"
 ```
+
+A broker can set its own policy for what a stop cancels by overriding `IBroker::begin_stop()`. The
+engine calls it on every broker before it stops the strategies, so the broker can filter the cancels
+they send as they stop. It does nothing by default. `slick-trader-cme` 0.6.0 and `slick-trader-ice`
+0.4.0 use it for `cancel_on_stop_tif`, and need this version or later.
 
 Keep that setting in a `CMakeUserPresets.json`, which `.gitignore` excludes, so a local path never
 reaches the repository. Configure prints each directory as it adds it, then the brokers that

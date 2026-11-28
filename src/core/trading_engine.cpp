@@ -391,6 +391,11 @@ void TradingEngine::shutdown() {
     //     }
     // }
 
+    // Brokers hear of it first: the cancels a strategy sends as it stops reach them next.
+    for (auto &broker : brokers_) {
+        broker->begin_stop();
+    }
+
     // Stop strategy manager
     if (strategy_manager_) {
         LOG_INFO("");

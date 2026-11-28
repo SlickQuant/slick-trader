@@ -1,3 +1,22 @@
+# v0.8.0 - 11-27-2026
+
+## Added
+
+- `IBroker::begin_stop()`, which does nothing by default. The engine calls it on every broker before
+  it stops the strategies, so a broker can apply its own policy to the cancels they send as they
+  stop. `slick-trader-cme` 0.6.0 and `slick-trader-ice` 0.4.0 override it, and need this version or
+  later.
+
+## Fixed
+
+- `cancel_all_orders()` skipped an order with a modify in flight, since `is_open()` leaves
+  `PENDING_MODIFY` out, so such a quote or ladder order stayed working when its strategy stopped. It
+  now cancels it. Orders still waiting for their first ack have no broker order id and are skipped,
+  as before.
+- MarketMaker cancelled each quote with a modify in flight twice when it stopped: its stop hook
+  cancelled each slot, and `cancel_all_orders()` then did too. It now calls `cancel_all_orders()`
+  alone.
+
 # v0.7.0 - 11-24-2026
 
 ## Added

@@ -25,6 +25,7 @@
 
 #include <cmath>
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -588,4 +589,23 @@ TEST_F(MarketMakerBookTest, ValuesOnlyTheBookOfItsOwnInstrument) {
         EXPECT_GT(quote.price, 77000.0);
         EXPECT_LT(quote.price, 79000.0);
     }
+}
+
+// Stopping cancels each quote once, including one whose edit is still in flight.
+TEST_F(MarketMakerQuoteSlotTest, StoppingCancelsEachQuoteOnceEvenWithAnEditInFlight) {
+    const auto resting = open_both_sides(78000.0, 78002.0);
+    ASSERT_EQ(resting.size(), 2u);
+    drain();
+    send_quote(78200.0, 78202.0);
+    ASSERT_EQ(count(drain(), EventType::MODIFY_ORDER), 2) << "both slots should be PENDING_MODIFY";
+
+    mm_.stop();
+
+    const auto requests = drain();
+    EXPECT_EQ(count(requests, EventType::CANCEL_ORDER), 2) << "one cancel per quote, not two";
+    std::set<std::string> cancelled;
+    for (const auto& r : requests) {
+        if (r.type == EventType::CANCEL_ORDER) cancelled.insert(r.order_id);
+    }
+    EXPECT_EQ(cancelled.size(), 2u) << "each of the two quotes is cancelled";
 }

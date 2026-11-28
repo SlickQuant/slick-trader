@@ -144,16 +144,10 @@ protected:
 
     void on_stop() override {
         LOG_INFO("MarketMaker: Stopping - cancelling open quotes");
-        // Explicitly cancel ACTIVE and PENDING_MODIFY slots (PENDING_MODIFY may not
-        // be covered by cancel_all_orders() if PENDING_MODIFY is not in is_open()).
-        for (auto* slot : {&bid_slot_, &ask_slot_}) {
-            if ((slot->state == SlotState::ACTIVE ||
-                 slot->state == SlotState::PENDING_MODIFY) &&
-                !slot->broker_id.empty()) {
-                cancel_order(slot->broker_id, slot->client_id);
-            }
-        }
-        cancel_all_orders();  // catch PENDING_NEW orders tracked in base class
+        // cancel_all_orders() covers ACTIVE and PENDING_MODIFY quotes alike, once each: cancelling
+        // a slot's order as well would send its cancel twice, as a cancel leaves the order's local
+        // status as it was.
+        cancel_all_orders();
     }
 
     void on_shutdown() override {
