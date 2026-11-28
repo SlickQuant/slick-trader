@@ -127,8 +127,13 @@ jobs:
         cmake -B build
         -DCMAKE_TOOLCHAIN_FILE="${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
+    # The job count is not optional. A bare --parallel reaches the Makefile generator as
+    # `make -j` with no limit, so every translation unit compiles at once and the runner runs out
+    # of memory (the Linux Debug build was killed mid-compile). getconf rather than nproc, which
+    # macOS does not have.
     - name: Build
-      run: cmake --build build --config ${{ matrix.build_type }} --parallel
+      shell: bash
+      run: cmake --build build --config ${{ matrix.build_type }} --parallel "$(getconf _NPROCESSORS_ONLN)"
 
     - name: Run tests
       working-directory: build
@@ -267,8 +272,9 @@ jobs:
       run: |
         grep -E "slick-trader brokers: ${EXPECT}( |\$)" configure.log
 
+    # One compile per core, for the reason given on the main build above.
     - name: Build
-      run: cmake --build build --parallel
+      run: cmake --build build --parallel "$(nproc)"
 
     - name: Run tests
       working-directory: build
