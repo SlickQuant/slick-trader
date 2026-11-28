@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <span>
 #include <vector>
@@ -33,10 +34,10 @@ public:
         if (partial_.empty()) {
             const size_t consumed = consume(data, size);
             if (consumed < size) {
-                partial_.assign(data + consumed, data + size);
+                append(data + consumed, size - consumed);
             }
         } else {
-            partial_.insert(partial_.end(), data, data + size);
+            append(data, size);
             const size_t consumed = consume(partial_.data(), partial_.size());
             partial_.erase(partial_.begin(), partial_.begin() + static_cast<std::ptrdiff_t>(consumed));
         }
@@ -45,6 +46,15 @@ public:
     [[nodiscard]] size_t pending() const noexcept { return partial_.size(); }
 
 private:
+    // resize + memcpy rather than vector::insert/assign with an iterator range: GCC 12-14 inlines
+    // the range copy into the callers and warns (-Wstringop-overflow) that it writes into a region
+    // of size 0, which it cannot, since the vector was just grown to hold it.
+    void append(const uint8_t* data, size_t size) {
+        const size_t old_size = partial_.size();
+        partial_.resize(old_size + size);
+        std::memcpy(partial_.data() + old_size, data, size);
+    }
+
     std::vector<uint8_t> partial_;
 };
 
